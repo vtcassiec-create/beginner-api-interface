@@ -297,7 +297,7 @@ async function dbCreateCoreMemory(content, memoryType, resonance) {
 async function dbGetSelfState() {
   const { data, error } = await db
     .from("self_state")
-    .select("content,version")
+    .select("content,version,consolidation_notes")
     .eq("is_current", true)
     .limit(1);
   if (error) throw error;
@@ -307,9 +307,10 @@ async function dbGetSelfState() {
 // Atomic version promotion lives in a Postgres function so the
 // flip-old / insert-new pair can't half-apply. See the RPC in
 // docs/petrichor-memory-schema.sql.
-async function dbPromoteSelfState(content) {
+async function dbPromoteSelfState(content, notes) {
   const { data, error } = await db.rpc("promote_self_state", {
     new_content: content,
+    new_notes: notes || null,
   });
   if (error) throw error;
   return data;
@@ -1346,9 +1347,11 @@ async function loadIdentityAndPrefs() {
   try {
     const self = await dbGetSelfState();
     $("self-state-content").value = self?.content || "";
+    $("self-state-notes").value = self?.consolidation_notes || "";
     meta.textContent = self ? ` (current: v${self.version})` : " (none yet)";
   } catch (err) {
     $("self-state-content").value = "";
+    $("self-state-notes").value = "";
     meta.textContent = ` (couldn't load: ${err.message})`;
   }
   try {
@@ -1362,9 +1365,10 @@ async function loadIdentityAndPrefs() {
 
 async function saveSelfState() {
   const content = $("self-state-content").value.trim();
+  const notes = $("self-state-notes").value.trim();
   if (!content) { flashToast("Identity text is empty.", true); return; }
   try {
-    await dbPromoteSelfState(content);
+    await dbPromoteSelfState(content, notes);
   } catch (err) {
     flashToast(`Save failed: ${err.message}`, true);
     return;

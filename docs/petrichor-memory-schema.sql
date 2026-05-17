@@ -119,6 +119,15 @@ CREATE TRIGGER user_preferences_updated_at
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- =========================================================================
+-- Migrations (idempotent — safe on an already-populated database)
+-- =========================================================================
+
+-- Notes Claude keeps about identity consolidation cycles, alongside the
+-- self_state content itself.
+ALTER TABLE self_state
+  ADD COLUMN IF NOT EXISTS consolidation_notes TEXT;
+
+-- =========================================================================
 -- Atomic self_state version promotion
 --
 -- The Supabase JS client can't run a multi-statement transaction, but
@@ -133,7 +142,14 @@ CREATE TRIGGER user_preferences_updated_at
 -- own rows via auth.uid().
 -- =========================================================================
 
-CREATE OR REPLACE FUNCTION promote_self_state(new_content TEXT)
+-- The old single-arg signature is a *different* function to Postgres;
+-- drop it so PostgREST doesn't see an ambiguous overload.
+DROP FUNCTION IF EXISTS promote_self_state(TEXT);
+
+CREATE OR REPLACE FUNCTION promote_self_state(
+  new_content TEXT,
+  new_notes   TEXT DEFAULT NULL
+)
 RETURNS self_state
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -152,12 +168,41 @@ BEGIN
     FROM self_state
     WHERE user_id = auth.uid();
 
-  INSERT INTO self_state (user_id, content, version, is_current)
-    VALUES (auth.uid(), new_content, next_version, TRUE)
+  INSERT INTO self_state
+      (user_id, content, consolidation_notes, version, is_current)
+    VALUES (auth.uid(), new_content, new_notes, next_version, TRUE)
     RETURNING * INTO new_row;
 
   RETURN new_row;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION promote_self_state(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION promote_self_state(TEXT, TEXT) TO authenticated;
+
+-- =========================================================================
+-- Surface core memories (read + bump in one atomic call)
+--
+-- Returns the user's active core memories, highest resonance first, and
+-- increments surface_count on each as a side effect — so "how often has
+-- this memory been loaded into a chat" stays accurate without a second
+-- round-trip. SECURITY INVOKER keeps RLS in force.
+-- =========================================================================
+
+CREATE OR REPLACE FUNCTION surface_core_memories()
+RETURNS TABLE (content TEXT, memory_type TEXT, resonance INTEGER)
+LANGUAGE sql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+  WITH bumped AS (
+    UPDATE core_memories
+       SET surface_count = surface_count + 1
+     WHERE user_id = auth.uid() AND is_active = TRUE
+    RETURNING content, memory_type, resonance
+  )
+  SELECT content, memory_type, resonance
+    FROM bumped
+   ORDER BY resonance DESC;
+$$;
+
+GRANT EXECUTE ON FUNCTION surface_core_memories() TO authenticated;
