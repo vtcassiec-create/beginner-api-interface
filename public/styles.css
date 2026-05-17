@@ -1,29 +1,37 @@
+/* "Late evening reading by lamplight": warm-leaning ink-blue ground,
+   paper-cream ink, firelight amber. Cool-and-warm, petrichor and old
+   paper. The light theme below is the same page seen by day. */
 :root {
-  --bg: #0f1115;
-  --bg-elev: #161922;
-  --bg-elev-2: #1d2130;
-  --border: #262b3b;
-  --text: #e8eaf2;
-  --text-muted: #8a90a3;
-  --accent: #c97a4e;
-  --accent-hover: #d68a5e;
-  --user-bubble: #1f2433;
+  --bg: #1a1f2e;
+  --bg-elev: #222a3b;
+  --bg-elev-2: #2c3447;
+  --border: #343c52;
+  --text: #e8e0d0;
+  --text-muted: #9b9486;
+  --accent: #d4a574;
+  --accent-hover: #e2b583;
+  --user-bubble: #2a3147;
   --assistant-bubble: transparent;
-  --danger: #d65656;
+  --danger: #cc6a5c;
   --radius: 8px;
   --radius-sm: 6px;
   --sidebar-w: 260px;
 }
 
+/* Daylight: aged ecru paper, warm ink, the same amber a shade deeper so
+   it still carries contrast against cream. */
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f7f7f5;
-    --bg-elev: #ffffff;
-    --bg-elev-2: #efefea;
-    --border: #e2e2dd;
-    --text: #1a1a1a;
-    --text-muted: #6b6b6b;
-    --user-bubble: #efefea;
+    --bg: #efe9da;
+    --bg-elev: #f7f3e8;
+    --bg-elev-2: #e6dfca;
+    --border: #d8cfb8;
+    --text: #2a2620;
+    --text-muted: #6b6354;
+    --accent: #b9824b;
+    --accent-hover: #a5703c;
+    --user-bubble: #e6dfca;
+    --danger: #b5503f;
   }
 }
 
@@ -629,7 +637,7 @@ button.ghost {
 button.ghost:hover { background: var(--bg-elev-2); }
 
 button.danger { color: var(--danger); border-color: var(--danger); }
-button.danger:hover { background: rgba(214, 86, 86, 0.1); }
+button.danger:hover { background: rgba(204, 106, 92, 0.1); }
 
 button.icon {
   background: none;
@@ -764,7 +772,7 @@ dialog::backdrop {
 
 .error {
   color: var(--danger);
-  background: rgba(214, 86, 86, 0.1);
+  background: rgba(204, 106, 92, 0.1);
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   font-size: 13px;
