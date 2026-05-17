@@ -595,8 +595,18 @@ let isSending = false;
 async function generateAssistant() {
   const project = getActiveProject();
   const conv = getActiveConversation(project);
-  if (!project || !conv || isSending) return;
-  if (conv.messages.length === 0 || conv.messages[conv.messages.length - 1].role !== "user") return;
+  if (!project || !conv) {
+    flashToast("No active project or conversation.", true);
+    return;
+  }
+  if (isSending) {
+    flashToast("Still sending the previous message…", true);
+    return;
+  }
+  if (conv.messages.length === 0 || conv.messages[conv.messages.length - 1].role !== "user") {
+    console.warn("generateAssistant skipped: last message is not a user turn.");
+    return;
+  }
 
   const assistantMsg = {
     id: uid(),
@@ -608,10 +618,12 @@ async function generateAssistant() {
   };
   conv.messages.push(assistantMsg);
 
+  // isSending is a plain assignment (can't throw); render() goes *inside*
+  // the try so any exception it raises still reaches the finally that
+  // clears the flag — otherwise one render() throw wedges sending forever.
   isSending = true;
-  render();
-
   try {
+    render();
     await streamChat(
       {
         model: project.model,
@@ -652,7 +664,15 @@ async function generateAssistant() {
 
 async function sendMessage(text) {
   const conv = getActiveConversation();
-  if (!conv || !text.trim() || isSending) return;
+  if (!text.trim()) return; // empty input: nothing to send, stay quiet
+  if (!conv) {
+    flashToast("No active conversation — create or pick one first.", true);
+    return;
+  }
+  if (isSending) {
+    flashToast("Still sending the previous message…", true);
+    return;
+  }
   conv.messages.push({
     id: uid(),
     role: "user",
