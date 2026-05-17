@@ -11,8 +11,26 @@ Security policies, not by hiding the key.
 """
 
 from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlsplit
 import json
 import os
+
+
+def _normalize_url(raw):
+    """Reduce SUPABASE_URL to scheme://host[:port].
+
+    A trailing slash or stray path (e.g. ".../rest/v1") makes the auth
+    endpoint resolve to an invalid path and Supabase rejects the request
+    with "Invalid path specified in request URL".
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    parts = urlsplit(raw)
+    if parts.scheme and parts.netloc:
+        return f"{parts.scheme}://{parts.netloc}"
+    # No scheme parsed (e.g. "abc.supabase.co/"); strip path manually.
+    return raw.split("/", 1)[0]
 
 
 class handler(BaseHTTPRequestHandler):
@@ -22,8 +40,8 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        url = os.environ.get("SUPABASE_URL", "")
-        key = os.environ.get("SUPABASE_ANON_KEY", "")
+        url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        key = os.environ.get("SUPABASE_ANON_KEY", "").strip()
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
