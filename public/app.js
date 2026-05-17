@@ -667,6 +667,13 @@ async function generateAssistant() {
     return;
   }
 
+  // The message before the user turn that triggered this is the
+  // conversation's "last message"; its timestamp gives the gap. Null on
+  // the first turn or for pre-timestamp messages (graceful on backend).
+  const prior = conv.messages[conv.messages.length - 2];
+  const lastMessageAt = prior?.at ?? null;
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
   const assistantMsg = {
     id: uid(),
     role: "assistant",
@@ -674,6 +681,7 @@ async function generateAssistant() {
     thinkingText: "",
     toolEvents: [],
     usage: null,
+    at: Date.now(),
   };
   conv.messages.push(assistantMsg);
 
@@ -690,6 +698,8 @@ async function generateAssistant() {
         messages: buildApiMessages(project, cleanMessagesForApi(conv.messages)).slice(0, -1),
         useWebSearch: !!project.webSearch,
         thinking: !!project.thinking,
+        tz,
+        lastMessageAt,
       },
       (event) => {
         if (event.type === "text") {
@@ -737,6 +747,7 @@ async function sendMessage(text) {
     role: "user",
     text: text.trim(),
     fileIds: [...conv.activeFileIds],
+    at: Date.now(),
   });
   conv.activeFileIds = [];
   await persistConversation(conv);
