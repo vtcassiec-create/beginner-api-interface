@@ -190,6 +190,38 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             return None
 
+    def _supabase_rpc(self, fn, token):
+        """POST {SUPABASE_URL}/rest/v1/rpc/{fn} as the signed-in user.
+
+        For RPCs that read-and-write (e.g. surfacing core memories also
+        bumps surface_count). RLS still applies via the caller's token.
+        Returns the parsed JSON, or None on any failure.
+        """
+        supabase_url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        supabase_anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        if not supabase_url or not supabase_anon or not token:
+            return None
+        try:
+            req = urllib.request.Request(
+                f"{supabase_url}/rest/v1/rpc/{fn}",
+                data=b"{}",
+                method="POST",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "apikey": supabase_anon,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            )
+            with urllib.request.urlopen(
+                req, timeout=MEMORY_TIMEOUT_SECONDS
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                return json.loads(resp.read().decode())
+        except Exception:
+            return None
+
     def _humanize_gap(self, now, last_ms):
         """Render the gap since the last message as a human phrase."""
         try:
@@ -280,10 +312,9 @@ class handler(BaseHTTPRequestHandler):
                 "# About the person you're talking with\n\n"
                 + prefs[0]["content"].strip())
 
-        mems = self._supabase_rest_get(
-            "core_memories?is_active=eq.true"
-            "&select=content,memory_type,resonance&order=resonance.desc",
-            token)
+        # RPC: returns active core memories (resonance desc) AND bumps
+        # their surface_count in one atomic call.
+        mems = self._supabase_rpc("surface_core_memories", token)
         if mems:
             # Re-sort defensively in case the order param is ignored.
             mems = sorted(
