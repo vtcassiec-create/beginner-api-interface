@@ -182,6 +182,29 @@
         <button type="button" id="mem-add-btn" class="primary">Add</button>
       </div>
 
+      <h4>Knowledge graph</h4>
+      <p class="muted small">Native memory entities. Up to 5 surface per chat — identity first, then most-accessed.</p>
+      <ul id="entity-list"></ul>
+
+      <h4>Add an entity</h4>
+      <div class="mem-add-row">
+        <label>
+          Name
+          <input type="text" id="entity-name" placeholder="e.g. Petrichor" />
+        </label>
+        <label>
+          Type
+          <select id="entity-type"></select>
+        </label>
+      </div>
+      <label>
+        Observations <span class="muted small">— one per line</span>
+        <textarea id="entity-observations" rows="3" placeholder="Something known about this entity…"></textarea>
+      </label>
+      <div class="mem-add-row">
+        <button type="button" id="entity-add-btn" class="primary">Add entity</button>
+      </div>
+
       <menu>
         <button value="cancel" class="ghost">Close</button>
       </menu>

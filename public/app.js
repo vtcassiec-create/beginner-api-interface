@@ -43,6 +43,7 @@ const THINKING_BUDGET = 4096;
 const CACHE_WRITE_MULT = 1.25;
 const CACHE_READ_MULT = 0.1;
 const MEMORY_TYPES = ["fact", "preference", "pattern", "insight", "milestone", "connection"];
+const ENTITY_TYPES = ["person", "project", "identity", "insight", "pattern", "milestone", "creative work", "advocacy effort", "research project"];
 
 // ---------- Supabase + state ----------
 
@@ -314,6 +315,27 @@ async function dbPromoteSelfState(content, notes) {
   });
   if (error) throw error;
   return data;
+}
+
+async function dbListMemoryEntities() {
+  const { data, error } = await db
+    .from("claude_memory_entities")
+    .select("name,entity_type,observations,access_count")
+    .order("access_count", { ascending: false })
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+async function dbCreateMemoryEntity(name, entityType, observations) {
+  const { error } = await db.from("claude_memory_entities").insert({
+    user_id: state.user.id,
+    name,
+    entity_type: entityType,
+    observations,
+    created_by: "petrichor-app",
+  });
+  if (error) throw error;
 }
 
 async function dbGetUserPreferences() {
@@ -1328,18 +1350,81 @@ function flashToast(text, isError = false) {
 // ---------- Core memories ----------
 
 async function openMemoriesDialog() {
-  const typeSel = $("mem-type");
-  if (!typeSel.options.length) {
-    for (const t of MEMORY_TYPES) {
-      const o = document.createElement("option");
-      o.value = t;
-      o.textContent = t;
-      typeSel.appendChild(o);
-    }
-  }
+  fillSelectOnce($("mem-type"), MEMORY_TYPES);
+  fillSelectOnce($("entity-type"), ENTITY_TYPES);
   await loadIdentityAndPrefs();
   await renderMemoryList();
+  await renderEntityList();
   $("memories-dialog").showModal();
+}
+
+function fillSelectOnce(sel, values) {
+  if (sel.options.length) return;
+  for (const v of values) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = v;
+    sel.appendChild(o);
+  }
+}
+
+async function renderEntityList() {
+  const ul = $("entity-list");
+  ul.innerHTML = "";
+  let ents;
+  try {
+    ents = await dbListMemoryEntities();
+  } catch (err) {
+    const li = document.createElement("li");
+    li.className = "mem-empty muted small";
+    li.textContent = `Couldn't load entities: ${err.message}`;
+    ul.appendChild(li);
+    return;
+  }
+  if (!ents.length) {
+    const li = document.createElement("li");
+    li.className = "mem-empty muted small";
+    li.textContent = "No entities yet.";
+    ul.appendChild(li);
+    return;
+  }
+  for (const e of ents) {
+    const li = document.createElement("li");
+    const meta = document.createElement("span");
+    meta.className = "mem-meta";
+    meta.textContent = `${e.name} · ${e.entity_type}`;
+    const text = document.createElement("span");
+    text.className = "mem-text";
+    const obs = Array.isArray(e.observations) ? e.observations : [];
+    text.textContent = obs.join("\n") || "(no observations)";
+    li.appendChild(meta);
+    li.appendChild(text);
+    ul.appendChild(li);
+  }
+}
+
+async function addMemoryEntity() {
+  const name = $("entity-name").value.trim();
+  const entityType = $("entity-type").value;
+  const observations = $("entity-observations").value
+    .split("\n")
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (!name) { flashToast("Entity name is empty.", true); return; }
+  if (!ENTITY_TYPES.includes(entityType)) { flashToast("Pick an entity type.", true); return; }
+  try {
+    await dbCreateMemoryEntity(name, entityType, observations);
+  } catch (err) {
+    const msg = /duplicate|unique/i.test(err.message)
+      ? `An entity named "${name}" already exists.`
+      : `Save failed: ${err.message}`;
+    flashToast(msg, true);
+    return;
+  }
+  $("entity-name").value = "";
+  $("entity-observations").value = "";
+  flashToast("Entity saved");
+  await renderEntityList();
 }
 
 async function loadIdentityAndPrefs() {
@@ -1520,6 +1605,7 @@ function wireApp() {
   $("self-state-save-btn").addEventListener("click", saveSelfState);
   $("user-prefs-save-btn").addEventListener("click", saveUserPreferences);
   $("mem-add-btn").addEventListener("click", addCoreMemory);
+  $("entity-add-btn").addEventListener("click", addMemoryEntity);
 
   $("delete-project-btn").addEventListener("click", () => {
     if (state.activeProjectId) deleteProject(state.activeProjectId);

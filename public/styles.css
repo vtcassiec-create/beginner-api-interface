@@ -774,7 +774,7 @@ dialog::backdrop {
   margin-bottom: 8px;
 }
 
-#memory-list {
+#memory-list, #entity-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -784,7 +784,7 @@ dialog::backdrop {
   border-radius: var(--radius-sm);
 }
 
-#memory-list li {
+#memory-list li, #entity-list li {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -793,16 +793,16 @@ dialog::backdrop {
   font-size: 13px;
 }
 
-#memory-list li:last-child { border-bottom: none; }
-#memory-list .mem-empty { border-bottom: none; }
+#memory-list li:last-child, #entity-list li:last-child { border-bottom: none; }
+#memory-list .mem-empty, #entity-list .mem-empty { border-bottom: none; }
 
-#memory-list .mem-meta {
+#memory-list .mem-meta, #entity-list .mem-meta {
   color: var(--accent);
   font-size: 12px;
   text-transform: capitalize;
 }
 
-#memory-list .mem-text {
+#memory-list .mem-text, #entity-list .mem-text {
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
