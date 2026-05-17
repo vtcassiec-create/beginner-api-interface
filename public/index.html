@@ -42,6 +42,7 @@
       </header>
       <nav id="project-list" aria-label="Projects"></nav>
       <footer class="sidebar-footer">
+        <button id="memories-btn" class="ghost small mem-btn" title="View and add core memories">🧠 Memories</button>
         <div class="user-row">
           <span id="user-email" class="muted small"></span>
           <button id="signout-btn" class="ghost small">Sign out</button>
@@ -124,6 +125,35 @@
       <h4>File library</h4>
       <p class="muted small">Files you upload live here. Toggle them on to send with your next message.</p>
       <ul id="file-library"></ul>
+
+      <menu>
+        <button value="cancel" class="ghost">Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="memories-dialog">
+    <form method="dialog" class="settings-form">
+      <h3>Core memories</h3>
+      <p class="muted small">Curated memories injected into every chat, highest resonance first.</p>
+      <ul id="memory-list"></ul>
+
+      <h4>Add a memory</h4>
+      <label>
+        Memory
+        <textarea id="mem-content" rows="3" placeholder="Something worth remembering…"></textarea>
+      </label>
+      <div class="mem-add-row">
+        <label>
+          Type
+          <select id="mem-type"></select>
+        </label>
+        <label>
+          Resonance (1–10)
+          <input type="number" id="mem-resonance" min="1" max="10" step="1" value="5" />
+        </label>
+        <button type="button" id="mem-add-btn" class="primary">Add</button>
+      </div>
 
       <menu>
         <button value="cancel" class="ghost">Close</button>

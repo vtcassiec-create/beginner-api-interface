@@ -42,6 +42,7 @@ const DEFAULT_SYSTEM = "You are Claude, a helpful AI assistant.";
 const THINKING_BUDGET = 4096;
 const CACHE_WRITE_MULT = 1.25;
 const CACHE_READ_MULT = 0.1;
+const MEMORY_TYPES = ["fact", "preference", "pattern", "insight", "milestone", "connection"];
 
 // ---------- Supabase + state ----------
 
@@ -269,6 +270,27 @@ async function dbCreateFile(projectId, file) {
 
 async function dbDeleteFile(id) {
   const { error } = await db.from("files").delete().eq("id", id);
+  if (error) throw error;
+}
+
+async function dbListCoreMemories() {
+  const { data, error } = await db
+    .from("core_memories")
+    .select("*")
+    .eq("is_active", true)
+    .order("resonance", { ascending: false })
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+async function dbCreateCoreMemory(content, memoryType, resonance) {
+  const { error } = await db.from("core_memories").insert({
+    user_id: state.user.id,
+    content,
+    memory_type: memoryType,
+    resonance,
+  });
   if (error) throw error;
 }
 
@@ -1254,6 +1276,78 @@ function flashToast(text, isError = false) {
   flashToast._t = setTimeout(() => { el.hidden = true; }, 1500);
 }
 
+// ---------- Core memories ----------
+
+async function openMemoriesDialog() {
+  const typeSel = $("mem-type");
+  if (!typeSel.options.length) {
+    for (const t of MEMORY_TYPES) {
+      const o = document.createElement("option");
+      o.value = t;
+      o.textContent = t;
+      typeSel.appendChild(o);
+    }
+  }
+  await renderMemoryList();
+  $("memories-dialog").showModal();
+}
+
+async function renderMemoryList() {
+  const ul = $("memory-list");
+  ul.innerHTML = "";
+  let mems;
+  try {
+    mems = await dbListCoreMemories();
+  } catch (err) {
+    const li = document.createElement("li");
+    li.className = "mem-empty muted small";
+    li.textContent = `Couldn't load memories: ${err.message}`;
+    ul.appendChild(li);
+    return;
+  }
+  if (!mems.length) {
+    const li = document.createElement("li");
+    li.className = "mem-empty muted small";
+    li.textContent = "No memories yet.";
+    ul.appendChild(li);
+    return;
+  }
+  for (const m of mems) {
+    const li = document.createElement("li");
+    const meta = document.createElement("span");
+    meta.className = "mem-meta";
+    meta.textContent = `${m.memory_type} · resonance ${m.resonance}`;
+    const text = document.createElement("span");
+    text.className = "mem-text";
+    text.textContent = m.content;
+    li.appendChild(meta);
+    li.appendChild(text);
+    ul.appendChild(li);
+  }
+}
+
+async function addCoreMemory() {
+  const content = $("mem-content").value.trim();
+  const memoryType = $("mem-type").value;
+  const resonance = parseInt($("mem-resonance").value, 10);
+  if (!content) { flashToast("Memory text is empty.", true); return; }
+  if (!MEMORY_TYPES.includes(memoryType)) { flashToast("Pick a memory type.", true); return; }
+  if (!Number.isInteger(resonance) || resonance < 1 || resonance > 10) {
+    flashToast("Resonance must be 1–10.", true);
+    return;
+  }
+  try {
+    await dbCreateCoreMemory(content, memoryType, resonance);
+  } catch (err) {
+    flashToast(`Save failed: ${err.message}`, true);
+    return;
+  }
+  $("mem-content").value = "";
+  $("mem-resonance").value = "5";
+  flashToast("Memory saved");
+  await renderMemoryList();
+}
+
 // ---------- Wire it up ----------
 
 function wireSignIn() {
@@ -1325,6 +1419,9 @@ function wireApp() {
   });
 
   $("settings-btn").addEventListener("click", () => $("settings-dialog").showModal());
+
+  $("memories-btn").addEventListener("click", openMemoriesDialog);
+  $("mem-add-btn").addEventListener("click", addCoreMemory);
 
   $("delete-project-btn").addEventListener("click", () => {
     if (state.activeProjectId) deleteProject(state.activeProjectId);

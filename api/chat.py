@@ -49,6 +49,7 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 4096
 THINKING_BUDGET = 4096
 AUTH_TIMEOUT_SECONDS = 5
+MEMORY_TIMEOUT_SECONDS = 5
 
 
 class handler(BaseHTTPRequestHandler):
@@ -96,7 +97,13 @@ class handler(BaseHTTPRequestHandler):
             "max_tokens": max_tokens,
             "messages": data.get("messages") or [],
         }
-        system = data.get("system")
+        # Memory preamble (self-state → user preferences → core memories)
+        # is prepended to the project's system prompt as one cached block.
+        # Loading it must never break chat: any failure yields "".
+        system = data.get("system") or ""
+        memory = self._load_memory_context(self._bearer_token())
+        if memory:
+            system = (memory + "\n\n" + system).strip()
         if system:
             kwargs["system"] = [{
                 "type": "text",
@@ -145,6 +152,86 @@ class handler(BaseHTTPRequestHandler):
 
     # ---- Helpers ----
 
+    def _bearer_token(self):
+        """The raw token from the Authorization header, or ""."""
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return ""
+        return auth[len("Bearer "):].strip()
+
+    def _supabase_rest_get(self, query, token):
+        """GET {SUPABASE_URL}/rest/v1/{query} as the signed-in user.
+
+        RLS scopes every row to the caller via their token, so this can
+        only ever return the user's own rows. Returns the parsed JSON
+        list, or None on any failure — memory must never break chat.
+        """
+        supabase_url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        supabase_anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        if not supabase_url or not supabase_anon or not token:
+            return None
+        try:
+            req = urllib.request.Request(
+                f"{supabase_url}/rest/v1/{query}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "apikey": supabase_anon,
+                    "Accept": "application/json",
+                },
+            )
+            with urllib.request.urlopen(
+                req, timeout=MEMORY_TIMEOUT_SECONDS
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                return json.loads(resp.read().decode())
+        except Exception:
+            return None
+
+    def _load_memory_context(self, token):
+        """Assemble the memory preamble in fixed order: self-state,
+        then user preferences, then active core memories sorted by
+        resonance (highest first). Any missing or failed piece is
+        skipped; returns "" if there's nothing (or on total failure).
+        """
+        if not token:
+            return ""
+        sections = []
+
+        state = self._supabase_rest_get(
+            "self_state?is_current=eq.true&select=content&limit=1", token)
+        if state and (state[0].get("content") or "").strip():
+            sections.append(
+                "# Who you are\n\n" + state[0]["content"].strip())
+
+        prefs = self._supabase_rest_get(
+            "user_preferences?select=content&limit=1", token)
+        if prefs and (prefs[0].get("content") or "").strip():
+            sections.append(
+                "# About the person you're talking with\n\n"
+                + prefs[0]["content"].strip())
+
+        mems = self._supabase_rest_get(
+            "core_memories?is_active=eq.true"
+            "&select=content,memory_type,resonance&order=resonance.desc",
+            token)
+        if mems:
+            # Re-sort defensively in case the order param is ignored.
+            mems = sorted(
+                mems, key=lambda m: m.get("resonance") or 0, reverse=True)
+            lines = []
+            for m in mems:
+                content = (m.get("content") or "").strip()
+                if not content:
+                    continue
+                lines.append(
+                    f"- (resonance {m.get('resonance')}, "
+                    f"{m.get('memory_type')}) {content}")
+            if lines:
+                sections.append("# Shared memories\n\n" + "\n".join(lines))
+
+        return "\n\n".join(sections)
+
     def _verify_auth(self):
         """
         Verify the Supabase access token by asking Supabase about it.
@@ -152,10 +239,7 @@ class handler(BaseHTTPRequestHandler):
         Calls GET /auth/v1/user with the user's token + the project's anon
         key. Supabase returns the user if the token is valid, 401 if not.
         """
-        auth = self.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
-            return None
-        token = auth[len("Bearer "):].strip()
+        token = self._bearer_token()
         if not token:
             return None
 
