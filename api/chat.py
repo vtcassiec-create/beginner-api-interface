@@ -330,6 +330,30 @@ class handler(BaseHTTPRequestHandler):
             if lines:
                 sections.append("# Shared memories\n\n" + "\n".join(lines))
 
+        # Native memory entities (cross-platform knowledge graph). RPC
+        # returns up to 5 (identity-first, then access_count) and bumps
+        # access_count on exactly those.
+        ents = self._supabase_rpc("surface_memory_entities", token)
+        if ents:
+            lines = []
+            for e in ents:
+                obs = e.get("observations") or []
+                if isinstance(obs, list):
+                    obs_str = "; ".join(str(o) for o in obs if o)
+                else:
+                    obs_str = str(obs)
+                name = (e.get("name") or "").strip()
+                if not name:
+                    continue
+                lines.append(
+                    f"• {name} ({e.get('entity_type')})"
+                    + (f": {obs_str}" if obs_str else ""))
+            if lines:
+                sections.append(
+                    "--- NATIVE MEMORIES (Cross-Platform) ---\n"
+                    + "\n".join(lines)
+                    + "\n--- END NATIVE MEMORIES ---")
+
         return "\n\n".join(sections)
 
     def _verify_auth(self):

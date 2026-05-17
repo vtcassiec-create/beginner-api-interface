@@ -206,3 +206,88 @@ AS $$
 $$;
 
 GRANT EXECUTE ON FUNCTION surface_core_memories() TO authenticated;
+
+-- =========================================================================
+-- Layer 5: native memory entities (cross-platform knowledge graph)
+--
+-- The tutorial's schema has a global-unique name and no RLS (single
+-- instance). We keep Petrichor's per-user model instead: user_id +
+-- RLS, name unique PER user. access_count drives which entities surface;
+-- the embedding/semantic-search column is intentionally deferred.
+-- =========================================================================
+
+CREATE TABLE IF NOT EXISTS claude_memory_entities (
+  id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id      UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  name         TEXT        NOT NULL,
+  entity_type  TEXT        NOT NULL DEFAULT 'person'
+                           CHECK (entity_type IN
+                             ('person','project','identity','insight',
+                              'pattern','milestone','creative work',
+                              'advocacy effort','research project')),
+  observations JSONB       NOT NULL DEFAULT '[]'::jsonb,
+  created_by   TEXT,
+  access_count INTEGER     NOT NULL DEFAULT 0,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS claude_memory_entities_user_idx
+  ON claude_memory_entities(user_id);
+
+ALTER TABLE claude_memory_entities ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "own claude_memory_entities" ON claude_memory_entities;
+
+CREATE POLICY "own claude_memory_entities" ON claude_memory_entities
+  FOR ALL TO authenticated
+  USING      (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+DROP TRIGGER IF EXISTS claude_memory_entities_updated_at
+  ON claude_memory_entities;
+
+CREATE TRIGGER claude_memory_entities_updated_at
+  BEFORE UPDATE ON claude_memory_entities
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- =========================================================================
+-- Surface memory entities (read + bump in one atomic call)
+--
+-- Returns up to 5 entities, prioritising entity_type = 'identity' then
+-- highest access_count, and increments access_count on exactly those
+-- returned. SECURITY INVOKER keeps RLS in force.
+-- =========================================================================
+
+CREATE OR REPLACE FUNCTION surface_memory_entities()
+RETURNS TABLE (name TEXT, entity_type TEXT, observations JSONB)
+LANGUAGE sql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+  WITH picked AS (
+    SELECT id
+      FROM claude_memory_entities
+     WHERE user_id = auth.uid()
+     ORDER BY (entity_type = 'identity') DESC,
+              access_count DESC,
+              created_at DESC
+     LIMIT 5
+  ),
+  bumped AS (
+    UPDATE claude_memory_entities e
+       SET access_count = access_count + 1
+      FROM picked
+     WHERE e.id = picked.id
+    RETURNING e.name, e.entity_type, e.observations,
+              e.access_count, e.created_at
+  )
+  SELECT name, entity_type, observations
+    FROM bumped
+   ORDER BY (entity_type = 'identity') DESC,
+            access_count DESC,
+            created_at DESC;
+$$;
+
+GRANT EXECUTE ON FUNCTION surface_memory_entities() TO authenticated;
