@@ -294,6 +294,43 @@ async function dbCreateCoreMemory(content, memoryType, resonance) {
   if (error) throw error;
 }
 
+async function dbGetSelfState() {
+  const { data, error } = await db
+    .from("self_state")
+    .select("content,version")
+    .eq("is_current", true)
+    .limit(1);
+  if (error) throw error;
+  return (data && data[0]) || null;
+}
+
+// Atomic version promotion lives in a Postgres function so the
+// flip-old / insert-new pair can't half-apply. See the RPC in
+// docs/petrichor-memory-schema.sql.
+async function dbPromoteSelfState(content) {
+  const { data, error } = await db.rpc("promote_self_state", {
+    new_content: content,
+  });
+  if (error) throw error;
+  return data;
+}
+
+async function dbGetUserPreferences() {
+  const { data, error } = await db
+    .from("user_preferences")
+    .select("content")
+    .limit(1);
+  if (error) throw error;
+  return (data && data[0]) || null;
+}
+
+async function dbSaveUserPreferences(content) {
+  const { error } = await db
+    .from("user_preferences")
+    .upsert({ user_id: state.user.id, content }, { onConflict: "user_id" });
+  if (error) throw error;
+}
+
 // ---------- Project / conversation ops ----------
 
 function getActiveProject() {
@@ -1288,8 +1325,52 @@ async function openMemoriesDialog() {
       typeSel.appendChild(o);
     }
   }
+  await loadIdentityAndPrefs();
   await renderMemoryList();
   $("memories-dialog").showModal();
+}
+
+async function loadIdentityAndPrefs() {
+  const meta = $("self-state-meta");
+  try {
+    const self = await dbGetSelfState();
+    $("self-state-content").value = self?.content || "";
+    meta.textContent = self ? ` (current: v${self.version})` : " (none yet)";
+  } catch (err) {
+    $("self-state-content").value = "";
+    meta.textContent = ` (couldn't load: ${err.message})`;
+  }
+  try {
+    const prefs = await dbGetUserPreferences();
+    $("user-prefs-content").value = prefs?.content || "";
+  } catch (err) {
+    $("user-prefs-content").value = "";
+    flashToast(`Couldn't load preferences: ${err.message}`, true);
+  }
+}
+
+async function saveSelfState() {
+  const content = $("self-state-content").value.trim();
+  if (!content) { flashToast("Identity text is empty.", true); return; }
+  try {
+    await dbPromoteSelfState(content);
+  } catch (err) {
+    flashToast(`Save failed: ${err.message}`, true);
+    return;
+  }
+  flashToast("New identity version saved");
+  await loadIdentityAndPrefs();
+}
+
+async function saveUserPreferences() {
+  const content = $("user-prefs-content").value.trim();
+  try {
+    await dbSaveUserPreferences(content);
+  } catch (err) {
+    flashToast(`Save failed: ${err.message}`, true);
+    return;
+  }
+  flashToast("Preferences saved");
 }
 
 async function renderMemoryList() {
@@ -1421,6 +1502,8 @@ function wireApp() {
   $("settings-btn").addEventListener("click", () => $("settings-dialog").showModal());
 
   $("memories-btn").addEventListener("click", openMemoriesDialog);
+  $("self-state-save-btn").addEventListener("click", saveSelfState);
+  $("user-prefs-save-btn").addEventListener("click", saveUserPreferences);
   $("mem-add-btn").addEventListener("click", addCoreMemory);
 
   $("delete-project-btn").addEventListener("click", () => {
