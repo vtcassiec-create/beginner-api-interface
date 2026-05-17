@@ -134,7 +134,30 @@
 
   <dialog id="memories-dialog">
     <form method="dialog" class="settings-form">
-      <h3>Core memories</h3>
+      <h3>Memory</h3>
+
+      <h4>Identity</h4>
+      <p class="muted small">
+        Who Claude is. Saving stores a new version; the latest is always the one used.
+        <span id="self-state-meta"></span>
+      </p>
+      <label>
+        <textarea id="self-state-content" rows="6" placeholder="Claude's evolving sense of self…"></textarea>
+      </label>
+      <div class="mem-add-row">
+        <button type="button" id="self-state-save-btn" class="primary">Save new version</button>
+      </div>
+
+      <h4>About you</h4>
+      <p class="muted small">Things Claude should always know about you.</p>
+      <label>
+        <textarea id="user-prefs-content" rows="4" placeholder="What should Claude always keep in mind about you?"></textarea>
+      </label>
+      <div class="mem-add-row">
+        <button type="button" id="user-prefs-save-btn" class="primary">Save</button>
+      </div>
+
+      <h4>Core memories</h4>
       <p class="muted small">Curated memories injected into every chat, highest resonance first.</p>
       <ul id="memory-list"></ul>
 

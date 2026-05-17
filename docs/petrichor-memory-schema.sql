@@ -117,3 +117,47 @@ CREATE TRIGGER core_memories_updated_at
 CREATE TRIGGER user_preferences_updated_at
   BEFORE UPDATE ON user_preferences
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- =========================================================================
+-- Atomic self_state version promotion
+--
+-- The Supabase JS client can't run a multi-statement transaction, but
+-- promoting a new identity version MUST flip the old is_current row to
+-- FALSE and insert the new current row together — otherwise a failure
+-- between the two leaves the user with no current identity (and the
+-- partial unique index would reject an out-of-order insert). A plpgsql
+-- function body is one transaction, so this is atomic.
+--
+-- SECURITY INVOKER + a pinned search_path: the function runs as the
+-- caller, so RLS still applies and it can only ever touch the caller's
+-- own rows via auth.uid().
+-- =========================================================================
+
+CREATE OR REPLACE FUNCTION promote_self_state(new_content TEXT)
+RETURNS self_state
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+DECLARE
+  next_version INTEGER;
+  new_row      self_state;
+BEGIN
+  UPDATE self_state
+    SET is_current = FALSE
+    WHERE user_id = auth.uid() AND is_current = TRUE;
+
+  SELECT COALESCE(MAX(version), 0) + 1
+    INTO next_version
+    FROM self_state
+    WHERE user_id = auth.uid();
+
+  INSERT INTO self_state (user_id, content, version, is_current)
+    VALUES (auth.uid(), new_content, next_version, TRUE)
+    RETURNING * INTO new_row;
+
+  RETURN new_row;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION promote_self_state(TEXT) TO authenticated;
