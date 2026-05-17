@@ -1,5 +1,5 @@
 /*
- * Beginner API Interface — client logic (Supabase-backed)
+ * Petrichor — client logic (Supabase-backed)
  *
  * Auth: Supabase magic link. No session = sign-in screen.
  * Storage: Supabase tables (projects, conversations, files) protected by
@@ -855,7 +855,7 @@ async function importConversationJson(file) {
     return;
   }
   if (!Array.isArray(data.messages)) {
-    alert("That doesn't look like a Beginner API export — no messages array.");
+    alert("That doesn't look like a Petrichor export — no messages array.");
     return;
   }
   const messages = data.messages.map(m => ({
