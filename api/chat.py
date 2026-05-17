@@ -21,8 +21,29 @@ import json
 import os
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 import anthropic
+
+
+def _normalize_url(raw):
+    """Reduce SUPABASE_URL to scheme://host[:port].
+
+    Kept in sync with the identical helper in config.py. A trailing slash
+    or stray path (e.g. ".../rest/v1") would make the /auth/v1/user call
+    resolve to an invalid path, so auth would silently fail with a 401
+    even for a validly signed-in user. (Vercel runs each api/*.py as an
+    isolated function, so the helper is duplicated rather than imported.)
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    parts = urlsplit(raw)
+    if parts.scheme and parts.netloc:
+        return f"{parts.scheme}://{parts.netloc}"
+    # No scheme parsed (e.g. "abc.supabase.co/"); strip path manually.
+    return raw.split("/", 1)[0]
+
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 4096
@@ -138,8 +159,8 @@ class handler(BaseHTTPRequestHandler):
         if not token:
             return None
 
-        supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
-        supabase_anon = os.environ.get("SUPABASE_ANON_KEY", "")
+        supabase_url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        supabase_anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
         if not supabase_url or not supabase_anon:
             return None
 
