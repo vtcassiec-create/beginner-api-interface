@@ -44,6 +44,7 @@ That schema creates three tables (projects, conversations, files) and locks them
 You need **two values** from your Supabase project to put into Vercel:
 
 1. **Project URL**: in the left sidebar, click the gear icon (**Project Settings**) → **API**. Find **Project URL** — looks like `https://xxxxxxxxxxxxx.supabase.co`. **Use the copy button** next to it. (Manual highlight-and-copy can grab invisible characters from styled UI elements — we've been burned by this. Always click the copy icon.)
+   - **Format matters:** the value must be *just* the project URL — scheme + host, nothing after `.supabase.co`. No trailing slash, no `/rest/v1` or other path. `https://xxxx.supabase.co` ✅ — `https://xxxx.supabase.co/` ❌ — `https://xxxx.supabase.co/rest/v1` ❌. A stray slash or path makes the auth endpoint resolve wrong and Supabase rejects sign-in with **"Invalid path specified in request URL"**. (`/api/config` now defensively normalizes this, but setting it cleanly is still the right fix.)
 2. **anon / public key**: same page, look for the **anon / public** key — a long string starting with `eyJ`. **Use the copy button** here too.
 
 > **A note on the keys:** the **anon key** is designed to be public (it's shipped to every browser that loads your app). Row-level security policies in the schema are what actually protect data, not key secrecy.
@@ -112,6 +113,8 @@ Each signed-in user gets their own private space — their projects, conversatio
 **"Setup needed" screen on the deployed app.** That means `/api/config` returned `configured: false` — probably one or both of `SUPABASE_URL` / `SUPABASE_ANON_KEY` is missing or named wrong in Vercel. Check Vercel → Settings → Environment Variables, then redeploy.
 
 **Magic link email never arrives.** Check spam first. If still missing: Supabase → Authentication → Email templates — you can verify the email service is enabled. The free tier has rate limits (3 emails per hour by default for unauth users); usually fine for personal use.
+
+**"Invalid path specified in request URL" when sending the magic link.** Your `SUPABASE_URL` has a trailing slash or a stray path (e.g. `…supabase.co/` or `…supabase.co/rest/v1`). Set it to just `https://xxxx.supabase.co` — scheme + host, nothing after `.supabase.co` — in Vercel, then redeploy. See the format note in Step 3.
 
 **Magic link arrives but clicking it doesn't sign me in.** You probably skipped Step 5. The redirect URL has to be on Supabase's allow-list.
 
