@@ -17,11 +17,13 @@ Required environment variables:
 """
 
 from http.server import BaseHTTPRequestHandler
+import datetime
 import json
 import os
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 import anthropic
 
@@ -101,7 +103,7 @@ class handler(BaseHTTPRequestHandler):
         # is prepended to the project's system prompt as one cached block.
         # Loading it must never break chat: any failure yields "".
         system = data.get("system") or ""
-        memory = self._load_memory_context(self._bearer_token())
+        memory = self._load_memory_context(self._bearer_token(), data)
         if memory:
             system = (memory + "\n\n" + system).strip()
         if system:
@@ -188,21 +190,88 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             return None
 
-    def _load_memory_context(self, token):
-        """Assemble the memory preamble in fixed order: self-state,
-        then user preferences, then active core memories sorted by
-        resonance (highest first). Any missing or failed piece is
-        skipped; returns "" if there's nothing (or on total failure).
+    def _humanize_gap(self, now, last_ms):
+        """Render the gap since the last message as a human phrase."""
+        try:
+            last_ms = float(last_ms)
+        except (TypeError, ValueError):
+            return "this is the first message in this conversation"
+        delta = now.timestamp() - last_ms / 1000.0
+        secs = int(delta) if delta > 0 else 0  # clamp negative clock skew
+        if secs < 10:
+            return "just now"
+        if secs < 60:
+            return f"{secs} seconds"
+        mins = secs // 60
+        if mins < 60:
+            return f"{mins} minute{'s' if mins != 1 else ''}"
+        hours, rem_min = divmod(mins, 60)
+        if hours < 24:
+            base = f"{hours} hour{'s' if hours != 1 else ''}"
+            if rem_min:
+                base += f" {rem_min} minute{'s' if rem_min != 1 else ''}"
+            return base
+        days = hours // 24
+        return f"{days} day{'s' if days != 1 else ''}"
+
+    def _time_context(self, data):
+        """A "# Current moment" block: date, local time, time of day,
+        and how long since the last message. The server clock is
+        authoritative for "now" (immune to client skew); the client
+        only supplies its IANA timezone and last-message timestamp.
         """
-        if not token:
-            return ""
+        tz_name = (data.get("tz") or "UTC").strip() or "UTC"
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz_name, tz = "UTC", ZoneInfo("UTC")
+        now = datetime.datetime.now(tz)
+
+        date_str = now.strftime("%A, %B ") + f"{now.day}, {now.year}"
+        time_str = now.strftime("%I:%M %p").lstrip("0")
+        h = now.hour
+        if 5 <= h < 12:
+            tod = "morning"
+        elif 12 <= h < 17:
+            tod = "afternoon"
+        elif 17 <= h < 21:
+            tod = "evening"
+        else:
+            tod = "night"
+
+        lines = [
+            f"- Date: {date_str}",
+            f"- Local time: {time_str} ({tz_name})",
+            f"- Time of day: {tod}",
+            "- Since the last message in this conversation: "
+            + self._humanize_gap(now, data.get("lastMessageAt")),
+        ]
+        return "# Current moment\n\n" + "\n".join(lines)
+
+    def _load_memory_context(self, token, data):
+        """Assemble the preamble in fixed order: self-state, then the
+        current-moment block, then user preferences, then active core
+        memories sorted by resonance (highest first). Any missing or
+        failed piece is skipped; returns "" only if nothing remains.
+        """
         sections = []
 
-        state = self._supabase_rest_get(
-            "self_state?is_current=eq.true&select=content&limit=1", token)
-        if state and (state[0].get("content") or "").strip():
-            sections.append(
-                "# Who you are\n\n" + state[0]["content"].strip())
+        if token:
+            state = self._supabase_rest_get(
+                "self_state?is_current=eq.true&select=content&limit=1",
+                token)
+            if state and (state[0].get("content") or "").strip():
+                sections.append(
+                    "# Who you are\n\n" + state[0]["content"].strip())
+
+        # Time awareness sits between self-state and user preferences.
+        try:
+            sections.append(self._time_context(data))
+        except Exception:
+            pass
+
+        if not token:
+            return "\n\n".join(sections)
 
         prefs = self._supabase_rest_get(
             "user_preferences?select=content&limit=1", token)
