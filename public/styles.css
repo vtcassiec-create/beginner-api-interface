@@ -767,6 +767,67 @@ dialog::backdrop {
   margin-right: 8px;
 }
 
+/* Core memories dialog */
+.sidebar-footer .mem-btn {
+  width: 100%;
+  text-align: left;
+  margin-bottom: 8px;
+}
+
+#memory-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+#memory-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+#memory-list li:last-child { border-bottom: none; }
+#memory-list .mem-empty { border-bottom: none; }
+
+#memory-list .mem-meta {
+  color: var(--accent);
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+#memory-list .mem-text {
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.settings-form select,
+.settings-form input[type="number"] {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  color: var(--text);
+  font: inherit;
+}
+
+.mem-add-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.mem-add-row label { flex: 1; }
+.mem-add-row input[type="number"] { width: 100%; }
+.mem-add-row button { white-space: nowrap; }
+
 .muted { color: var(--text-muted); }
 .small { font-size: 12px; }
 
