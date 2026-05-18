@@ -118,6 +118,22 @@ class handler(BaseHTTPRequestHandler):
                 "name": "web_search",
                 "max_uses": 5,
             }]
+        # Whisper Obsidian-vault MCP, per-project toggle. The secret is
+        # in the URL itself (no separate auth token). extra_body/header
+        # so it works regardless of SDK typing; absent env = silently
+        # off, so a missing var can never break chat.
+        whisper_url = os.environ.get("WHISPER_MCP_URL", "").strip()
+        if data.get("useWhisper") and whisper_url:
+            kwargs["extra_headers"] = {
+                "anthropic-beta": "mcp-client-2025-04-04",
+            }
+            kwargs["extra_body"] = {
+                "mcp_servers": [{
+                    "type": "url",
+                    "url": whisper_url,
+                    "name": "whisper",
+                }],
+            }
         if thinking_on:
             if uses_adaptive_thinking:
                 kwargs["thinking"] = {"type": "adaptive"}
@@ -400,6 +416,13 @@ class handler(BaseHTTPRequestHandler):
                 if isinstance(getattr(block, "input", None), dict):
                     query = block.input.get("query", "")
                 self._sse({"type": "tool_use", "name": block.name, "query": query})
+            elif block_type == "mcp_tool_use":
+                # Whisper vault tool call — surface it like web search.
+                self._sse({
+                    "type": "tool_use",
+                    "name": getattr(block, "name", "tool"),
+                    "query": "",
+                })
         elif t == "content_block_delta":
             delta = event.delta
             delta_type = getattr(delta, "type", None)
