@@ -1129,10 +1129,51 @@ function renderMessages() {
     wrap.appendChild(hint);
     return;
   }
+  let lastDay = null;
   for (const msg of conv.messages) {
+    if (msg.at) {
+      const key = dayKey(msg.at);
+      if (key !== lastDay) {
+        wrap.appendChild(buildDayDivider(msg.at));
+        lastDay = key;
+      }
+    }
     wrap.appendChild(buildMessageNode(msg, project, conv));
   }
   wrap.scrollTop = wrap.scrollHeight;
+}
+
+function dayKey(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+function formatDayLabel(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  if (dayKey(ts) === dayKey(now.getTime())) return "Today";
+  const y = new Date(now);
+  y.setDate(now.getDate() - 1);
+  if (dayKey(ts) === dayKey(y.getTime())) return "Yesterday";
+  const opts = { weekday: "short", month: "short", day: "numeric" };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString(undefined, opts);
+}
+
+function formatClockTime(ts) {
+  return new Date(ts).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function buildDayDivider(ts) {
+  const el = document.createElement("div");
+  el.className = "day-divider";
+  const span = document.createElement("span");
+  span.textContent = formatDayLabel(ts);
+  el.appendChild(span);
+  return el;
 }
 
 function buildMessageNode(msg, project, conv) {
@@ -1142,8 +1183,9 @@ function buildMessageNode(msg, project, conv) {
 
   const head = document.createElement("div");
   head.className = "msg-head";
-  head.innerHTML = `<span class="role"></span><span class="usage"></span>`;
+  head.innerHTML = `<span class="msg-meta"><span class="role"></span><span class="msg-time"></span></span><span class="usage"></span>`;
   head.querySelector(".role").textContent = msg.role === "user" ? "You" : "Claude";
+  head.querySelector(".msg-time").textContent = msg.at ? formatClockTime(msg.at) : "";
   head.querySelector(".usage").textContent = msg.role === "assistant" ? messageUsageLabel(msg, project) : "";
   wrap.appendChild(head);
 
