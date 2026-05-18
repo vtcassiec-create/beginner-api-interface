@@ -4,6 +4,6 @@
     { "source": "/(.*)", "destination": "/public/$1" }
   ],
   "crons": [
-    { "path": "/api/surprise", "schedule": "0 17 * * *" }
+    { "path": "/api/surprise", "schedule": "0 18 * * *" }
   ]
 }
