@@ -97,15 +97,21 @@ class handler(BaseHTTPRequestHandler):
         tz = self._tz()
         now = datetime.datetime.now(tz)
 
+        # Evaluate the rails. A real run obeys them; a dry-run ignores
+        # them (it sends/logs nothing) but still reports what a real run
+        # *would* do, so you can preview and tune at any hour.
+        would_skip = None
         if self._in_quiet_hours(now):
-            return self._json(200, {"status": "skipped",
-                                    "reason": "quiet hours"})
+            would_skip = "quiet hours"
+        else:
+            sent_today = self._count_today(now, tz)
+            cap = int(os.environ.get("REACH_DAILY_CAP", "5") or "5")
+            if sent_today is not None and sent_today >= cap:
+                would_skip = f"daily cap {cap} reached"
 
-        sent_today = self._count_today(now, tz)
-        cap = int(os.environ.get("REACH_DAILY_CAP", "5") or "5")
-        if sent_today is not None and sent_today >= cap:
+        if would_skip and not dryrun:
             return self._json(200, {"status": "skipped",
-                                    "reason": f"daily cap {cap} reached"})
+                                    "reason": would_skip})
 
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
@@ -143,8 +149,12 @@ class handler(BaseHTTPRequestHandler):
                                     "reason": "empty generation"})
 
         if dryrun:
-            return self._json(200, {"status": "dryrun",
-                                    "tone": tone_name, "message": text})
+            return self._json(200, {
+                "status": "dryrun",
+                "tone": tone_name,
+                "message": text,
+                "would_skip": would_skip,  # null = a real run would send
+            })
 
         if not self._send_telegram(text):
             return self._json(200, {"status": "error",
