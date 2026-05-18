@@ -83,8 +83,59 @@ values: `sent`, `skipped` (quiet hours / cap), `dryrun`, `error`.
 - **Dry-run** — verify behaviour without sending.
 - Fault-isolated — failures return a status, never crash-loop.
 
-## Phase 2 (later)
+## Phase 2 — Reply-watching (Telegram webhook)
 
-Reply-watching: a Telegram **webhook** → a new `/api/telegram` endpoint
-so you can reply and Claude responds with context. Clean on Telegram
-(no Mac, no polling). Say the word when Phase 1 feels good.
+You reply in Telegram → Telegram POSTs it to `/api/telegram` → Claude
+answers with memory + your recent exchange. No Mac, no polling. Replies
+**ignore quiet hours / the daily cap** (those govern unsolicited
+messages; answering when spoken to is always fine).
+
+### Step 1 — One more env var
+
+Vercel → Environment Variables (Production), then redeploy:
+
+| Name | Value |
+|---|---|
+| `TELEGRAM_WEBHOOK_SECRET` | a long random string (`openssl rand -hex 32`) |
+
+Optional: `REACH_HISTORY` (default 16 — how many recent `reach_log`
+rows feed back in as conversation context).
+
+### Step 2 — Register the webhook with Telegram
+
+After the deploy is live, run once (your terminal):
+
+```bash
+curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
+  -d "url=https://<your-app>.vercel.app/api/telegram" \
+  -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+```
+
+Expect `{"ok":true,"result":true,...}`. Verify:
+
+```bash
+curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getWebhookInfo"
+```
+
+`"url"` should be your endpoint and `"pending_update_count"` low.
+
+### Step 3 — Test
+
+Send your bot any message in Telegram. Within a few seconds Claude
+replies, in the continuity of prior messages. Both directions are
+logged to `reach_log` (`kind` = `user` / `reply`), so each turn keeps
+context.
+
+### Security
+
+- Telegram echoes `secret_token` in the
+  `X-Telegram-Bot-Api-Secret-Token` header; the endpoint rejects
+  anything that doesn't match — a public URL nobody can forge into.
+- It also only answers messages from `TELEGRAM_CHAT_ID`.
+- Always returns HTTP 200 after handling so Telegram doesn't retry and
+  cause duplicate replies.
+
+### Turning it off
+
+`curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/deleteWebhook"`
+— Phase 1 (the daily message) keeps working; only replies stop.
