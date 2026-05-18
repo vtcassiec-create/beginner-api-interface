@@ -18,10 +18,16 @@ CREATE TABLE IF NOT EXISTS projects (
   system_prompt           TEXT        DEFAULT '',
   web_search              BOOLEAN     NOT NULL DEFAULT FALSE,
   thinking                BOOLEAN     NOT NULL DEFAULT FALSE,
+  whisper                 BOOLEAN     NOT NULL DEFAULT FALSE,
   active_conversation_id  UUID,
   created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Migration (idempotent — safe on an already-populated database):
+-- the per-project Whisper-vault toggle.
+ALTER TABLE projects
+  ADD COLUMN IF NOT EXISTS whisper BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS conversations (
   id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
