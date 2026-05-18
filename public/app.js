@@ -398,9 +398,16 @@ async function deleteProject(id) {
   }
 }
 
+function closeSidebar() {
+  document.body.classList.remove("sidebar-open");
+  const b = $("sidebar-backdrop");
+  if (b) b.hidden = true;
+}
+
 function selectProject(id) {
   state.activeProjectId = id;
   render();
+  closeSidebar();
 }
 
 async function renameProject(id) {
@@ -425,6 +432,7 @@ async function createConversation(name) {
     project.activeConversationId = conv.id;
     await dbUpdateProject(project.id, { active_conversation_id: conv.id });
     render();
+    closeSidebar();
     focusAndSelect("conv-name");
   } catch (e) {
     alert(`Couldn't create conversation: ${e.message}`);
@@ -436,6 +444,7 @@ async function selectConversation(convId) {
   if (!project) return;
   project.activeConversationId = convId;
   render();
+  closeSidebar();
   try { await dbUpdateProject(project.id, { active_conversation_id: convId }); }
   catch (e) { console.error(e); }
 }
@@ -1350,6 +1359,7 @@ function flashToast(text, isError = false) {
 // ---------- Core memories ----------
 
 async function openMemoriesDialog() {
+  closeSidebar();
   fillSelectOnce($("mem-type"), MEMORY_TYPES);
   fillSelectOnce($("entity-type"), ENTITY_TYPES);
   await loadIdentityAndPrefs();
@@ -1542,6 +1552,13 @@ function wireSignIn() {
 
 function wireApp() {
   $("signout-btn").addEventListener("click", signOut);
+
+  $("menu-btn").addEventListener("click", () => {
+    const open = !document.body.classList.contains("sidebar-open");
+    document.body.classList.toggle("sidebar-open", open);
+    $("sidebar-backdrop").hidden = !open;
+  });
+  $("sidebar-backdrop").addEventListener("click", closeSidebar);
 
   $("new-project-btn").addEventListener("click", () => createProject());
 

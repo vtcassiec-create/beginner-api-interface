@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Petrichor</title>
   <link rel="stylesheet" href="/styles.css" />
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -35,6 +35,8 @@
 
   <!-- Main app shell (shown when authenticated) -->
   <div id="app-shell" hidden>
+    <button id="menu-btn" class="menu-btn" aria-label="Open menu">☰</button>
+    <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
     <aside id="sidebar">
       <header class="sidebar-header">
         <h1>Petrichor</h1>
