@@ -857,17 +857,82 @@ dialog::backdrop {
 
 .toast.error { color: var(--danger); }
 
+/* Mobile menu trigger + drawer backdrop (shown only on small screens) */
+.menu-btn {
+  display: none;
+  position: fixed;
+  top: calc(8px + env(safe-area-inset-top));
+  left: 8px;
+  z-index: 12;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 9;
+}
+.sidebar-backdrop[hidden] { display: none; }
+
+/* Long dialogs (e.g. the Memories panel) stay within the screen */
+.settings-form {
+  max-height: 86vh;
+  max-height: 86dvh;
+  overflow-y: auto;
+}
+
 /* Mobile */
 @media (max-width: 720px) {
-  body { grid-template-columns: 1fr; }
+  #app-shell { grid-template-columns: 1fr; }
+
+  #main { height: 100vh; height: 100dvh; }
+
+  .menu-btn { display: flex; }
+
   #sidebar {
     position: fixed;
     inset: 0 auto 0 0;
-    width: 80%;
-    max-width: 280px;
+    width: 82%;
+    max-width: 300px;
     z-index: 10;
     transform: translateX(-100%);
-    transition: transform 0.2s;
+    transition: transform 0.2s ease;
+    box-shadow: 2px 0 16px rgba(0, 0, 0, 0.35);
   }
   body.sidebar-open #sidebar { transform: translateX(0); }
+
+  /* Leave room for the floating menu button */
+  .project-header, .conv-header {
+    flex-wrap: wrap;
+    padding: 12px 12px 12px 56px;
+    row-gap: 8px;
+  }
+  .conv-header { padding-left: 12px; }
+  .project-controls, .conv-controls { flex-wrap: wrap; }
+
+  .conversation { padding-left: 12px; padding-right: 12px; }
+
+  /* 16px inputs stop iOS Safari auto-zooming on focus */
+  .composer textarea,
+  .project-name, .conv-name,
+  .settings-form input, .settings-form select, .settings-form textarea {
+    font-size: 16px;
+  }
+
+  /* Clear the iPhone home-indicator under the composer */
+  .composer {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+
+  dialog { width: 94%; }
 }
