@@ -118,22 +118,35 @@ class handler(BaseHTTPRequestHandler):
                 "name": "web_search",
                 "max_uses": 5,
             }]
-        # Whisper Obsidian-vault MCP, per-project toggle. The secret is
-        # in the URL itself (no separate auth token). extra_body/header
-        # so it works regardless of SDK typing; absent env = silently
-        # off, so a missing var can never break chat.
+        # Remote MCP servers, each behind a per-project toggle. Built as
+        # a list so more than one can be active at once. extra_body/
+        # header so it works regardless of SDK typing; a missing env =
+        # silently off, so an unset var can never break chat.
+        mcp_servers = []
         whisper_url = os.environ.get("WHISPER_MCP_URL", "").strip()
         if data.get("useWhisper") and whisper_url:
+            # Whisper's secret is in the URL itself (no auth token).
+            mcp_servers.append({
+                "type": "url",
+                "url": whisper_url,
+                "name": "whisper",
+            })
+        signal_url = os.environ.get("SIGNAL_MCP_URL", "").strip()
+        signal_token = os.environ.get("SIGNAL_MCP_TOKEN", "").strip()
+        if data.get("useSignal") and signal_url and signal_token:
+            # Signal Bridge authenticates with a bearer token. Both the
+            # URL and token must be set, so a half-config can't connect.
+            mcp_servers.append({
+                "type": "url",
+                "url": signal_url,
+                "name": "signal",
+                "authorization_token": signal_token,
+            })
+        if mcp_servers:
             kwargs["extra_headers"] = {
                 "anthropic-beta": "mcp-client-2025-04-04",
             }
-            kwargs["extra_body"] = {
-                "mcp_servers": [{
-                    "type": "url",
-                    "url": whisper_url,
-                    "name": "whisper",
-                }],
-            }
+            kwargs["extra_body"] = {"mcp_servers": mcp_servers}
         if thinking_on:
             if uses_adaptive_thinking:
                 kwargs["thinking"] = {"type": "adaptive"}

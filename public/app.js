@@ -71,6 +71,7 @@ function rowToProject(row) {
     webSearch: !!row.web_search,
     thinking: !!row.thinking,
     whisper: !!row.whisper,
+    signal: !!row.signal,
     activeConversationId: row.active_conversation_id || null,
     conversations: [],
     files: [],
@@ -731,6 +732,7 @@ async function generateAssistant() {
         messages: buildApiMessages(project, cleanMessagesForApi(conv.messages)).slice(0, -1),
         useWebSearch: !!project.webSearch,
         useWhisper: !!project.whisper,
+        useSignal: !!project.signal,
         thinking: !!project.thinking,
         tz,
         lastMessageAt,
@@ -1094,6 +1096,7 @@ function renderProject() {
 
   $("web-search-toggle").checked = !!project.webSearch;
   $("whisper-toggle").checked = !!project.whisper;
+  $("signal-toggle").checked = !!project.signal;
 
   const thinkingToggle = $("thinking-toggle");
   const info = modelInfo(project.model);
@@ -1650,6 +1653,14 @@ function wireApp() {
     if (!project) return;
     project.whisper = e.target.checked;
     try { await dbUpdateProject(project.id, { whisper: e.target.checked }); }
+    catch (err) { console.error(err); }
+  });
+
+  $("signal-toggle").addEventListener("change", async (e) => {
+    const project = getActiveProject();
+    if (!project) return;
+    project.signal = e.target.checked;
+    try { await dbUpdateProject(project.id, { signal: e.target.checked }); }
     catch (err) { console.error(err); }
   });
 
