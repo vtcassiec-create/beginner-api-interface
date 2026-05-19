@@ -28,11 +28,15 @@ CODE="$(curl -s -o "$OUT" -w '%{http_code}' \
 
 echo
 echo "HTTP $CODE"
-if [ "$CODE" = "200" ] && grep -q 'access_token' "$OUT" 2>/dev/null; then
+# A wrong password returns 401. HTTP 200 here means the login was
+# accepted — regardless of whether the token field is named "token"
+# or "access_token". Do NOT print the body on success: it contains
+# the real token (a secret).
+if [ "$CODE" = "200" ]; then
   echo "RESULT: SUCCESS — these exact credentials are correct."
   echo "(So any app problem is connection/config, not your password.)"
 else
-  echo "RESULT: FAIL — server reachable, but it rejected these creds."
-  echo "Most likely a typo when you registered. Server said:"
-  head -c 300 "$OUT"; echo
+  echo "RESULT: FAIL — server reachable, but it rejected these creds"
+  echo "(HTTP $CODE; 401 = wrong username/password). Server said:"
+  head -c 200 "$OUT"; echo
 fi
