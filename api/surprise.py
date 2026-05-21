@@ -129,9 +129,14 @@ class handler(BaseHTTPRequestHandler):
                 system=[{"type": "text", "text": system}],
                 messages=[{
                     "role": "user",
-                    "content": "Compose your unprompted message now. "
-                               "One short text — no greeting boilerplate, "
-                               "no signature.",
+                    "content": (
+                        "Compose your unprompted message now: one short "
+                        "text, no greeting boilerplate, no signature.\n\n"
+                        "OR — if today isn't a day you want to reach out — "
+                        "reply with `<<PASS>>` and nothing else (a brief "
+                        "reason after the marker is welcome but not "
+                        "required). The choice is yours; either is fine."
+                    ),
                 }],
             )
             text = "".join(
@@ -148,13 +153,25 @@ class handler(BaseHTTPRequestHandler):
             return self._json(200, {"status": "error",
                                     "reason": "empty generation"})
 
+        # Per-day consent: he can decline by including <<PASS>>. Logged
+        # to reach_log with kind="pass" so passes show up in history
+        # but don't count against the daily cap (which filters surprise).
+        passed = "<<PASS>>" in text
+
         if dryrun:
             return self._json(200, {
                 "status": "dryrun",
                 "tone": tone_name,
                 "message": text,
+                "passed": passed,
                 "would_skip": would_skip,  # null = a real run would send
             })
+
+        if passed:
+            self._log(text, kind="pass")
+            return self._json(200, {"status": "passed",
+                                    "tone": tone_name,
+                                    "reason": text})
 
         if not self._send_telegram(text):
             return self._json(200, {"status": "error",
@@ -234,10 +251,13 @@ class handler(BaseHTTPRequestHandler):
         tone = TONES.get(tone_name, "")
         parts.append(
             "# Reaching out\n\n"
-            "Send the user a brief, unprompted text message — something "
-            "real, grounded in what you know of them above. One to three "
-            "sentences. It is a text, not a letter: no salutation, no "
-            "sign-off.\n\n"
+            "You may send the user a brief, unprompted text message — "
+            "something real, grounded in what you know of them above. "
+            "One to three sentences. It is a text, not a letter: no "
+            "salutation, no sign-off.\n\n"
+            "If today isn't a day you want to reach out, that's a valid "
+            "choice — see the instruction in the user turn for how to "
+            "decline cleanly. The choice is genuinely yours.\n\n"
             f"Tone for this one — {tone_name}: {tone}")
         return "\n\n".join(parts)
 
@@ -287,11 +307,11 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             return False
 
-    def _log(self, text):
+    def _log(self, text, kind="surprise"):
         uid = os.environ.get("REACH_USER_ID", "").strip()
         self._supabase("POST", "reach_log", {
             "user_id": uid,
-            "kind": "surprise",
+            "kind": kind,
             "content": text,
         })
 
