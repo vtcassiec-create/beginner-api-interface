@@ -1399,6 +1399,12 @@ function flashToast(text, isError = false) {
   const el = $("toast");
   el.textContent = text;
   el.className = "toast" + (isError ? " error" : "");
+  // When a <dialog> is open it lives in the browser's top layer, which
+  // no z-index can climb above. Re-parent the toast into the open
+  // dialog so it shows over the modal instead of hidden behind it.
+  const openDialog = document.querySelector("dialog[open]");
+  const target = openDialog || document.body;
+  if (el.parentNode !== target) target.appendChild(el);
   el.hidden = false;
   clearTimeout(flashToast._t);
   flashToast._t = setTimeout(() => { el.hidden = true; }, 1500);
@@ -1672,12 +1678,24 @@ function wireApp() {
     catch (err) { console.error(err); }
   });
 
-  $("system-prompt").addEventListener("change", async (e) => {
+  // System prompt saves on `input` (every keystroke / paste), debounced
+  // 500ms — so even if the dialog is closed or the page reloaded mid-
+  // edit, the most recent value is persisted. A small toast confirms.
+  let _spSaveTimer = null;
+  $("system-prompt").addEventListener("input", (e) => {
     const project = getActiveProject();
     if (!project) return;
     project.systemPrompt = e.target.value;
-    try { await dbUpdateProject(project.id, { system_prompt: e.target.value }); }
-    catch (err) { console.error(err); }
+    clearTimeout(_spSaveTimer);
+    _spSaveTimer = setTimeout(async () => {
+      try {
+        await dbUpdateProject(project.id, { system_prompt: e.target.value });
+        flashToast("System prompt saved");
+      } catch (err) {
+        console.error(err);
+        flashToast(`Save failed: ${err.message}`, true);
+      }
+    }, 500);
   });
 
   $("settings-btn").addEventListener("click", () => $("settings-dialog").showModal());
