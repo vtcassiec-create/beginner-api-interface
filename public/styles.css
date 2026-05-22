@@ -813,6 +813,10 @@ dialog::backdrop {
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+  /* The dialog is a constrained flex column (max-height + overflow).
+     Without this, these scrollable list children get flex-shrunk to
+     ~0px and their items vanish even though they're in the DOM. */
+  flex-shrink: 0;
 }
 
 #memory-list li, #entity-list li {
