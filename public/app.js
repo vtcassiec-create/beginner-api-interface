@@ -297,6 +297,16 @@ async function dbCreateCoreMemory(content, memoryType, resonance) {
   if (error) throw error;
 }
 
+async function dbUpdateCoreMemory(id, fields) {
+  const { error } = await db.from("core_memories").update(fields).eq("id", id);
+  if (error) throw error;
+}
+
+async function dbDeleteCoreMemory(id) {
+  const { error } = await db.from("core_memories").delete().eq("id", id);
+  if (error) throw error;
+}
+
 async function dbGetSelfState() {
   const { data, error } = await db
     .from("self_state")
@@ -322,7 +332,7 @@ async function dbPromoteSelfState(content, notes) {
 async function dbListMemoryEntities() {
   const { data, error } = await db
     .from("claude_memory_entities")
-    .select("name,entity_type,observations,access_count")
+    .select("id,name,entity_type,observations,access_count")
     .order("access_count", { ascending: false })
     .order("created_at", { ascending: false });
   if (error) throw error;
@@ -337,6 +347,16 @@ async function dbCreateMemoryEntity(name, entityType, observations) {
     observations,
     created_by: "petrichor-app",
   });
+  if (error) throw error;
+}
+
+async function dbUpdateMemoryEntity(id, fields) {
+  const { error } = await db.from("claude_memory_entities").update(fields).eq("id", id);
+  if (error) throw error;
+}
+
+async function dbDeleteMemoryEntity(id) {
+  const { error } = await db.from("claude_memory_entities").delete().eq("id", id);
   if (error) throw error;
 }
 
@@ -1412,6 +1432,89 @@ function flashToast(text, isError = false) {
 
 // ---------- Core memories ----------
 
+// When set, the add-form is editing an existing row rather than creating one.
+let editingMemoryId = null;
+let editingEntityId = null;
+
+function mkMemActions(onEdit, onDelete) {
+  const wrap = document.createElement("div");
+  wrap.className = "mem-actions";
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.className = "row-action";
+  edit.textContent = "✏️";
+  edit.title = "Edit";
+  edit.addEventListener("click", onEdit);
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "row-action";
+  del.textContent = "🗑";
+  del.title = "Delete";
+  del.addEventListener("click", onDelete);
+  wrap.appendChild(edit);
+  wrap.appendChild(del);
+  return wrap;
+}
+
+function startEditMemory(m) {
+  editingMemoryId = m.id;
+  $("mem-content").value = m.content;
+  $("mem-type").value = m.memory_type;
+  $("mem-resonance").value = m.resonance;
+  $("mem-add-btn").textContent = "Save changes";
+  $("mem-content").focus();
+}
+
+function cancelEditMemory() {
+  editingMemoryId = null;
+  $("mem-content").value = "";
+  $("mem-resonance").value = "5";
+  $("mem-add-btn").textContent = "Add";
+}
+
+async function deleteMemory(id) {
+  if (!confirm("Delete this memory? This can't be undone.")) return;
+  try {
+    await dbDeleteCoreMemory(id);
+  } catch (err) {
+    flashToast(`Delete failed: ${err.message}`, true);
+    return;
+  }
+  if (editingMemoryId === id) cancelEditMemory();
+  flashToast("Memory deleted");
+  await renderMemoryList();
+}
+
+function startEditEntity(e) {
+  editingEntityId = e.id;
+  $("entity-name").value = e.name;
+  $("entity-type").value = e.entity_type;
+  const obs = Array.isArray(e.observations) ? e.observations : [];
+  $("entity-observations").value = obs.join("\n");
+  $("entity-add-btn").textContent = "Save changes";
+  $("entity-name").focus();
+}
+
+function cancelEditEntity() {
+  editingEntityId = null;
+  $("entity-name").value = "";
+  $("entity-observations").value = "";
+  $("entity-add-btn").textContent = "Add entity";
+}
+
+async function deleteEntity(id) {
+  if (!confirm("Delete this entity? This can't be undone.")) return;
+  try {
+    await dbDeleteMemoryEntity(id);
+  } catch (err) {
+    flashToast(`Delete failed: ${err.message}`, true);
+    return;
+  }
+  if (editingEntityId === id) cancelEditEntity();
+  flashToast("Entity deleted");
+  await renderEntityList();
+}
+
 async function openMemoriesDialog() {
   closeSidebar();
   fillSelectOnce($("mem-type"), MEMORY_TYPES);
@@ -1454,6 +1557,8 @@ async function renderEntityList() {
   }
   for (const e of ents) {
     const li = document.createElement("li");
+    const body = document.createElement("div");
+    body.className = "mem-body";
     const meta = document.createElement("span");
     meta.className = "mem-meta";
     meta.textContent = `${e.name} · ${e.entity_type}`;
@@ -1461,8 +1566,10 @@ async function renderEntityList() {
     text.className = "mem-text";
     const obs = Array.isArray(e.observations) ? e.observations : [];
     text.textContent = obs.join("\n") || "(no observations)";
-    li.appendChild(meta);
-    li.appendChild(text);
+    body.appendChild(meta);
+    body.appendChild(text);
+    li.appendChild(body);
+    li.appendChild(mkMemActions(() => startEditEntity(e), () => deleteEntity(e.id)));
     ul.appendChild(li);
   }
 }
@@ -1477,7 +1584,13 @@ async function addMemoryEntity() {
   if (!name) { flashToast("Entity name is empty.", true); return; }
   if (!ENTITY_TYPES.includes(entityType)) { flashToast("Pick an entity type.", true); return; }
   try {
-    await dbCreateMemoryEntity(name, entityType, observations);
+    if (editingEntityId) {
+      await dbUpdateMemoryEntity(editingEntityId, {
+        name, entity_type: entityType, observations,
+      });
+    } else {
+      await dbCreateMemoryEntity(name, entityType, observations);
+    }
   } catch (err) {
     const msg = /duplicate|unique/i.test(err.message)
       ? `An entity named "${name}" already exists.`
@@ -1485,9 +1598,9 @@ async function addMemoryEntity() {
     flashToast(msg, true);
     return;
   }
-  $("entity-name").value = "";
-  $("entity-observations").value = "";
-  flashToast("Entity saved");
+  const wasEditing = !!editingEntityId;
+  cancelEditEntity();
+  flashToast(wasEditing ? "Entity updated" : "Entity saved");
   await renderEntityList();
 }
 
@@ -1559,14 +1672,18 @@ async function renderMemoryList() {
   }
   for (const m of mems) {
     const li = document.createElement("li");
+    const body = document.createElement("div");
+    body.className = "mem-body";
     const meta = document.createElement("span");
     meta.className = "mem-meta";
     meta.textContent = `${m.memory_type} · resonance ${m.resonance}`;
     const text = document.createElement("span");
     text.className = "mem-text";
     text.textContent = m.content;
-    li.appendChild(meta);
-    li.appendChild(text);
+    body.appendChild(meta);
+    body.appendChild(text);
+    li.appendChild(body);
+    li.appendChild(mkMemActions(() => startEditMemory(m), () => deleteMemory(m.id)));
     ul.appendChild(li);
   }
 }
@@ -1582,14 +1699,20 @@ async function addCoreMemory() {
     return;
   }
   try {
-    await dbCreateCoreMemory(content, memoryType, resonance);
+    if (editingMemoryId) {
+      await dbUpdateCoreMemory(editingMemoryId, {
+        content, memory_type: memoryType, resonance,
+      });
+    } else {
+      await dbCreateCoreMemory(content, memoryType, resonance);
+    }
   } catch (err) {
     flashToast(`Save failed: ${err.message}`, true);
     return;
   }
-  $("mem-content").value = "";
-  $("mem-resonance").value = "5";
-  flashToast("Memory saved");
+  const wasEditing = !!editingMemoryId;
+  cancelEditMemory();
+  flashToast(wasEditing ? "Memory updated" : "Memory saved");
   await renderMemoryList();
 }
 
