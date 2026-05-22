@@ -821,12 +821,29 @@ dialog::backdrop {
 
 #memory-list li, #entity-list li {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   font-size: 13px;
 }
+
+#memory-list .mem-body, #entity-list .mem-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.mem-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.mem-actions .row-action { opacity: 0.55; }
+.mem-actions .row-action:hover { opacity: 1; }
 
 #memory-list li:last-child, #entity-list li:last-child { border-bottom: none; }
 #memory-list .mem-empty, #entity-list .mem-empty { border-bottom: none; }
