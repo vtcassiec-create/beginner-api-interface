@@ -601,23 +601,32 @@ class handler(BaseHTTPRequestHandler):
                 "# About the person you're talking with\n\n"
                 + prefs[0]["content"].strip())
 
-        # RPC: returns active core memories (resonance desc) AND bumps
-        # their surface_count in one atomic call.
+        # RPC: returns active core memories (pinned first, then resonance) AND
+        # bumps their surface_count in one atomic call. Pinned ("eternal")
+        # memories get their own section so they read as always-present, not
+        # just another high-resonance line. `pinned` may be absent on an older
+        # DB; treated as False so this never breaks.
         mems = self._supabase_rpc("surface_core_memories", token)
         if mems:
-            # Re-sort defensively in case the order param is ignored.
+            # Re-sort defensively in case the order is ignored: pinned first.
             mems = sorted(
-                mems, key=lambda m: m.get("resonance") or 0, reverse=True)
-            lines = []
+                mems,
+                key=lambda m: (bool(m.get("pinned")), m.get("resonance") or 0),
+                reverse=True)
+            eternal, shared = [], []
             for m in mems:
                 content = (m.get("content") or "").strip()
                 if not content:
                     continue
-                lines.append(
-                    f"- (resonance {m.get('resonance')}, "
-                    f"{m.get('memory_type')}) {content}")
-            if lines:
-                sections.append("# Shared memories\n\n" + "\n".join(lines))
+                line = (f"- (resonance {m.get('resonance')}, "
+                        f"{m.get('memory_type')}) {content}")
+                (eternal if m.get("pinned") else shared).append(line)
+            if eternal:
+                sections.append(
+                    "# Eternal memories (always with you)\n\n"
+                    + "\n".join(eternal))
+            if shared:
+                sections.append("# Shared memories\n\n" + "\n".join(shared))
 
         # Native memory entities (cross-platform knowledge graph). RPC
         # returns up to 5 (identity-first, then access_count) and bumps

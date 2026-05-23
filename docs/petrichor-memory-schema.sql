@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS core_memories (
   resonance     INTEGER     NOT NULL DEFAULT 5 CHECK (resonance BETWEEN 1 AND 10),
   surface_count INTEGER     NOT NULL DEFAULT 0,
   is_active     BOOLEAN     NOT NULL DEFAULT TRUE,
+  -- "Eternal" memories: pinned to an always-visible strip and given their own
+  -- section in the chat preamble, regardless of resonance.
+  pinned        BOOLEAN     NOT NULL DEFAULT FALSE,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -127,6 +130,10 @@ CREATE TRIGGER user_preferences_updated_at
 ALTER TABLE self_state
   ADD COLUMN IF NOT EXISTS consolidation_notes TEXT;
 
+-- Eternal (pinned) memories.
+ALTER TABLE core_memories
+  ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;
+
 -- =========================================================================
 -- Atomic self_state version promotion
 --
@@ -188,8 +195,11 @@ GRANT EXECUTE ON FUNCTION promote_self_state(TEXT, TEXT) TO authenticated;
 -- round-trip. SECURITY INVOKER keeps RLS in force.
 -- =========================================================================
 
-CREATE OR REPLACE FUNCTION surface_core_memories()
-RETURNS TABLE (content TEXT, memory_type TEXT, resonance INTEGER)
+-- Returns `pinned` too, eternal memories first, so the chat preamble can give
+-- them their own "always with you" section. (Return-type change = drop first.)
+DROP FUNCTION IF EXISTS surface_core_memories();
+CREATE FUNCTION surface_core_memories()
+RETURNS TABLE (content TEXT, memory_type TEXT, resonance INTEGER, pinned BOOLEAN)
 LANGUAGE sql
 SECURITY INVOKER
 SET search_path = public
@@ -198,11 +208,11 @@ AS $$
     UPDATE core_memories
        SET surface_count = surface_count + 1
      WHERE user_id = auth.uid() AND is_active = TRUE
-    RETURNING content, memory_type, resonance
+    RETURNING content, memory_type, resonance, pinned
   )
-  SELECT content, memory_type, resonance
+  SELECT content, memory_type, resonance, pinned
     FROM bumped
-   ORDER BY resonance DESC;
+   ORDER BY pinned DESC, resonance DESC;
 $$;
 
 GRANT EXECUTE ON FUNCTION surface_core_memories() TO authenticated;
