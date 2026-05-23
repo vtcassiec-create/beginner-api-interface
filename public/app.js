@@ -2195,7 +2195,22 @@ function wireApp() {
   });
 }
 
+// Surface otherwise-silent crashes as a visible toast. A swallowed exception
+// (e.g. only on a particular device) makes a send/attach "just disappear"
+// with no clue; this turns that into a legible message.
+function installErrorSurfacing() {
+  window.addEventListener("error", (e) => {
+    try { flashToast("⚠️ " + (e.message || "unexpected error"), true); } catch (_) {}
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    const r = e.reason;
+    const msg = (r && (r.message || r.error_description || r.toString())) || "unexpected error";
+    try { flashToast("⚠️ " + msg, true); } catch (_) {}
+  });
+}
+
 function init() {
+  installErrorSurfacing();
   wireSignIn();
   wireApp();
   initSupabase();
