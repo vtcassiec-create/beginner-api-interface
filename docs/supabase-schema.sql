@@ -32,6 +32,11 @@ ALTER TABLE projects
 ALTER TABLE projects
   ADD COLUMN IF NOT EXISTS signal BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- Per-project "let Claude write his own memories" toggle. When on, the chat
+-- backend hands him save_core_memory / save_memory_entity tools.
+ALTER TABLE projects
+  ADD COLUMN IF NOT EXISTS memory BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS conversations (
   id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id      UUID        NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

@@ -72,6 +72,7 @@ function rowToProject(row) {
     thinking: !!row.thinking,
     whisper: !!row.whisper,
     signal: !!row.signal,
+    memory: !!row.memory,
     activeConversationId: row.active_conversation_id || null,
     conversations: [],
     files: [],
@@ -753,6 +754,7 @@ async function generateAssistant() {
         useWebSearch: !!project.webSearch,
         useWhisper: !!project.whisper,
         useSignal: !!project.signal,
+        useMemory: !!project.memory,
         thinking: !!project.thinking,
         tz,
         lastMessageAt,
@@ -767,6 +769,14 @@ async function generateAssistant() {
         } else if (event.type === "tool_use") {
           assistantMsg.toolEvents.push({ name: event.name, query: event.query });
           updateAssistantBubble(assistantMsg);
+        } else if (event.type === "memory_saved") {
+          // He wrote to his own memory. Show it inline, and refresh the
+          // Memories panel if it's open so it appears live.
+          assistantMsg.toolEvents.push({
+            name: event.tool, memory: true, ok: event.ok, summary: event.summary,
+          });
+          updateAssistantBubble(assistantMsg);
+          if (typeof refreshMemoriesIfOpen === "function") refreshMemoriesIfOpen();
         } else if (event.type === "done") {
           assistantMsg.usage = event.usage;
           updateAssistantBubble(assistantMsg);
@@ -1117,6 +1127,7 @@ function renderProject() {
   $("web-search-toggle").checked = !!project.webSearch;
   $("whisper-toggle").checked = !!project.whisper;
   $("signal-toggle").checked = !!project.signal;
+  $("memory-toggle").checked = !!project.memory;
 
   const thinkingToggle = $("thinking-toggle");
   const info = modelInfo(project.model);
@@ -1279,9 +1290,16 @@ function fillMessageBody(body, msg) {
     for (const ev of msg.toolEvents) {
       const note = document.createElement("div");
       note.className = "tool-event";
-      note.textContent = ev.name === "web_search" && ev.query
-        ? `🌐 Searching the web for "${ev.query}"…`
-        : `🔧 Used tool: ${ev.name}`;
+      if (ev.memory) {
+        const what = ev.name === "save_memory_entity" ? "entity" : "memory";
+        note.textContent = ev.ok
+          ? `🪶 Saved a ${what}: ${ev.summary}`
+          : `⚠️ Couldn't save ${what}: ${ev.summary}`;
+      } else {
+        note.textContent = ev.name === "web_search" && ev.query
+          ? `🌐 Searching the web for "${ev.query}"…`
+          : `🔧 Used tool: ${ev.name}`;
+      }
       body.appendChild(note);
     }
   }
@@ -1523,6 +1541,16 @@ async function openMemoriesDialog() {
   await renderMemoryList();
   await renderEntityList();
   $("memories-dialog").showModal();
+}
+
+// When he saves a memory mid-chat and the Memories panel happens to be
+// open, re-render both lists so the new row appears live. No-op otherwise.
+async function refreshMemoriesIfOpen() {
+  if (!$("memories-dialog").open) return;
+  try {
+    await renderMemoryList();
+    await renderEntityList();
+  } catch (err) { console.error(err); }
 }
 
 function fillSelectOnce(sel, values) {
@@ -1790,6 +1818,14 @@ function wireApp() {
     if (!project) return;
     project.signal = e.target.checked;
     try { await dbUpdateProject(project.id, { signal: e.target.checked }); }
+    catch (err) { console.error(err); }
+  });
+
+  $("memory-toggle").addEventListener("change", async (e) => {
+    const project = getActiveProject();
+    if (!project) return;
+    project.memory = e.target.checked;
+    try { await dbUpdateProject(project.id, { memory: e.target.checked }); }
     catch (err) { console.error(err); }
   });
 

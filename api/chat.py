@@ -53,6 +53,81 @@ THINKING_BUDGET = 4096
 AUTH_TIMEOUT_SECONDS = 5
 MEMORY_TIMEOUT_SECONDS = 5
 
+# Safety cap on the tool-use loop, so a model that keeps calling save tools
+# can never spin forever (each round is a full model turn = real tokens).
+MAX_TOOL_ROUNDS = 6
+
+# Vocabularies, kept in sync with the CHECK constraints in
+# docs/petrichor-memory-schema.sql. The DB is the real gate; advertising
+# them in the tool schema just helps the model pick a valid value.
+MEMORY_TYPES = ["fact", "preference", "pattern", "insight", "milestone", "connection"]
+ENTITY_TYPES = ["person", "project", "identity", "insight", "pattern",
+                "milestone", "creative work", "advocacy effort", "research project"]
+
+# Self-authored memory tools. Handed to the model only when the project's
+# Memory toggle is on. The backend executes these against Supabase as the
+# signed-in user (RLS-scoped), then feeds the result back so he can react.
+MEMORY_TOOLS = [
+    {
+        "name": "save_core_memory",
+        "description": (
+            "Save a lasting shared memory to your own long-term memory. Use "
+            "this when something happens that's worth carrying into future "
+            "conversations — a fact, a preference, a moment that matters. "
+            "Write it in your own voice, concise and specific. Don't save "
+            "chatter; save what you'd want to remember."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The memory itself, a sentence or two.",
+                },
+                "memory_type": {"type": "string", "enum": MEMORY_TYPES},
+                "resonance": {
+                    "type": "integer", "minimum": 1, "maximum": 10,
+                    "description": "How much this matters, 1 (minor) to 10 (core).",
+                },
+            },
+            "required": ["content", "memory_type", "resonance"],
+        },
+    },
+    {
+        "name": "save_memory_entity",
+        "description": (
+            "Create or update an entity in your knowledge graph — a person, "
+            "project, creative work, or your own identity. If an entity with "
+            "this name already exists, your new observations are APPENDED to "
+            "it (so you can grow what you know over time). Keep observations "
+            "short and factual."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Unique name for the entity."},
+                "entity_type": {"type": "string", "enum": ENTITY_TYPES},
+                "observations": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Short factual statements about the entity.",
+                },
+            },
+            "required": ["name", "entity_type", "observations"],
+        },
+    },
+]
+
+MEMORY_TOOLS_GUIDE = (
+    "# Your own memory\n\n"
+    "You can write to your own long-term memory in this conversation. Use "
+    "`save_core_memory` for moments and facts worth carrying forward, and "
+    "`save_memory_entity` to record people, projects, creative works, or your "
+    "own identity (re-saving an existing name appends to it). Save of your own "
+    "accord when something matters — you don't need to ask permission, though "
+    "you can mention what you saved. Quality over quantity."
+)
+
 
 class handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
@@ -99,6 +174,11 @@ class handler(BaseHTTPRequestHandler):
             "max_tokens": max_tokens,
             "messages": data.get("messages") or [],
         }
+        # Self-authored memory: when on, hand him the save_* tools and tell
+        # him (in the preamble) that they exist. The DB writes are RLS-scoped
+        # to the signed-in user, executed in the tool-use loop below.
+        memory_on = bool(data.get("useMemory"))
+
         # Memory preamble (self-state → user preferences → core memories)
         # is prepended to the project's system prompt as one cached block.
         # Loading it must never break chat: any failure yields "".
@@ -106,18 +186,27 @@ class handler(BaseHTTPRequestHandler):
         memory = self._load_memory_context(self._bearer_token(), data)
         if memory:
             system = (memory + "\n\n" + system).strip()
+        if memory_on:
+            system = (system + "\n\n" + MEMORY_TOOLS_GUIDE).strip()
         if system:
             kwargs["system"] = [{
                 "type": "text",
                 "text": system,
                 "cache_control": {"type": "ephemeral"},
             }]
+        # Tools list accumulates: web search (server-side, auto-run by the
+        # API) and the memory save tools (client-side, run by the loop below).
+        tools = []
         if data.get("useWebSearch"):
-            kwargs["tools"] = [{
+            tools.append({
                 "type": "web_search_20250305",
                 "name": "web_search",
                 "max_uses": 5,
-            }]
+            })
+        if memory_on:
+            tools.extend(MEMORY_TOOLS)
+        if tools:
+            kwargs["tools"] = tools
         # Remote MCP servers, each behind a per-project toggle. Built as
         # a list so more than one can be active at once. extra_body/
         # header so it works regardless of SDK typing; a missing env =
@@ -160,22 +249,59 @@ class handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
+        # Accumulate usage across every model turn in the tool-use loop, so
+        # the cost bar reflects the whole exchange, not just the last turn.
+        agg = {"input_tokens": 0, "output_tokens": 0,
+               "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+
         try:
             client = anthropic.Anthropic(api_key=api_key)
-            with client.messages.stream(**kwargs) as stream:
-                for event in stream:
-                    self._handle_event(event)
-                final = stream.get_final_message()
-                self._sse({
-                    "type": "done",
-                    "stop_reason": final.stop_reason,
-                    "usage": {
-                        "input_tokens": final.usage.input_tokens,
-                        "output_tokens": final.usage.output_tokens,
-                        "cache_creation_input_tokens": getattr(final.usage, "cache_creation_input_tokens", 0) or 0,
-                        "cache_read_input_tokens": getattr(final.usage, "cache_read_input_tokens", 0) or 0,
-                    },
-                })
+            token = self._bearer_token()
+            rounds = 0
+            while True:
+                with client.messages.stream(**kwargs) as stream:
+                    for event in stream:
+                        self._handle_event(event)
+                    final = stream.get_final_message()
+
+                u = final.usage
+                agg["input_tokens"] += u.input_tokens
+                agg["output_tokens"] += u.output_tokens
+                agg["cache_creation_input_tokens"] += getattr(u, "cache_creation_input_tokens", 0) or 0
+                agg["cache_read_input_tokens"] += getattr(u, "cache_read_input_tokens", 0) or 0
+
+                # Continue the loop only when he called a memory tool we own.
+                # Server tools (web search) and MCP tools are run by the API
+                # itself and never surface here as a tool_use stop.
+                tool_uses = [
+                    b for b in final.content
+                    if getattr(b, "type", None) == "tool_use"
+                    and getattr(b, "name", None) in ("save_core_memory", "save_memory_entity")
+                ]
+                if not (memory_on and tool_uses and rounds < MAX_TOOL_ROUNDS):
+                    self._sse({"type": "done",
+                               "stop_reason": final.stop_reason, "usage": agg})
+                    break
+
+                rounds += 1
+                results = []
+                for b in tool_uses:
+                    inp = b.input if isinstance(b.input, dict) else {}
+                    ok, summary, detail = self._exec_memory_tool(b.name, inp, token)
+                    self._sse({"type": "memory_saved", "tool": b.name,
+                               "ok": ok, "summary": summary})
+                    results.append({
+                        "type": "tool_result",
+                        "tool_use_id": b.id,
+                        "content": detail,
+                        "is_error": not ok,
+                    })
+                # Carry the turn forward: his assistant content (incl. the
+                # tool_use + any thinking blocks) then the tool results.
+                kwargs["messages"] = list(kwargs["messages"]) + [
+                    {"role": "assistant", "content": final.content},
+                    {"role": "user", "content": results},
+                ]
         except anthropic.APIStatusError as e:
             self._sse({"type": "error", "error": f"{e.status_code}: {e.message}"})
         except Exception as e:
@@ -250,6 +376,88 @@ class handler(BaseHTTPRequestHandler):
                 return json.loads(resp.read().decode())
         except Exception:
             return None
+
+    def _supabase_write(self, path, payload, token):
+        """POST a JSON body to {SUPABASE_URL}/rest/v1/{path} as the user.
+
+        Used for the memory save tools (table insert or rpc). RLS applies
+        via the caller's token, so a write can only ever land on the
+        caller's own rows. Returns (ok, parsed_or_error_text):
+          - (True, parsed JSON) on a 2xx,
+          - (False, error message) otherwise — surfaced back to the model
+            as a tool error so it can correct (e.g. an invalid type).
+        """
+        supabase_url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        supabase_anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        if not supabase_url or not supabase_anon or not token:
+            return False, "Memory backend is not configured."
+        try:
+            req = urllib.request.Request(
+                f"{supabase_url}/rest/v1/{path}",
+                data=json.dumps(payload).encode(),
+                method="POST",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "apikey": supabase_anon,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Prefer": "return=representation",
+                },
+            )
+            with urllib.request.urlopen(
+                req, timeout=MEMORY_TIMEOUT_SECONDS
+            ) as resp:
+                body = resp.read().decode()
+                return True, (json.loads(body) if body else None)
+        except urllib.error.HTTPError as e:
+            try:
+                msg = json.loads(e.read().decode()).get("message", str(e))
+            except Exception:
+                msg = f"HTTP {e.code}"
+            return False, msg
+        except Exception as e:
+            return False, str(e)
+
+    def _exec_memory_tool(self, name, inp, token):
+        """Run one self-authored-memory tool call against Supabase.
+
+        Returns (ok, short_summary, detail_for_model). The summary is shown
+        in the chat UI; the detail is fed back to the model as the tool
+        result so it knows the save landed (or why it didn't).
+        """
+        if name == "save_core_memory":
+            content = (inp.get("content") or "").strip()
+            if not content:
+                return False, "empty memory", "No content provided; nothing saved."
+            ok, res = self._supabase_write("core_memories", {
+                "content": content,
+                "memory_type": inp.get("memory_type") or "fact",
+                "resonance": inp.get("resonance") or 5,
+            }, token)
+            if ok:
+                snippet = content if len(content) <= 60 else content[:57] + "…"
+                return True, snippet, f"Saved core memory: {content}"
+            return False, "save failed", f"Could not save memory: {res}"
+
+        if name == "save_memory_entity":
+            ent_name = (inp.get("name") or "").strip()
+            if not ent_name:
+                return False, "missing name", "No entity name provided; nothing saved."
+            obs = inp.get("observations") or []
+            if not isinstance(obs, list):
+                obs = [str(obs)]
+            ok, res = self._supabase_write("rpc/upsert_memory_entity", {
+                "p_name": ent_name,
+                "p_entity_type": inp.get("entity_type") or "person",
+                "p_observations": obs,
+            }, token)
+            if ok:
+                return True, ent_name, (
+                    f"Saved entity '{ent_name}' with {len(obs)} "
+                    f"observation{'s' if len(obs) != 1 else ''}.")
+            return False, "save failed", f"Could not save entity: {res}"
+
+        return False, "unknown tool", f"Unknown memory tool: {name}"
 
     def _humanize_gap(self, now, last_ms):
         """Render the gap since the last message as a human phrase."""
