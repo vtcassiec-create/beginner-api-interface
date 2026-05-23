@@ -1360,7 +1360,7 @@ function startTypewriter(msg) {
     const full = msg.text.length;
     const remaining = full - (msg._shown || 0);
     if (remaining > 0) {
-      const inc = Math.max(1, Math.ceil(remaining / 8)); // ease-out reveal
+      const inc = Math.max(1, Math.ceil(remaining / 12)); // ease-out reveal
       msg._shown = Math.min(full, (msg._shown || 0) + inc);
       paintRevealed(msg);
       msg._raf = requestAnimationFrame(tick);
