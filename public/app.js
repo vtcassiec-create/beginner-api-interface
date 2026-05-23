@@ -547,10 +547,49 @@ function fileKind(file) {
   return "text";
 }
 
-function readFile(file) {
+function loadImageEl(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () =>
+      reject(new Error("couldn't open this image — try a JPG or PNG"));
+    img.src = url;
+  });
+}
+
+// Downscale + re-encode an image to JPEG before storing. Phone photos
+// (e.g. a Galaxy S25's) can be tens of megabytes and sometimes HEIC —
+// which the browser can't display or send, so the attach fails silently.
+// Resizing to Claude's max useful dimension keeps the payload small and the
+// format universal (viewable thumbnail + something he can actually see).
+async function processImage(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await loadImageEl(url);
+    const MAX = 1568; // Claude's max useful image edge
+    const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+    const w = Math.max(1, Math.round(img.width * scale));
+    const h = Math.max(1, Math.round(img.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    return dataUrl.slice(dataUrl.indexOf(",") + 1); // base64, no data: prefix
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function readFile(file) {
+  const kind = fileKind(file);
+  if (kind === "image") {
+    // Always normalize images to a small JPEG (handles HEIC + huge photos).
+    const data = await processImage(file);
+    return { name: file.name, kind, mediaType: "image/jpeg", data, size: data.length };
+  }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    const kind = fileKind(file);
     reader.onerror = () => reject(reader.error || new Error("Read failed"));
     reader.onload = () => {
       let data = reader.result;
