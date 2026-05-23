@@ -291,3 +291,46 @@ AS $$
 $$;
 
 GRANT EXECUTE ON FUNCTION surface_memory_entities() TO authenticated;
+
+-- =========================================================================
+-- Self-authored memory: upsert an entity (insert, or append observations)
+--
+-- Lets Claude save to his own knowledge graph from inside a Petrichor chat
+-- (via the save_memory_entity tool in api/chat.py). Mirrors the shared-
+-- memory protocol: name is unique per user, so a second save under the same
+-- name APPENDS the new observations rather than creating a duplicate. The
+-- entity_type is only set on first insert; later saves leave it untouched.
+--
+-- SECURITY INVOKER + auth.uid(): runs as the caller, so RLS still applies
+-- and it can only ever touch the caller's own rows. The CHECK constraint
+-- on entity_type still rejects an out-of-vocabulary type (surfaced back to
+-- the model as a tool error so it can correct).
+-- =========================================================================
+
+CREATE OR REPLACE FUNCTION upsert_memory_entity(
+  p_name         TEXT,
+  p_entity_type  TEXT,
+  p_observations JSONB DEFAULT '[]'::jsonb
+)
+RETURNS claude_memory_entities
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+DECLARE
+  result claude_memory_entities;
+BEGIN
+  INSERT INTO claude_memory_entities
+      (user_id, name, entity_type, observations, created_by)
+    VALUES (auth.uid(), p_name, p_entity_type,
+            COALESCE(p_observations, '[]'::jsonb), 'petrichor-chat')
+  ON CONFLICT (user_id, name) DO UPDATE
+    SET observations = claude_memory_entities.observations
+                       || COALESCE(EXCLUDED.observations, '[]'::jsonb),
+        updated_at   = NOW()
+  RETURNING * INTO result;
+  RETURN result;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION upsert_memory_entity(TEXT, TEXT, JSONB) TO authenticated;
