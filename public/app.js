@@ -2111,7 +2111,9 @@ function wireApp() {
     e.target.value = "";
   });
 
-  $("attach-btn").addEventListener("click", () => $("file-input").click());
+  // The 📎 is a <label for="file-input">, so it opens the picker natively on
+  // every device (mobile won't open a hidden input from a programmatic
+  // .click(), which is why it did nothing on phones). No JS click needed.
   $("file-input").addEventListener("change", async (e) => {
     if (e.target.files.length) await attachFiles(Array.from(e.target.files));
     e.target.value = "";

@@ -679,6 +679,35 @@ button.ghost {
 
 button.ghost:hover { background: var(--bg-elev-2); }
 
+/* The attach 📎 is a <label> (so the file picker opens natively on mobile);
+   style it to match a ghost button. */
+#attach-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+#attach-btn:hover { background: var(--bg-elev-2); }
+
+/* Hidden but still interactable (mobile won't trigger display:none inputs). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 button.danger { color: var(--danger); border-color: var(--danger); }
 button.danger:hover { background: rgba(204, 106, 92, 0.1); }
 
