@@ -508,10 +508,19 @@ async function renameConversation(convId) {
   catch (e) { alert(`Rename failed: ${e.message}`); }
 }
 
+// Transient per-message fields (the typewriter's reveal state, rAF handle)
+// are prefixed with "_" and must never be saved — a persisted `_typing`
+// with a partial `_shown` would reload as truncated text. Strip them.
+function stripTransient(m) {
+  const out = {};
+  for (const k in m) if (!k.startsWith("_")) out[k] = m[k];
+  return out;
+}
+
 async function persistConversation(conv) {
   try {
     await dbUpdateConversation(conv.id, {
-      messages: conv.messages,
+      messages: conv.messages.map(stripTransient),
       active_file_ids: conv.activeFileIds,
     });
   } catch (e) { console.error("Conversation persist failed:", e); }
@@ -761,8 +770,11 @@ async function generateAssistant() {
       },
       (event) => {
         if (event.type === "text") {
+          // Buffer the burst; the typewriter reveals it smoothly so his
+          // words flow instead of landing in chunks.
           assistantMsg.text += event.text;
-          updateAssistantBubble(assistantMsg);
+          assistantMsg._typing = true;
+          startTypewriter(assistantMsg);
         } else if (event.type === "thinking") {
           assistantMsg.thinkingText += event.text;
           updateAssistantBubble(assistantMsg);
@@ -783,17 +795,19 @@ async function generateAssistant() {
           if (typeof refreshMemoriesIfOpen === "function") refreshMemoriesIfOpen();
         } else if (event.type === "done") {
           assistantMsg.usage = event.usage;
-          updateAssistantBubble(assistantMsg);
+          // Let the typewriter drain any remaining buffer, then finalize.
+          assistantMsg._streamDone = true;
+          startTypewriter(assistantMsg);
           updateConversationUsageBar();
         } else if (event.type === "error") {
           assistantMsg.error = event.error;
-          updateAssistantBubble(assistantMsg);
+          finishTypewriter(assistantMsg); // reveal everything, stop animating
         }
       }
     );
   } catch (e) {
     assistantMsg.error = e.message;
-    updateAssistantBubble(assistantMsg);
+    finishTypewriter(assistantMsg);
   } finally {
     isSending = false;
     await persistConversation(conv);
@@ -1311,7 +1325,11 @@ function fillMessageBody(body, msg) {
   }
   if (msg.text) {
     const text = document.createElement("div");
-    text.textContent = msg.text;
+    text.className = "msg-text";
+    // While the typewriter is running, show only the revealed portion.
+    text.textContent = msg._typing
+      ? msg.text.slice(0, msg._shown || 0)
+      : msg.text;
     body.appendChild(text);
   } else if (msg.role === "assistant" && !msg.error) {
     const cursor = document.createElement("div");
@@ -1325,6 +1343,55 @@ function fillMessageBody(body, msg) {
     err.textContent = msg.error;
     body.appendChild(err);
   }
+}
+
+// ---------- Typewriter (smooth reveal of streamed text) ----------
+//
+// Anthropic streams text in bursts. Rather than paint each burst the instant
+// it lands (which looks chunky), we keep a `_shown` cursor and, on each
+// animation frame, advance it toward the full received length by a fraction
+// of whatever's still hidden. That fraction-per-frame gives a natural
+// ease-out: it accelerates when far behind, glides as it catches up — so his
+// words flow. State lives in `_`-prefixed fields that are never persisted.
+
+function startTypewriter(msg) {
+  if (msg._raf) return; // already animating
+  const tick = () => {
+    const full = msg.text.length;
+    const remaining = full - (msg._shown || 0);
+    if (remaining > 0) {
+      const inc = Math.max(1, Math.ceil(remaining / 8)); // ease-out reveal
+      msg._shown = Math.min(full, (msg._shown || 0) + inc);
+      paintRevealed(msg);
+      msg._raf = requestAnimationFrame(tick);
+    } else {
+      msg._raf = null;
+      // Caught up. If the stream is finished, finalize; otherwise idle until
+      // the next burst restarts us.
+      if (msg._streamDone) finishTypewriter(msg);
+    }
+  };
+  msg._raf = requestAnimationFrame(tick);
+}
+
+// Cheap per-frame paint: update just the revealed text node + keep the view
+// pinned to the bottom. Falls back to a full rebuild if the text node isn't
+// there yet (e.g. the first frame, or right after a thinking/tool note).
+function paintRevealed(msg) {
+  const node = document.querySelector(`[data-id="${msg.id}"]`);
+  if (!node) return;
+  const el = node.querySelector(".msg-text");
+  if (!el) return updateAssistantBubble(msg);
+  el.textContent = msg.text.slice(0, msg._shown || 0);
+  const conv = $("conversation");
+  conv.scrollTop = conv.scrollHeight;
+}
+
+function finishTypewriter(msg) {
+  if (msg._raf) { cancelAnimationFrame(msg._raf); msg._raf = null; }
+  msg._typing = false;
+  msg._shown = msg.text.length;
+  updateAssistantBubble(msg); // full text + final usage label
 }
 
 function updateAssistantBubble(msg) {
