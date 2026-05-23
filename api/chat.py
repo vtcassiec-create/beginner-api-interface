@@ -17,6 +17,7 @@ Required environment variables:
 """
 
 from http.server import BaseHTTPRequestHandler
+import concurrent.futures
 import datetime
 import json
 import os
@@ -211,26 +212,49 @@ class handler(BaseHTTPRequestHandler):
         # a list so more than one can be active at once. extra_body/
         # header so it works regardless of SDK typing; a missing env =
         # silently off, so an unset var can never break chat.
-        mcp_servers = []
+        #
+        # Each candidate carries the params needed to health-check it. The
+        # Anthropic connector refuses the WHOLE request if any one server is
+        # unreachable — so one sleeping connection (e.g. Signal Bridge pointed
+        # at another surface) would otherwise take the whole chat down. We
+        # pre-probe each in parallel and silently drop the dead ones; chat
+        # must always survive a sleepy MCP server.
+        mcp_candidates = []  # (server_dict, probe_url, probe_token)
         whisper_url = os.environ.get("WHISPER_MCP_URL", "").strip()
         if data.get("useWhisper") and whisper_url:
             # Whisper's secret is in the URL itself (no auth token).
-            mcp_servers.append({
-                "type": "url",
-                "url": whisper_url,
-                "name": "whisper",
-            })
+            mcp_candidates.append((
+                {"type": "url", "url": whisper_url, "name": "whisper"},
+                whisper_url, None))
         signal_url = os.environ.get("SIGNAL_MCP_URL", "").strip()
         signal_token = os.environ.get("SIGNAL_MCP_TOKEN", "").strip()
         if data.get("useSignal") and signal_url and signal_token:
             # Signal Bridge authenticates with a bearer token. Both the
             # URL and token must be set, so a half-config can't connect.
-            mcp_servers.append({
-                "type": "url",
-                "url": signal_url,
-                "name": "signal",
-                "authorization_token": signal_token,
-            })
+            mcp_candidates.append((
+                {"type": "url", "url": signal_url, "name": "signal",
+                 "authorization_token": signal_token},
+                signal_url, signal_token))
+
+        mcp_servers, mcp_skipped = [], []
+        if mcp_candidates:
+            order = {srv["name"]: i for i, (srv, _, _) in enumerate(mcp_candidates)}
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=len(mcp_candidates)) as ex:
+                fut_to_srv = {
+                    ex.submit(self._mcp_alive, purl, ptok): srv
+                    for (srv, purl, ptok) in mcp_candidates
+                }
+                for fut in concurrent.futures.as_completed(fut_to_srv):
+                    srv = fut_to_srv[fut]
+                    try:
+                        alive = fut.result()
+                    except Exception:
+                        alive = False
+                    (mcp_servers if alive else mcp_skipped).append(srv)
+            # as_completed scrambles order; restore the toggle order.
+            mcp_servers.sort(key=lambda s: order.get(s["name"], 99))
+            mcp_skipped.sort(key=lambda s: order.get(s["name"], 99))
         if mcp_servers:
             kwargs["extra_headers"] = {
                 "anthropic-beta": "mcp-client-2025-04-04",
@@ -248,6 +272,14 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("X-Accel-Buffering", "no")
         self._cors()
         self.end_headers()
+
+        # Let the user know which connections we dropped this turn (so a quiet
+        # vault/Signal isn't a silent mystery), now that the stream is open.
+        for srv in mcp_skipped:
+            self._sse({
+                "type": "notice",
+                "text": f"{srv['name']} was unavailable and was skipped for this message.",
+            })
 
         # Accumulate usage across every model turn in the tool-use loop, so
         # the cost bar reflects the whole exchange, not just the last turn.
@@ -417,6 +449,37 @@ class handler(BaseHTTPRequestHandler):
             return False, msg
         except Exception as e:
             return False, str(e)
+
+    def _mcp_alive(self, url, auth_token, timeout=4):
+        """Fast liveness probe for a Streamable-HTTP MCP server: a real
+        `initialize` handshake. Returns True only on a clean 2xx. Any
+        error/timeout => False, so an unreachable server is dropped from
+        the request rather than failing the whole chat. `initialize` is a
+        pure capability handshake — it never triggers a tool/device action.
+        """
+        if not url:
+            return False
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        body = json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "petrichor-healthcheck", "version": "1"},
+            },
+        }).encode()
+        try:
+            req = urllib.request.Request(
+                url, data=body, method="POST", headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return 200 <= resp.status < 300
+        except Exception:
+            return False
 
     def _exec_memory_tool(self, name, inp, token, user_id):
         """Run one self-authored-memory tool call against Supabase.
