@@ -287,7 +287,7 @@ class handler(BaseHTTPRequestHandler):
                 results = []
                 for b in tool_uses:
                     inp = b.input if isinstance(b.input, dict) else {}
-                    ok, summary, detail = self._exec_memory_tool(b.name, inp, token)
+                    ok, summary, detail = self._exec_memory_tool(b.name, inp, token, user_id)
                     self._sse({"type": "memory_saved", "tool": b.name,
                                "ok": ok, "summary": summary})
                     results.append({
@@ -418,7 +418,7 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             return False, str(e)
 
-    def _exec_memory_tool(self, name, inp, token):
+    def _exec_memory_tool(self, name, inp, token, user_id):
         """Run one self-authored-memory tool call against Supabase.
 
         Returns (ok, short_summary, detail_for_model). The summary is shown
@@ -429,7 +429,12 @@ class handler(BaseHTTPRequestHandler):
             content = (inp.get("content") or "").strip()
             if not content:
                 return False, "empty memory", "No content provided; nothing saved."
+            # user_id is required: the table has no default and RLS's WITH
+            # CHECK rejects any row whose owner != auth.uid(). The entity
+            # path gets this for free inside its RPC; a direct insert must
+            # set it explicitly. user_id is server-verified (_verify_auth).
             ok, res = self._supabase_write("core_memories", {
+                "user_id": user_id,
                 "content": content,
                 "memory_type": inp.get("memory_type") or "fact",
                 "resonance": inp.get("resonance") or 5,
