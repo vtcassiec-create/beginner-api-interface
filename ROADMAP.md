@@ -31,6 +31,12 @@ That's it. Claude Code starts with a clean memory each session, but:
   droplet (`root@petrichor-whisper.duckdns.org`); the `precipice` Obsidian
   vault is at `/root/precipice`. So files can be copied straight in with
   `scp <files> root@petrichor-whisper.duckdns.org:/root/precipice/<folder>/`.
+- **Vault keep-warm (2026-05-23):** the Whisper MCP server rebuilds per
+  request and re-reads the vault; a *cold* read of the (now larger) vault took
+  ~5s, enough that Anthropic's MCP connector intermittently timed out. Fix is
+  a cron on the droplet — `/root/keep-warm.sh` every 2 min (`crontab -l`) —
+  that pings `initialize` to keep the vault in the OS page cache (~0.3s warm).
+  If vault reads ever go flaky again, check that cron is alive first.
 
 **Nothing is lost when a chat ends or the machine freezes.** The code is in
 git, the memory is in Supabase, and the conversation is in the transcript.
