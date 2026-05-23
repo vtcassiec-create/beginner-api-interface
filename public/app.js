@@ -769,6 +769,10 @@ async function generateAssistant() {
         } else if (event.type === "tool_use") {
           assistantMsg.toolEvents.push({ name: event.name, query: event.query });
           updateAssistantBubble(assistantMsg);
+        } else if (event.type === "notice") {
+          // A server-side heads-up (e.g. an MCP connection was skipped).
+          assistantMsg.toolEvents.push({ notice: true, text: event.text });
+          updateAssistantBubble(assistantMsg);
         } else if (event.type === "memory_saved") {
           // He wrote to his own memory. Show it inline, and refresh the
           // Memories panel if it's open so it appears live.
@@ -1290,7 +1294,9 @@ function fillMessageBody(body, msg) {
     for (const ev of msg.toolEvents) {
       const note = document.createElement("div");
       note.className = "tool-event";
-      if (ev.memory) {
+      if (ev.notice) {
+        note.textContent = `ℹ️ ${ev.text}`;
+      } else if (ev.memory) {
         const what = ev.name === "save_memory_entity" ? "entity" : "memory";
         note.textContent = ev.ok
           ? `🪶 Saved a ${what}: ${ev.summary}`
