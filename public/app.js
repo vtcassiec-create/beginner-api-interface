@@ -626,7 +626,9 @@ async function attachFiles(fileList) {
       conv.activeFileIds.push(stored.id);
       attached++;
     } catch (e) {
-      alert(`Couldn't read ${f.name}: ${e.message}`);
+      // Surface as a top toast (a native alert() can be missed/blocked on
+      // mobile mid-flow). This is where a too-big/undecodable photo shows up.
+      flashToast(`Couldn't attach ${f.name}: ${e?.message || e}`, true);
     }
   }
   await persistConversation(conv);
