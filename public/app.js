@@ -1326,10 +1326,14 @@ function fillMessageBody(body, msg) {
   if (msg.text) {
     const text = document.createElement("div");
     text.className = "msg-text";
-    // While the typewriter is running, show only the revealed portion.
-    text.textContent = msg._typing
-      ? msg.text.slice(0, msg._shown || 0)
-      : msg.text;
+    if (msg._typing) {
+      // Mid-reveal: plain text (any asterisks show until the turn finishes,
+      // then it re-renders with formatting).
+      text.textContent = msg.text.slice(0, msg._shown || 0);
+    } else {
+      // Finished/committed: render *italics* and **bold**.
+      text.innerHTML = renderInline(msg.text);
+    }
     body.appendChild(text);
   } else if (msg.role === "assistant" && !msg.error) {
     const cursor = document.createElement("div");
@@ -1343,6 +1347,28 @@ function fillMessageBody(body, msg) {
     err.textContent = msg.error;
     body.appendChild(err);
   }
+}
+
+// ---------- Inline formatting ----------
+//
+// Render *italic* and **bold** (and line breaks) for chat text. HTML is
+// escaped FIRST, so the only markup that can ever reach the DOM is our own
+// <strong>/<em>/<br> — no user- or model-supplied tags are rendered. Stored
+// text stays raw (asterisks and all); we only format at display time.
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function renderInline(raw) {
+  let s = escapeHtml(raw);
+  s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>"); // bold first
+  s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");             // then italic
+  s = s.replace(/\n/g, "<br>");
+  return s;
 }
 
 // ---------- Typewriter (smooth reveal of streamed text) ----------
