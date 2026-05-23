@@ -592,11 +592,23 @@ button.ghost.small {
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 3px 10px;
+  padding: 3px 10px 3px 4px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
+
+.files-bar .file-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: cover;
+  display: block;
+  border: 1px solid var(--border);
+}
+
+.files-bar .file-glyph { font-size: 16px; line-height: 1; }
+.files-bar .file-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .files-bar li button {
   background: none;

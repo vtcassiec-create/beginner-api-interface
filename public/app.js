@@ -575,18 +575,25 @@ async function attachFiles(fileList) {
   const project = getActiveProject();
   const conv = getActiveConversation(project);
   if (!project || !conv) return;
+  let attached = 0;
   for (const f of fileList) {
     try {
       const parsed = await readFile(f);
       const stored = await dbCreateFile(project.id, parsed);
       project.files.push(stored);
       conv.activeFileIds.push(stored.id);
+      attached++;
     } catch (e) {
       alert(`Couldn't read ${f.name}: ${e.message}`);
     }
   }
   await persistConversation(conv);
   render();
+  if (attached === 1) {
+    flashToast(`📎 Attached ${fileList[0].name} — it'll go with your next message`);
+  } else if (attached > 1) {
+    flashToast(`📎 Attached ${attached} files — they'll go with your next message`);
+  }
 }
 
 async function toggleActiveFile(fileId) {
@@ -1507,7 +1514,22 @@ function renderFilesBar() {
     const f = project.files.find(f => f.id === fid);
     if (!f) continue;
     const li = document.createElement("li");
+    // Show a thumbnail for images so it's obvious the picture attached
+    // (and which one); other kinds get a little type glyph.
+    if (f.kind === "image" && f.data) {
+      const thumb = document.createElement("img");
+      thumb.className = "file-thumb";
+      thumb.src = `data:${f.mediaType};base64,${f.data}`;
+      thumb.alt = f.name;
+      li.appendChild(thumb);
+    } else {
+      const glyph = document.createElement("span");
+      glyph.className = "file-glyph";
+      glyph.textContent = f.kind === "pdf" ? "📄" : "📃";
+      li.appendChild(glyph);
+    }
     const name = document.createElement("span");
+    name.className = "file-name";
     name.textContent = f.name;
     const x = document.createElement("button");
     x.textContent = "×";
