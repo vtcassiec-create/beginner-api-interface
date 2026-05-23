@@ -860,6 +860,38 @@ dialog::backdrop {
   word-break: break-word;
 }
 
+/* Eternal (pinned) memories */
+.mem-actions .row-action.pinned { opacity: 1; }
+#memory-list li.mem-pinned {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+/* The always-visible strip of eternal memories above the chat. */
+.pinned-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev));
+}
+.pin-chip {
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pin-chip em { color: var(--text); font-style: italic; }
+.pin-chip strong { color: var(--text); }
+
 .settings-form select,
 .settings-form input[type="number"] {
   background: var(--bg);

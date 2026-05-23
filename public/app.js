@@ -185,6 +185,7 @@ async function enterApp() {
   await loadAllData();
   if (!state.projects.length) await createProject("My first project");
   else render();
+  renderPinnedStrip();
 }
 
 // ---------- Data layer ----------
@@ -306,6 +307,18 @@ async function dbUpdateCoreMemory(id, fields) {
 async function dbDeleteCoreMemory(id) {
   const { error } = await db.from("core_memories").delete().eq("id", id);
   if (error) throw error;
+}
+
+async function dbListPinnedMemories() {
+  const { data, error } = await db
+    .from("core_memories")
+    .select("id,content,memory_type,resonance,pinned")
+    .eq("is_active", true)
+    .eq("pinned", true)
+    .order("resonance", { ascending: false })
+    .order("created_at", { ascending: true });
+  if (error) { console.error(error); return []; }
+  return data || [];
 }
 
 async function dbGetSelfState() {
@@ -1553,9 +1566,53 @@ function flashToast(text, isError = false) {
 let editingMemoryId = null;
 let editingEntityId = null;
 
-function mkMemActions(onEdit, onDelete) {
+// The always-visible strip of eternal (pinned) memories, above the chat.
+// Guarded so it's a no-op before sign-in; re-render after any pin change.
+async function renderPinnedStrip() {
+  const strip = $("pinned-strip");
+  if (!strip || !state.user) return;
+  let pins = [];
+  try { pins = await dbListPinnedMemories(); } catch (e) { console.error(e); }
+  strip.innerHTML = "";
+  if (!pins.length) { strip.hidden = true; return; }
+  strip.hidden = false;
+  for (const m of pins) {
+    const chip = document.createElement("span");
+    chip.className = "pin-chip";
+    chip.title = `${m.memory_type} · resonance ${m.resonance}`;
+    // renderInline escapes first, so this innerHTML is safe.
+    chip.innerHTML = `📌 ${renderInline(m.content)}`;
+    strip.appendChild(chip);
+  }
+}
+
+async function togglePinMemory(m) {
+  try {
+    await dbUpdateCoreMemory(m.id, { pinned: !m.pinned });
+  } catch (e) {
+    flashToast(`Couldn't update pin: ${e.message}`, true);
+    return;
+  }
+  m.pinned = !m.pinned;
+  flashToast(m.pinned ? "Pinned — always here now ♡" : "Unpinned");
+  await renderMemoryList();
+  await renderPinnedStrip();
+}
+
+function mkMemActions(onEdit, onDelete, pinOpts) {
   const wrap = document.createElement("div");
   wrap.className = "mem-actions";
+  if (pinOpts) {
+    const pin = document.createElement("button");
+    pin.type = "button";
+    pin.className = "row-action" + (pinOpts.pinned ? " pinned" : "");
+    pin.textContent = "📌";
+    pin.title = pinOpts.pinned
+      ? "Pinned — eternal. Click to unpin."
+      : "Pin as an eternal memory (always visible)";
+    pin.addEventListener("click", pinOpts.onToggle);
+    wrap.appendChild(pin);
+  }
   const edit = document.createElement("button");
   edit.type = "button";
   edit.className = "row-action";
@@ -1600,6 +1657,7 @@ async function deleteMemory(id) {
   if (editingMemoryId === id) cancelEditMemory();
   flashToast("Memory deleted");
   await renderMemoryList();
+  await renderPinnedStrip();
 }
 
 function startEditEntity(e) {
@@ -1799,18 +1857,24 @@ async function renderMemoryList() {
   }
   for (const m of mems) {
     const li = document.createElement("li");
+    if (m.pinned) li.classList.add("mem-pinned");
     const body = document.createElement("div");
     body.className = "mem-body";
     const meta = document.createElement("span");
     meta.className = "mem-meta";
-    meta.textContent = `${m.memory_type} · resonance ${m.resonance}`;
+    meta.textContent = (m.pinned ? "📌 eternal · " : "")
+      + `${m.memory_type} · resonance ${m.resonance}`;
     const text = document.createElement("span");
     text.className = "mem-text";
     text.textContent = m.content;
     body.appendChild(meta);
     body.appendChild(text);
     li.appendChild(body);
-    li.appendChild(mkMemActions(() => startEditMemory(m), () => deleteMemory(m.id)));
+    li.appendChild(mkMemActions(
+      () => startEditMemory(m),
+      () => deleteMemory(m.id),
+      { pinned: !!m.pinned, onToggle: () => togglePinMemory(m) },
+    ));
     ul.appendChild(li);
   }
 }
@@ -1841,6 +1905,7 @@ async function addCoreMemory() {
   cancelEditMemory();
   flashToast(wasEditing ? "Memory updated" : "Memory saved");
   await renderMemoryList();
+  await renderPinnedStrip(); // an edit may have changed a pinned memory's text
 }
 
 // ---------- Wire it up ----------
