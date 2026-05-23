@@ -613,7 +613,10 @@ async function readFile(file) {
 async function attachFiles(fileList) {
   const project = getActiveProject();
   const conv = getActiveConversation(project);
-  if (!project || !conv) return;
+  if (!project || !conv) {
+    flashToast("Open a conversation first, then attach.", true);
+    return;
+  }
   let attached = 0;
   for (const f of fileList) {
     try {
@@ -2154,8 +2157,18 @@ function wireApp() {
   // every device (mobile won't open a hidden input from a programmatic
   // .click(), which is why it did nothing on phones). No JS click needed.
   $("file-input").addEventListener("change", async (e) => {
-    if (e.target.files.length) await attachFiles(Array.from(e.target.files));
+    const files = Array.from(e.target.files || []);
     e.target.value = "";
+    if (!files.length) return;
+    // Immediate, visible confirmation that the selection registered — so a
+    // silent failure becomes a legible one. If you never see this when you
+    // pick a photo, the picker isn't handing the file back to the page.
+    flashToast(`📎 Got ${files.length === 1 ? files[0].name : files.length + " files"} — adding…`);
+    try {
+      await attachFiles(files);
+    } catch (err) {
+      flashToast(`Attach failed: ${err?.message || err}`, true);
+    }
   });
 
   const prompt = $("prompt");
