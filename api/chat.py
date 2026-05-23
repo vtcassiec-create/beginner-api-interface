@@ -305,10 +305,22 @@ class handler(BaseHTTPRequestHandler):
                         "content": detail,
                         "is_error": not ok,
                     })
-                # Carry the turn forward: his assistant content (incl. the
-                # tool_use + any thinking blocks) then the tool results.
+                # Carry the turn forward: his assistant content (text,
+                # thinking, our tool_use) then the tool results.
+                #
+                # Strip server-side MCP blocks (mcp_tool_use / mcp_tool_result)
+                # first: when he also used the vault this turn, those blocks
+                # appear in the response, but the API accepts them only as
+                # OUTPUT — replaying them as input 400s ("Input tag
+                # 'mcp_tool_use' ... does not match any of the expected tags").
+                # His text/thinking and the memory tool_use are what matter for
+                # continuing; the vault result is already reflected in his text.
+                carried = [
+                    b for b in final.content
+                    if not str(getattr(b, "type", "")).startswith("mcp_")
+                ]
                 kwargs["messages"] = list(kwargs["messages"]) + [
-                    {"role": "assistant", "content": final.content},
+                    {"role": "assistant", "content": carried},
                     {"role": "user", "content": results},
                 ]
 
