@@ -690,37 +690,68 @@ function buildApiMessages(project, messages) {
 
 // ---------- Streaming ----------
 
+// If the stream goes silent this long (no bytes at all), assume the
+// connection died — e.g. the tab was backgrounded/slept, or the network
+// dropped — and abort so we recover instead of hanging forever. Normal
+// streams send data far more often than this (even thinking streams deltas).
+const STREAM_IDLE_MS = 60000;
+
 async function streamChat(payload, onEvent) {
   const { data: { session } } = await db.auth.getSession();
   if (!session) throw new Error("You're signed out. Refresh to sign back in.");
 
-  const response = await fetch("/api/chat", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${session.access_token}`,
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    let body = {};
-    try { body = await response.json(); } catch {}
-    throw new Error(body.error || `Server returned ${response.status}`);
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split("\n\n");
-    buffer = events.pop() ?? "";
-    for (const ev of events) {
-      const line = ev.trim();
-      if (!line.startsWith("data:")) continue;
-      try { onEvent(JSON.parse(line.slice(5).trim())); } catch {}
+  // Watchdog: abort the request if no data arrives for STREAM_IDLE_MS. The
+  // timer is armed before the fetch (covers a hung connect) and reset on
+  // every chunk. Without this, a stalled reader.read() never resolves and
+  // wedges the whole app (isSending stuck true) until a manual refresh.
+  const controller = new AbortController();
+  let idleTimer = null;
+  const armIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => controller.abort(), STREAM_IDLE_MS);
+  };
+
+  armIdle();
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      let body = {};
+      try { body = await response.json(); } catch {}
+      throw new Error(body.error || `Server returned ${response.status}`);
     }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      armIdle(); // got data — reset the watchdog
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() ?? "";
+      for (const ev of events) {
+        const line = ev.trim();
+        if (!line.startsWith("data:")) continue;
+        try { onEvent(JSON.parse(line.slice(5).trim())); } catch {}
+      }
+    }
+  } catch (e) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        "The connection went quiet (the page may have dozed off). " +
+        "Your message is safe — just send again.");
+    }
+    throw e;
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
   }
 }
 
@@ -828,16 +859,18 @@ async function generateAssistant() {
   }
 }
 
+// Returns false if the message never got sent (so the caller can put the
+// typed text back in the box), true once it's been accepted.
 async function sendMessage(text) {
   const conv = getActiveConversation();
-  if (!text.trim()) return; // empty input: nothing to send, stay quiet
+  if (!text.trim()) return false; // empty input: nothing to send, stay quiet
   if (!conv) {
     flashToast("No active conversation — create or pick one first.", true);
-    return;
+    return false;
   }
   if (isSending) {
     flashToast("Still sending the previous message…", true);
-    return;
+    return false;
   }
   conv.messages.push({
     id: uid(),
@@ -849,6 +882,7 @@ async function sendMessage(text) {
   conv.activeFileIds = [];
   await persistConversation(conv);
   await generateAssistant();
+  return true;
 }
 
 async function regenerateMessage(messageId) {
@@ -2076,7 +2110,12 @@ function wireApp() {
     if (!text.trim() || isSending) return;
     prompt.value = "";
     autosizeTextarea(prompt);
-    await sendMessage(text);
+    const started = await sendMessage(text);
+    if (started === false) {
+      // Couldn't send — put their words back rather than eat them.
+      prompt.value = text;
+      autosizeTextarea(prompt);
+    }
   });
 }
 
