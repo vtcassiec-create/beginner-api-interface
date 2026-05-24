@@ -2398,7 +2398,13 @@ function wireApp() {
   });
   $("sidebar-backdrop").addEventListener("click", closeSidebar);
 
-  $("new-project-btn").addEventListener("click", () => createProject());
+  $("new-project-btn").addEventListener("click", () => {
+    // Ask for the name up front so it's clear a project = a named workspace
+    // (e.g. a story). Blank/cancel still works (you can rename up top anytime).
+    const name = prompt("Name your new project — e.g. a story title, or \"Claude's Writing\":", "");
+    if (name === null) return; // cancelled
+    createProject(name.trim() || "Untitled project");
+  });
 
   $("project-name").addEventListener("change", async (e) => {
     const project = getActiveProject();
