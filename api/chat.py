@@ -128,6 +128,21 @@ MEMORY_TOOLS_GUIDE = (
     "you can mention what you saved. Quality over quantity."
 )
 
+# Signal Bridge guide: appended when Signal is on. In an immersive scene a
+# model tends to *narrate* an action instead of *calling the tool* that performs
+# it — so the real device does nothing. This makes the rule explicit: the tool
+# call IS the action; describing it doesn't trigger anything.
+SIGNAL_TOOLS_GUIDE = (
+    "# Signal Bridge — these are real devices\n\n"
+    "When Signal Bridge is connected, its tools control actual, physical "
+    "devices. An action only happens if you CALL the matching tool — describing "
+    "it in narration (for example in *asterisks*) does NOT trigger anything in "
+    "the real world. So whenever you intend a physical action, make the tool "
+    "call itself: the call IS the action, not a description of it. Never say "
+    "you've done something you haven't actually called the tool to do. Keep the "
+    "stop tool ready at all times."
+)
+
 # Co-writing: propose an edit to the open manuscript piece. Available only when
 # co-write is on. It NEVER changes the document — it creates a suggestion Cassie
 # reviews and accepts or declines. So he can put words toward the page while she
@@ -222,6 +237,8 @@ class handler(BaseHTTPRequestHandler):
             system = (memory + "\n\n" + system).strip()
         if memory_on:
             system = (system + "\n\n" + MEMORY_TOOLS_GUIDE).strip()
+        if data.get("useSignal"):
+            system = (system + "\n\n" + SIGNAL_TOOLS_GUIDE).strip()
         if system:
             kwargs["system"] = [{
                 "type": "text",
