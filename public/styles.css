@@ -401,6 +401,129 @@ button.ghost.small {
 
 .export-menu button:hover { background: var(--bg-elev-2); }
 
+/* Tools dropdown (per-project toggles) */
+.tools-wrap { position: relative; }
+.tools-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  min-width: 180px;
+  z-index: 5;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tools-menu .toggle { white-space: nowrap; }
+
+/* Chat / Manuscript view tabs */
+.view-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 20px 0;
+  border-bottom: 1px solid var(--border);
+}
+.view-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  padding: 8px 12px;
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 0;
+}
+.view-tab:hover { color: var(--text); }
+.view-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+/* Chat / Manuscript panes fill the space under the tabs. The [hidden]
+   guards are needed because these id rules' display would otherwise win
+   over the hidden attribute's default display:none. */
+#chat-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+#chat-pane[hidden] { display: none; }
+
+/* Manuscript view */
+#manuscript-pane { flex: 1; min-height: 0; display: flex; }
+#manuscript-pane[hidden] { display: none; }
+.ms-layout { flex: 1; display: flex; min-height: 0; }
+.ms-list-col {
+  width: 240px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ms-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.ms-list { list-style: none; margin: 0; padding: 4px; overflow-y: auto; flex: 1; }
+.ms-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.ms-item:hover { background: var(--bg-elev); }
+.ms-item.active { background: var(--bg-elev-2); }
+.ms-item-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-item-count { flex-shrink: 0; }
+.ms-list .ms-empty { padding: 10px; }
+
+.ms-editor-col { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.ms-empty { padding: 32px; text-align: center; }
+#ms-editor { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 16px 20px; gap: 10px; }
+.ms-title {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 600;
+  padding: 4px 2px;
+}
+.ms-title:focus { outline: none; border-bottom-color: var(--accent); }
+.ms-content {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.7;
+  padding: 4px 2px;
+}
+.ms-content:focus { outline: none; }
+.ms-editor-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.ms-editor-foot #ms-delete-btn { margin-left: auto; }
+
+@media (max-width: 720px) {
+  .ms-list-col { width: 130px; }
+  .ms-editor-col { min-width: 0; }
+}
+
 .project-controls {
   display: flex;
   align-items: center;

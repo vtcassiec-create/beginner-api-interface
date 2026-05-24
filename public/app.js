@@ -52,6 +52,8 @@ let state = {
   user: null,
   projects: [],
   activeProjectId: null,
+  activeView: "chat",        // "chat" | "manuscript"
+  activeDocumentId: null,    // selected manuscript document
 };
 
 const $ = (id) => document.getElementById(id);
@@ -378,6 +380,57 @@ async function dbDeleteFile(id) {
   if (error) throw error;
 }
 
+// ---------- Manuscript documents ----------
+
+function rowToDocument(row) {
+  return {
+    id: row.id,
+    title: row.title || "Untitled",
+    content: row.content || "",
+    position: row.position || 0,
+    wordCount: row.word_count || 0,
+  };
+}
+
+function countWords(text) {
+  const m = (text || "").trim().match(/\S+/g);
+  return m ? m.length : 0;
+}
+
+async function dbListDocuments(projectId) {
+  const { data, error } = await db
+    .from("manuscript_documents")
+    .select("id,title,content,position,word_count")
+    .eq("project_id", projectId)
+    .order("position", { ascending: true })
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return (data || []).map(rowToDocument);
+}
+
+async function dbCreateDocument(projectId, title, position) {
+  const { data, error } = await db.from("manuscript_documents").insert({
+    project_id: projectId,
+    user_id: state.user.id,
+    title: title || "Untitled",
+    content: "",
+    position: position || 0,
+    word_count: 0,
+  }).select("id,title,content,position,word_count").single();
+  if (error) throw error;
+  return rowToDocument(data);
+}
+
+async function dbUpdateDocument(id, fields) {
+  const { error } = await db.from("manuscript_documents").update(fields).eq("id", id);
+  if (error) throw error;
+}
+
+async function dbDeleteDocument(id) {
+  const { error } = await db.from("manuscript_documents").delete().eq("id", id);
+  if (error) throw error;
+}
+
 async function dbListCoreMemories() {
   const { data, error } = await db
     .from("core_memories")
@@ -542,6 +595,8 @@ function closeSidebar() {
 
 function selectProject(id) {
   state.activeProjectId = id;
+  state.activeView = "chat";       // start each project on its chat
+  state.activeDocumentId = null;
   render();
   closeSidebar();
 }
@@ -1386,6 +1441,14 @@ function renderProject() {
   $("project-view").hidden = !project;
   if (!project) return;
 
+  // Chat vs Manuscript view.
+  const onMs = state.activeView === "manuscript";
+  $("chat-pane").hidden = onMs;
+  $("manuscript-pane").hidden = !onMs;
+  $("tab-chat").classList.toggle("active", !onMs);
+  $("tab-manuscript").classList.toggle("active", onMs);
+  if (onMs) renderManuscript();
+
   $("project-name").value = project.name;
 
   const select = $("model-select");
@@ -1610,6 +1673,143 @@ function fillMessageBody(body, msg) {
     err.textContent = msg.error;
     body.appendChild(err);
   }
+}
+
+// ---------- Manuscript view ----------
+
+function showView(view) {
+  state.activeView = view;
+  renderProject();
+}
+
+async function renderManuscript() {
+  const project = getActiveProject();
+  if (!project) return;
+  if (!project.documentsLoaded) {
+    $("ms-total").textContent = "loading…";
+    try {
+      project.documents = await dbListDocuments(project.id);
+      project.documentsLoaded = true;
+    } catch (e) {
+      flashToast(`Couldn't load the manuscript: ${e.message}`, true);
+      project.documents = [];
+    }
+    if (state.activeView !== "manuscript") return; // user switched away meanwhile
+  }
+  renderMsList(project);
+  const doc = (project.documents || []).find(d => d.id === state.activeDocumentId);
+  if (doc) openMsEditor(doc); else clearMsEditor();
+}
+
+function renderMsList(project) {
+  const ul = $("ms-list");
+  ul.innerHTML = "";
+  const docs = project.documents || [];
+  let total = 0;
+  for (const d of docs) {
+    total += d.wordCount || 0;
+    const li = document.createElement("li");
+    li.className = "ms-item" + (d.id === state.activeDocumentId ? " active" : "");
+    const title = document.createElement("span");
+    title.className = "ms-item-title";
+    title.textContent = d.title || "Untitled";
+    const count = document.createElement("span");
+    count.className = "ms-item-count muted small";
+    count.textContent = `${(d.wordCount || 0).toLocaleString()}w`;
+    li.appendChild(title);
+    li.appendChild(count);
+    li.addEventListener("click", () => selectDocument(d.id));
+    ul.appendChild(li);
+  }
+  if (!docs.length) {
+    const li = document.createElement("li");
+    li.className = "ms-empty muted small";
+    li.textContent = "No pieces yet.";
+    ul.appendChild(li);
+  }
+  $("ms-total").textContent = docs.length
+    ? `${docs.length} piece${docs.length !== 1 ? "s" : ""} · ${total.toLocaleString()} words`
+    : "";
+}
+
+function openMsEditor(doc) {
+  $("ms-empty").hidden = true;
+  $("ms-editor").hidden = false;
+  $("ms-title").value = doc.title || "";
+  $("ms-content").value = doc.content || "";
+  $("ms-savestate").textContent = "";
+  updateMsWordcount();
+}
+
+function clearMsEditor() {
+  $("ms-editor").hidden = true;
+  $("ms-empty").hidden = false;
+}
+
+function updateMsWordcount() {
+  $("ms-wordcount").textContent = `${countWords($("ms-content").value).toLocaleString()} words`;
+}
+
+function selectDocument(id) {
+  state.activeDocumentId = id;
+  renderManuscript();
+}
+
+async function newManuscriptDocument() {
+  const project = getActiveProject();
+  if (!project) return;
+  try {
+    const doc = await dbCreateDocument(project.id, "Untitled", (project.documents || []).length);
+    project.documents = project.documents || [];
+    project.documents.push(doc);
+    state.activeDocumentId = doc.id;
+    renderManuscript();
+    $("ms-title").focus();
+    $("ms-title").select();
+  } catch (e) {
+    flashToast(`Couldn't create: ${e.message}`, true);
+  }
+}
+
+async function deleteCurrentDocument() {
+  const project = getActiveProject();
+  const id = state.activeDocumentId;
+  if (!project || !id) return;
+  if (!confirm("Delete this piece? This can't be undone.")) return;
+  try {
+    await dbDeleteDocument(id);
+  } catch (e) {
+    flashToast(`Delete failed: ${e.message}`, true);
+    return;
+  }
+  project.documents = (project.documents || []).filter(d => d.id !== id);
+  state.activeDocumentId = project.documents[0]?.id || null;
+  flashToast("Deleted");
+  renderManuscript();
+}
+
+let _msSaveTimer = null;
+function scheduleMsSave() {
+  const id = state.activeDocumentId;
+  if (!id) return;
+  $("ms-savestate").textContent = "saving…";
+  clearTimeout(_msSaveTimer);
+  _msSaveTimer = setTimeout(async () => {
+    const project = getActiveProject();
+    const doc = project?.documents?.find(d => d.id === id);
+    if (!doc) return;
+    const title = $("ms-title").value.trim() || "Untitled";
+    const content = $("ms-content").value;
+    const wc = countWords(content);
+    try {
+      await dbUpdateDocument(id, { title, content, word_count: wc });
+      doc.title = title; doc.content = content; doc.wordCount = wc;
+      $("ms-savestate").textContent = "saved ✓";
+      renderMsList(project); // reflect new title / counts / total
+    } catch (e) {
+      $("ms-savestate").textContent = "save failed — keep typing, will retry";
+    }
+  }, 700);
 }
 
 // ---------- Inline formatting ----------
@@ -2323,6 +2523,26 @@ function wireApp() {
     if (e.target.files[0]) await importConversationJson(e.target.files[0]);
     e.target.value = "";
   });
+
+  // Tools dropdown (consolidates the per-project toggles).
+  const toolsBtn = $("tools-btn");
+  const toolsMenu = $("tools-menu");
+  toolsBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toolsMenu.hidden = !toolsMenu.hidden;
+  });
+  document.addEventListener("click", () => { toolsMenu.hidden = true; });
+  toolsMenu.addEventListener("click", (e) => e.stopPropagation());
+
+  // Chat / Manuscript tabs.
+  $("tab-chat").addEventListener("click", () => showView("chat"));
+  $("tab-manuscript").addEventListener("click", () => showView("manuscript"));
+
+  // Manuscript editor.
+  $("ms-new-btn").addEventListener("click", newManuscriptDocument);
+  $("ms-delete-btn").addEventListener("click", deleteCurrentDocument);
+  $("ms-title").addEventListener("input", scheduleMsSave);
+  $("ms-content").addEventListener("input", () => { updateMsWordcount(); scheduleMsSave(); });
 
   // The 📎 is a <label for="file-input">, so it opens the picker natively on
   // every device (mobile won't open a hidden input from a programmatic

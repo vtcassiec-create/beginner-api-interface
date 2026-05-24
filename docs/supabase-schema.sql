@@ -152,3 +152,38 @@ CREATE TRIGGER projects_updated_at
 CREATE TRIGGER conversations_updated_at
   BEFORE UPDATE ON conversations
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- =========================================================================
+-- Manuscript documents (per-project chapters / writing pieces)
+--
+-- A project can hold a fic (Cassie authors), his own writing (he authors),
+-- or a shared piece — same table. Co-writing reads the active doc into chat.
+-- =========================================================================
+
+CREATE TABLE IF NOT EXISTS manuscript_documents (
+  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id  UUID        NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  user_id     UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  title       TEXT        NOT NULL DEFAULT 'Untitled',
+  content     TEXT        NOT NULL DEFAULT '',
+  position    INTEGER     NOT NULL DEFAULT 0,
+  word_count  INTEGER     NOT NULL DEFAULT 0,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS manuscript_documents_project_idx
+  ON manuscript_documents(project_id);
+
+ALTER TABLE manuscript_documents ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "own manuscript_documents" ON manuscript_documents;
+CREATE POLICY "own manuscript_documents" ON manuscript_documents
+  FOR ALL TO authenticated
+  USING      (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+DROP TRIGGER IF EXISTS manuscript_documents_updated_at ON manuscript_documents;
+CREATE TRIGGER manuscript_documents_updated_at
+  BEFORE UPDATE ON manuscript_documents
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
