@@ -272,28 +272,62 @@ function blobToBase64(blob) {
   });
 }
 
-// Upload an image through our own server (/api/upload), which writes it to
-// Storage server-side and returns the object path. Sent as base64 JSON — the
-// SAME text transport the chat uses — because this phone's network stalls on
-// raw binary uploads (to any host) but passes JSON text fine.
-async function uploadImageBlob(blob) {
+// One JSON POST to /api/upload, with auth + a short retry (small requests can
+// blip on a flaky phone connection). Returns the parsed JSON.
+async function uploadPost(payload) {
   const { data: { session } } = await db.auth.getSession();
   if (!session) throw new Error("You're signed out. Refresh to sign back in.");
-  const data = await blobToBase64(blob);
-  const resp = await fetch("/api/upload", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${session.access_token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ data, content_type: blob.type || "image/jpeg" }),
-  });
-  if (!resp.ok) {
-    let body = {};
-    try { body = await resp.json(); } catch (_) {}
-    throw new Error(body.error || `upload failed (${resp.status})`);
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const resp = await withTimeout(fetch("/api/upload", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      }), 30000, "upload request timed out");
+      if (!resp.ok) {
+        let body = {};
+        try { body = await resp.json(); } catch (_) {}
+        throw new Error(body.error || `upload failed (${resp.status})`);
+      }
+      return await resp.json();
+    } catch (e) {
+      lastErr = e;
+    }
   }
-  const { storage_path } = await resp.json();
+  throw lastErr;
+}
+
+// Upload an image through our own server in SMALL CHUNKS. This phone stalls on
+// any upload past a certain size (to any host, in any format) but sends small
+// requests fine — so we slice the base64 into ~48KB pieces, send them one at a
+// time, and the server reassembles them into the image. Returns the path.
+const UPLOAD_CHUNK_CHARS = 48 * 1024;
+async function uploadImageBlob(blob) {
+  const data = await blobToBase64(blob);
+  // Small enough to go in one shot? Still chunk if big.
+  const sessionId = (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID().replace(/-/g, "")
+    : String(Date.now()) + Math.random().toString(36).slice(2);
+  const total = Math.ceil(data.length / UPLOAD_CHUNK_CHARS) || 1;
+
+  if (total === 1) {
+    const { storage_path } = await uploadPost({ data, content_type: "image/jpeg" });
+    if (!storage_path) throw new Error("upload returned no path");
+    return storage_path;
+  }
+
+  for (let i = 0; i < total; i++) {
+    const chunk = data.slice(i * UPLOAD_CHUNK_CHARS, (i + 1) * UPLOAD_CHUNK_CHARS);
+    flashToast(`Sending photo… part ${i + 1} of ${total}`);
+    await uploadPost({ session: sessionId, index: i, total, chunk });
+  }
+  const { storage_path } = await uploadPost({
+    session: sessionId, total, finalize: true, content_type: "image/jpeg",
+  });
   if (!storage_path) throw new Error("upload returned no path");
   return storage_path;
 }
@@ -729,8 +763,10 @@ async function attachFiles(fileList) {
         readFile(f), 20000, "reading/decoding the photo timed out");
       const kb = Math.round((parsed.blob?.size || parsed.data?.length || 0) / 1024);
       flashToast(`Uploading ${f.name} (${kb}KB)…`);
+      // Generous overall ceiling: a chunked upload is many small requests
+      // (each has its own short timeout + retries inside uploadImageBlob).
       const stored = await withTimeout(
-        dbCreateFile(project.id, parsed), 45000,
+        dbCreateFile(project.id, parsed), 180000,
         `upload timed out (${kb}KB)`);
       // Keep the local preview for an instant thumbnail (no re-download).
       if (parsed.previewUrl) stored.previewUrl = parsed.previewUrl;
