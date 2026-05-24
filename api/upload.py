@@ -16,6 +16,8 @@ Required environment variables (same as the chat endpoint):
 """
 
 from http.server import BaseHTTPRequestHandler
+import base64
+import binascii
 import json
 import os
 import uuid
@@ -60,10 +62,22 @@ class handler(BaseHTTPRequestHandler):
         if length > MAX_BYTES:
             return self._json_error(413, "Image is too large.")
 
-        body = self.rfile.read(length)
-        content_type = (self.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
+        # Body is JSON {data: <base64>, content_type}, the same text transport
+        # the chat endpoint uses — some phone networks stall on raw binary
+        # uploads but pass JSON text fine.
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except Exception as e:
+            return self._json_error(400, f"Invalid JSON body: {e}")
+        content_type = (payload.get("content_type") or "image/jpeg").split(";")[0].strip()
         if not content_type.startswith("image/"):
             content_type = "image/jpeg"
+        try:
+            body = base64.b64decode(payload.get("data") or "")
+        except (binascii.Error, ValueError) as e:
+            return self._json_error(400, f"Invalid image data: {e}")
+        if not body:
+            return self._json_error(400, "Empty image.")
 
         supabase_url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
         supabase_anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
