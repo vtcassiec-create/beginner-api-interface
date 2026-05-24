@@ -95,7 +95,8 @@ function rowToFile(row) {
     kind: row.kind,
     mediaType: row.media_type,
     size: row.size || 0,
-    data: row.data,
+    data: row.data,                    // base64 (legacy images, pdf/text)
+    storagePath: row.storage_path || null, // images live in Storage now
   };
 }
 
@@ -260,21 +261,42 @@ async function dbDeleteConversation(id) {
 }
 
 async function dbCreateFile(projectId, file) {
+  // Client-generate a UUID so we can store the image under a known path and
+  // skip reading the row back. Fall back to a DB-generated id if unavailable.
+  const id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : null;
+  const userId = state.user.id;
   const row = {
     project_id: projectId,
-    user_id: state.user.id,
+    user_id: userId,
     name: file.name,
     kind: file.kind,
     media_type: file.mediaType,
     size: file.size,
-    data: file.data,
+    data: null,
+    storage_path: null,
   };
-  // Read back ONLY the generated id. The default .select() returns the whole
-  // row including the (large) data blob, so we'd upload the image and then
-  // immediately re-download it — double the transfer, which stalls a mobile
-  // upload. We already have the data locally, so reuse it.
-  const { data, error } = await db.from("files")
-    .insert(row).select("id").single();
+
+  if (file.blob) {
+    // Images go to Storage (the sturdy, resumable upload path). Object lives
+    // under {uid}/{id}.jpg so the per-user RLS policy applies.
+    const path = `${userId}/${id}.jpg`;
+    const { error: upErr } = await db.storage
+      .from("attachments")
+      .upload(path, file.blob, { contentType: "image/jpeg", upsert: true });
+    if (upErr) throw upErr;
+    row.storage_path = path;
+  } else {
+    // pdf / text stay as inline base64 (they're small).
+    row.data = file.data;
+  }
+
+  if (id) {
+    // Client-generated id → insert with return=minimal (no row read-back).
+    const { error } = await db.from("files").insert({ id, ...row });
+    if (error) throw error;
+    return rowToFile({ ...row, id });
+  }
+  const { data, error } = await db.from("files").insert(row).select("id").single();
   if (error) throw error;
   return rowToFile({ ...row, id: data.id });
 }
@@ -553,8 +575,7 @@ function fileKind(file) {
   return "text";
 }
 
-const IMAGE_MAX_EDGE = 1280;          // plenty for Claude to see clearly
-const IMAGE_TARGET_BYTES = 150 * 1024; // keep uploads near the proven-good size
+const IMAGE_MAX_EDGE = 1568; // Claude's max useful image edge
 
 // Reject if a promise hasn't settled in `ms` — so a stalled image decode
 // can't hang the attach forever (the bug: "Got… adding…" then nothing).
@@ -587,12 +608,19 @@ function drawScaled(source, sw, sh) {
   return canvas;
 }
 
-// Downscale + re-encode an image to JPEG before storing. Phone photos
-// (e.g. a Galaxy S25's) are huge and the old <img>-decode could silently
-// STALL on mobile — neither loading nor erroring — so the attach hung. We
-// prefer createImageBitmap (robust on mobile, decodes off the main thread,
-// fails fast) with a hard timeout, and fall back to <img>. Either way it
-// resolves or throws a clear error; it never hangs.
+function canvasToJpegBlob(canvas, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("couldn't encode image"))),
+      "image/jpeg", quality);
+  });
+}
+
+// Downscale + re-encode an image to a JPEG Blob for upload to Storage. Phone
+// photos (e.g. a Galaxy S25's) are huge and the old <img>-decode could
+// silently STALL on mobile, so we prefer createImageBitmap (robust, off the
+// main thread, fails fast) with a hard timeout, and fall back to <img>.
+// Returns a Blob — Storage handles the upload, so no aggressive size budget.
 async function processImage(file) {
   let canvas;
   if (typeof createImageBitmap === "function") {
@@ -614,23 +642,18 @@ async function processImage(file) {
       URL.revokeObjectURL(url);
     }
   }
-  // Step the JPEG quality down until the encoded image is comfortably small
-  // enough to upload reliably (mobile uploads stalled on ~400KB+ payloads).
-  let base64 = "";
-  for (let quality = 0.8; ; quality -= 0.12) {
-    const dataUrl = canvas.toDataURL("image/jpeg", quality);
-    base64 = dataUrl.slice(dataUrl.indexOf(",") + 1); // base64, no data: prefix
-    if (base64.length <= IMAGE_TARGET_BYTES || quality <= 0.4) break;
-  }
-  return base64;
+  return canvasToJpegBlob(canvas, 0.85);
 }
 
 async function readFile(file) {
   const kind = fileKind(file);
   if (kind === "image") {
-    // Always normalize images to a small JPEG (handles HEIC + huge photos).
-    const data = await processImage(file);
-    return { name: file.name, kind, mediaType: "image/jpeg", data, size: data.length };
+    // Normalize to a JPEG Blob; it's uploaded to Storage (not the DB).
+    const blob = await processImage(file);
+    return {
+      name: file.name, kind, mediaType: "image/jpeg",
+      blob, previewUrl: URL.createObjectURL(blob), size: blob.size,
+    };
   }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -670,11 +693,13 @@ async function attachFiles(fileList) {
       flashToast(`Processing ${f.name}…`);
       const parsed = await withTimeout(
         readFile(f), 20000, "reading/decoding the photo timed out");
-      const kb = Math.round((parsed.data?.length || 0) / 1024);
-      flashToast(`Saving ${f.name} (${kb}KB)…`);
+      const kb = Math.round((parsed.blob?.size || parsed.data?.length || 0) / 1024);
+      flashToast(`Uploading ${f.name} (${kb}KB)…`);
       const stored = await withTimeout(
         dbCreateFile(project.id, parsed), 45000,
-        `saving timed out (${kb}KB) — your connection may be slow`);
+        `upload timed out (${kb}KB)`);
+      // Keep the local preview for an instant thumbnail (no re-download).
+      if (parsed.previewUrl) stored.previewUrl = parsed.previewUrl;
       project.files.push(stored);
       conv.activeFileIds.push(stored.id);
       attached++;
@@ -749,39 +774,54 @@ function cleanMessagesForApi(messages) {
   return cleaned;
 }
 
-function buildApiMessages(project, messages) {
-  const out = messages.map(msg => {
-    if (msg.role === "user") {
-      const content = [];
-      for (const fid of msg.fileIds || []) {
-        const f = project.files.find(f => f.id === fid);
-        if (!f) continue;
-        if (f.kind === "pdf") {
-          content.push({
-            type: "document",
-            source: { type: "base64", media_type: "application/pdf", data: f.data },
-            title: f.name,
-          });
-        } else if (f.kind === "image") {
-          content.push({
-            type: "image",
-            source: { type: "base64", media_type: f.mediaType, data: f.data },
-          });
-        } else {
-          content.push({
-            type: "text",
-            text: `<file name="${f.name}">\n${f.data}\n</file>`,
-          });
-        }
-      }
-      content.push({ type: "text", text: msg.text });
-      return { role: "user", content };
+// The image source block Claude receives. Images live in private Storage, so
+// we mint a short-lived signed URL and send a "url" source (Anthropic fetches
+// it server-side). Legacy images (inline base64) and missing files are handled
+// gracefully. Returns null if the image can't be resolved (it's then skipped).
+async function imageSourceFor(f) {
+  if (f.storagePath) {
+    const { data, error } = await db.storage
+      .from("attachments")
+      .createSignedUrl(f.storagePath, 3600); // 1h — ample for the request
+    if (error || !data?.signedUrl) return null;
+    return { type: "url", url: data.signedUrl };
+  }
+  if (f.data) return { type: "base64", media_type: f.mediaType, data: f.data };
+  return null;
+}
+
+async function buildApiMessages(project, messages) {
+  const out = [];
+  for (const msg of messages) {
+    if (msg.role !== "user") {
+      // Defensive: Anthropic rejects empty/whitespace text. The cleanup pass
+      // removes failed turns; if one slips through, use a real word.
+      out.push({ role: "assistant", content: msg.text || "(no response)" });
+      continue;
     }
-    // Defensive: Anthropic rejects empty AND whitespace-only text. The
-    // cleanup pass above should remove failed turns, but if anything slips
-    // through we use a real word so the API doesn't 400.
-    return { role: "assistant", content: msg.text || "(no response)" };
-  });
+    const content = [];
+    for (const fid of msg.fileIds || []) {
+      const f = project.files.find(f => f.id === fid);
+      if (!f) continue;
+      if (f.kind === "pdf") {
+        content.push({
+          type: "document",
+          source: { type: "base64", media_type: "application/pdf", data: f.data },
+          title: f.name,
+        });
+      } else if (f.kind === "image") {
+        const source = await imageSourceFor(f);
+        if (source) content.push({ type: "image", source });
+      } else {
+        content.push({
+          type: "text",
+          text: `<file name="${f.name}">\n${f.data}\n</file>`,
+        });
+      }
+    }
+    content.push({ type: "text", text: msg.text });
+    out.push({ role: "user", content });
+  }
 
   const last = out[out.length - 1];
   if (last && Array.isArray(last.content) && last.content.length > 0) {
@@ -905,7 +945,7 @@ async function generateAssistant() {
       {
         model: project.model,
         system: project.systemPrompt || DEFAULT_SYSTEM,
-        messages: buildApiMessages(project, cleanMessagesForApi(conv.messages)).slice(0, -1),
+        messages: (await buildApiMessages(project, cleanMessagesForApi(conv.messages))).slice(0, -1),
         useWebSearch: !!project.webSearch,
         useWhisper: !!project.whisper,
         useSignal: !!project.signal,
@@ -1610,17 +1650,21 @@ function renderFilesBar() {
     if (!f) continue;
     const li = document.createElement("li");
     // Show a thumbnail for images so it's obvious the picture attached
-    // (and which one); other kinds get a little type glyph.
-    if (f.kind === "image" && f.data) {
+    // (and which one). Prefer the local preview (just-attached, no fetch);
+    // fall back to legacy inline base64. Other kinds get a type glyph.
+    const thumbSrc = f.kind === "image"
+      ? (f.previewUrl || (f.data ? `data:${f.mediaType};base64,${f.data}` : ""))
+      : "";
+    if (thumbSrc) {
       const thumb = document.createElement("img");
       thumb.className = "file-thumb";
-      thumb.src = `data:${f.mediaType};base64,${f.data}`;
+      thumb.src = thumbSrc;
       thumb.alt = f.name;
       li.appendChild(thumb);
     } else {
       const glyph = document.createElement("span");
       glyph.className = "file-glyph";
-      glyph.textContent = f.kind === "pdf" ? "📄" : "📃";
+      glyph.textContent = f.kind === "image" ? "🖼️" : (f.kind === "pdf" ? "📄" : "📃");
       li.appendChild(glyph);
     }
     const name = document.createElement("span");
