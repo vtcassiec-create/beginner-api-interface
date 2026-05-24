@@ -187,3 +187,31 @@ DROP TRIGGER IF EXISTS manuscript_documents_updated_at ON manuscript_documents;
 CREATE TRIGGER manuscript_documents_updated_at
   BEFORE UPDATE ON manuscript_documents
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- =========================================================================
+-- Manuscript suggestions (his proposed edits, pending Cassie's review)
+-- A suggestion only changes a document when she accepts it in the UI.
+-- =========================================================================
+
+CREATE TABLE IF NOT EXISTS manuscript_suggestions (
+  id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_id  UUID        NOT NULL REFERENCES manuscript_documents(id) ON DELETE CASCADE,
+  user_id      UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  mode         TEXT        NOT NULL DEFAULT 'append' CHECK (mode IN ('append','replace')),
+  content      TEXT        NOT NULL DEFAULT '',
+  note         TEXT,
+  status       TEXT        NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending','accepted','dismissed')),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS manuscript_suggestions_doc_idx
+  ON manuscript_suggestions(document_id);
+
+ALTER TABLE manuscript_suggestions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "own manuscript_suggestions" ON manuscript_suggestions;
+CREATE POLICY "own manuscript_suggestions" ON manuscript_suggestions
+  FOR ALL TO authenticated
+  USING      (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);

@@ -432,6 +432,22 @@ async function dbDeleteDocument(id) {
   if (error) throw error;
 }
 
+async function dbListPendingSuggestions(documentId) {
+  const { data, error } = await db
+    .from("manuscript_suggestions")
+    .select("id,mode,content,note,created_at")
+    .eq("document_id", documentId)
+    .eq("status", "pending")
+    .order("created_at", { ascending: true });
+  if (error) { console.error(error); return []; }
+  return data || [];
+}
+
+async function dbSetSuggestionStatus(id, status) {
+  const { error } = await db.from("manuscript_suggestions").update({ status }).eq("id", id);
+  if (error) throw error;
+}
+
 async function dbListCoreMemories() {
   const { data, error } = await db
     .from("core_memories")
@@ -1081,6 +1097,8 @@ async function generateAssistant() {
         useWhisper: !!project.whisper,
         useSignal: !!project.signal,
         useMemory: !!project.memory,
+        coWrite: !!state.coWrite,
+        coWriteDocId: state.coWrite ? (state.activeDocumentId || "") : "",
         thinking: !!project.thinking,
         tz,
         lastMessageAt,
@@ -1110,6 +1128,13 @@ async function generateAssistant() {
           });
           updateAssistantBubble(assistantMsg);
           if (typeof refreshMemoriesIfOpen === "function") refreshMemoriesIfOpen();
+        } else if (event.type === "manuscript_suggestion") {
+          // He proposed an edit — it's pending your review in the Manuscript.
+          assistantMsg.toolEvents.push({
+            manuscript: true, ok: event.ok, summary: event.summary,
+          });
+          updateAssistantBubble(assistantMsg);
+          if (state.activeView === "manuscript") renderSuggestions();
         } else if (event.type === "done") {
           assistantMsg.usage = event.usage;
           // Let the typewriter drain any remaining buffer, then finalize.
@@ -1638,6 +1663,10 @@ function fillMessageBody(body, msg) {
       note.className = "tool-event";
       if (ev.notice) {
         note.textContent = `ℹ️ ${ev.text}`;
+      } else if (ev.manuscript) {
+        note.textContent = ev.ok
+          ? "✍️ Suggested an edit — review it in the Manuscript tab"
+          : `⚠️ Couldn't suggest an edit: ${ev.summary}`;
       } else if (ev.memory) {
         const what = ev.name === "save_memory_entity" ? "entity" : "memory";
         note.textContent = ev.ok
@@ -1743,6 +1772,7 @@ function openMsEditor(doc) {
   $("ms-cowrite-toggle").checked = state.coWrite;
   updateMsWordcount();
   updateCoWriteBar();
+  renderSuggestions();
 }
 
 function clearMsEditor() {
@@ -1806,9 +1836,12 @@ function buildSystemPrompt(project) {
     const doc = activeDocument();
     if (doc && (doc.content || "").trim()) {
       system += "\n\n# The piece you're co-writing with Cassie\n\n"
-        + "You're writing this together. Read it closely; offer lines, "
-        + "reactions, and help shaping it — but Cassie holds the pen, so make "
-        + "suggestions here in the chat rather than claiming you've edited it. "
+        + "You're writing this together. Read it closely and help shape it. "
+        + "When she invites you to write, you can propose an edit with the "
+        + "propose_manuscript_edit tool — append a passage or offer a rewrite. "
+        + "It doesn't change the document; it creates a suggestion she reviews "
+        + "and accepts or declines, so she always sees your change first and "
+        + "keeps the final say. Otherwise, just talk it through with her. "
         + "The current draft:\n\n"
         + `## ${doc.title || "Untitled"}\n\n${doc.content}`;
     }
@@ -1830,6 +1863,113 @@ function updateCoWriteBar() {
   const on = state.coWrite && doc && (doc.content || "").trim();
   bar.hidden = !on;
   if (on) $("cowrite-title").textContent = doc.title || "Untitled";
+}
+
+// A compact word-level diff → HTML with <ins>/<del>. Capped so a giant
+// rewrite doesn't lock the page; past the cap we just show the new text.
+function wordDiffHtml(oldText, newText) {
+  const a = (oldText || "").split(/(\s+)/);
+  const b = (newText || "").split(/(\s+)/);
+  if (a.length * b.length > 1_200_000) {
+    return escapeHtml(newText).replace(/\n/g, "<br>"); // too big to diff cheaply
+  }
+  const n = a.length, m = b.length;
+  const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  let i = 0, j = 0, out = "";
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { out += escapeHtml(a[i]); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out += `<del>${escapeHtml(a[i])}</del>`; i++; }
+    else { out += `<ins>${escapeHtml(b[j])}</ins>`; j++; }
+  }
+  while (i < n) { out += `<del>${escapeHtml(a[i])}</del>`; i++; }
+  while (j < m) { out += `<ins>${escapeHtml(b[j])}</ins>`; j++; }
+  return out.replace(/\n/g, "<br>");
+}
+
+async function renderSuggestions() {
+  const box = $("ms-suggestions");
+  const doc = activeDocument();
+  if (!box || !doc) { if (box) box.hidden = true; return; }
+  let pending = [];
+  try { pending = await dbListPendingSuggestions(doc.id); } catch (_) {}
+  box.innerHTML = "";
+  if (!pending.length) { box.hidden = true; return; }
+  box.hidden = false;
+  for (const s of pending) {
+    const card = document.createElement("div");
+    card.className = "ms-suggestion";
+
+    const head = document.createElement("div");
+    head.className = "ms-suggestion-head";
+    head.innerHTML = `✍️ <strong>He suggests</strong> · ${s.mode === "replace" ? "rewrite" : "addition"}`;
+    if (s.note) head.innerHTML += ` — <span class="muted">${escapeHtml(s.note)}</span>`;
+    card.appendChild(head);
+
+    const preview = document.createElement("div");
+    preview.className = "ms-suggestion-preview";
+    if (s.mode === "replace") {
+      preview.innerHTML = wordDiffHtml(doc.content, s.content);
+    } else {
+      preview.innerHTML = `<ins>${escapeHtml(s.content).replace(/\n/g, "<br>")}</ins>`;
+    }
+    card.appendChild(preview);
+
+    const actions = document.createElement("div");
+    actions.className = "ms-suggestion-actions";
+    const accept = document.createElement("button");
+    accept.className = "primary small";
+    accept.textContent = "✓ Accept";
+    accept.addEventListener("click", () => acceptSuggestion(s));
+    const reject = document.createElement("button");
+    reject.className = "ghost small";
+    reject.textContent = "✗ Decline";
+    reject.addEventListener("click", () => rejectSuggestion(s));
+    actions.appendChild(accept);
+    actions.appendChild(reject);
+    card.appendChild(actions);
+
+    box.appendChild(card);
+  }
+}
+
+async function acceptSuggestion(s) {
+  const doc = activeDocument();
+  if (!doc) return;
+  const newContent = s.mode === "append"
+    ? (doc.content ? doc.content.replace(/\s+$/, "") + "\n\n" : "") + s.content
+    : s.content;
+  const wc = countWords(newContent);
+  try {
+    await dbUpdateDocument(doc.id, { content: newContent, word_count: wc });
+    await dbSetSuggestionStatus(s.id, "accepted");
+  } catch (e) {
+    flashToast(`Couldn't accept: ${e.message}`, true);
+    return;
+  }
+  doc.content = newContent;
+  doc.wordCount = wc;
+  if (state.activeDocumentId === doc.id) {
+    $("ms-content").value = newContent;
+    updateMsWordcount();
+  }
+  flashToast("Accepted — it's in the page now ✓");
+  renderMsList(getActiveProject());
+  renderSuggestions();
+  updateCoWriteBar();
+}
+
+async function rejectSuggestion(s) {
+  try {
+    await dbSetSuggestionStatus(s.id, "dismissed");
+  } catch (e) {
+    flashToast(`Couldn't decline: ${e.message}`, true);
+    return;
+  }
+  flashToast("Declined");
+  renderSuggestions();
 }
 
 let _msSaveTimer = null;

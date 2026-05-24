@@ -530,6 +530,40 @@ button.ghost.small {
 }
 .cowrite-bar strong { color: var(--text); }
 
+/* His pending manuscript suggestions (review / accept / decline) */
+.ms-suggestions { display: flex; flex-direction: column; gap: 10px; margin-bottom: 6px; }
+.ms-suggestion {
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev));
+  padding: 10px 12px;
+}
+.ms-suggestion-head { font-size: 13px; margin-bottom: 6px; }
+.ms-suggestion-preview {
+  font-size: 14px;
+  line-height: 1.6;
+  max-height: 260px;
+  overflow-y: auto;
+  word-break: break-word;
+  padding: 6px 0;
+}
+.ms-suggestion-preview ins {
+  background: rgba(120, 190, 120, 0.28);
+  text-decoration: none;
+  color: var(--text);
+}
+.ms-suggestion-preview del {
+  background: rgba(200, 100, 90, 0.20);
+  color: var(--text-muted);
+}
+.ms-suggestion-actions { display: flex; gap: 8px; margin-top: 10px; }
+.ms-suggestion-actions button {
+  padding: 5px 12px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
 @media (max-width: 720px) {
   .ms-list-col { width: 130px; }
   .ms-editor-col { min-width: 0; }
