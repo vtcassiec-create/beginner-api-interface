@@ -1,18 +1,19 @@
 """
-Image upload proxy.
+Image upload proxy — with chunked uploads for phones that stall on larger
+request bodies.
 
-Some clients (notably a phone whose network path to Supabase Storage stalls
-on larger uploads) can't push an image straight to Storage, even though small
-requests work. This endpoint accepts the raw image bytes from the browser and
-re-uploads them to Supabase Storage *server-side* — a different, sturdier
-network path — then returns the object's storage path.
+Some clients (notably a phone whose network stalls on any upload past a
+certain size, while small requests work fine) can't push an image in one POST
+— to Storage or even to this server. So the browser may split the image into
+small base64 chunks and send them one at a time; this endpoint stashes each
+chunk in Storage and, on a final "finalize" call, reassembles them into the
+real image. Small single uploads still work in one shot.
 
-The upload is performed AS THE SIGNED-IN USER (their bearer token is forwarded
-to Storage), so the per-user RLS policy on the 'attachments' bucket still
-applies: a user can only ever write under their own {uid}/ folder.
+Everything is done AS THE SIGNED-IN USER (their bearer token is forwarded to
+Storage), so the per-user RLS on the 'attachments' bucket still applies — a
+user can only read/write/delete under their own {uid}/ folder.
 
-Required environment variables (same as the chat endpoint):
-  SUPABASE_URL, SUPABASE_ANON_KEY
+Required env: SUPABASE_URL, SUPABASE_ANON_KEY
 """
 
 from http.server import BaseHTTPRequestHandler
@@ -25,14 +26,14 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
-MAX_BYTES = 12 * 1024 * 1024  # generous ceiling for a downscaled photo
+MAX_BYTES = 12 * 1024 * 1024
+MAX_CHUNKS = 400
 AUTH_TIMEOUT_SECONDS = 5
-UPLOAD_TIMEOUT_SECONDS = 30
+STORAGE_TIMEOUT_SECONDS = 30
 BUCKET = "attachments"
 
 
 def _normalize_url(raw):
-    """Reduce SUPABASE_URL to scheme://host[:port] (see chat.py)."""
     raw = (raw or "").strip()
     if not raw:
         return ""
@@ -57,74 +58,124 @@ class handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
-        if length <= 0:
-            return self._json_error(400, "Empty upload.")
-        if length > MAX_BYTES:
-            return self._json_error(413, "Image is too large.")
-
-        # Body is JSON {data: <base64>, content_type}, the same text transport
-        # the chat endpoint uses — some phone networks stall on raw binary
-        # uploads but pass JSON text fine.
+        if length <= 0 or length > MAX_BYTES:
+            return self._json_error(400, "Empty or oversized request.")
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
         except Exception as e:
             return self._json_error(400, f"Invalid JSON body: {e}")
-        content_type = (payload.get("content_type") or "image/jpeg").split(";")[0].strip()
-        if not content_type.startswith("image/"):
-            content_type = "image/jpeg"
-        try:
-            body = base64.b64decode(payload.get("data") or "")
-        except (binascii.Error, ValueError) as e:
-            return self._json_error(400, f"Invalid image data: {e}")
-        if not body:
-            return self._json_error(400, "Empty image.")
 
-        supabase_url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
-        supabase_anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
-        if not supabase_url or not supabase_anon:
-            return self._json_error(500, "Storage is not configured.")
-
-        # Path under the user's own folder so RLS (insert) is satisfied.
-        path = f"{user_id}/{uuid.uuid4().hex}.jpg"
         token = self._bearer_token()
         try:
-            req = urllib.request.Request(
-                f"{supabase_url}/storage/v1/object/{BUCKET}/{path}",
-                data=body,
-                method="POST",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "apikey": supabase_anon,
-                    "Content-Type": content_type,
-                    "x-upsert": "true",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=UPLOAD_TIMEOUT_SECONDS) as resp:
-                if not (200 <= resp.status < 300):
-                    return self._json_error(502, f"Storage returned {resp.status}.")
+            if payload.get("finalize"):
+                return self._finalize(payload, user_id, token)
+            if "index" in payload:
+                return self._store_chunk(payload, user_id, token)
+            return self._store_single(payload, user_id, token)
         except urllib.error.HTTPError as e:
             detail = ""
             try:
                 detail = e.read().decode()[:200]
             except Exception:
                 detail = str(e)
-            return self._json_error(502, f"Storage upload failed: {detail}")
+            return self._json_error(502, f"Storage error: {detail}")
         except Exception as e:
-            return self._json_error(502, f"Storage upload failed: {e}")
+            return self._json_error(502, f"Upload failed: {e}")
 
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self._cors()
-        self.end_headers()
-        self.wfile.write(json.dumps({"storage_path": path}).encode())
+    # ---- upload modes ----
 
-    # ---- helpers ----
+    def _store_single(self, payload, user_id, token):
+        body = self._decode_b64(payload.get("data"))
+        if not body:
+            return self._json_error(400, "Empty image.")
+        path = f"{user_id}/{uuid.uuid4().hex}.jpg"
+        self._storage_put(path, body, "image/jpeg", token)
+        return self._ok({"storage_path": path})
+
+    def _store_chunk(self, payload, user_id, token):
+        session = self._safe_token(payload.get("session"))
+        index = payload.get("index")
+        chunk = payload.get("chunk")
+        if not session or not isinstance(index, int) or chunk is None:
+            return self._json_error(400, "Malformed chunk.")
+        # Store the base64 text piece as-is; finalize concatenates then decodes.
+        path = f"{user_id}/tmp/{session}/{index}"
+        self._storage_put(path, chunk.encode(), "text/plain", token)
+        return self._ok({"ok": True})
+
+    def _finalize(self, payload, user_id, token):
+        session = self._safe_token(payload.get("session"))
+        total = payload.get("total")
+        if not session or not isinstance(total, int) or not (0 < total <= MAX_CHUNKS):
+            return self._json_error(400, "Malformed finalize.")
+        parts = []
+        for i in range(total):
+            parts.append(self._storage_get(f"{user_id}/tmp/{session}/{i}", token).decode())
+        body = self._decode_b64("".join(parts))
+        if not body:
+            return self._json_error(400, "Reassembled image was empty.")
+        path = f"{user_id}/{uuid.uuid4().hex}.jpg"
+        self._storage_put(path, body, "image/jpeg", token)
+        # Best-effort cleanup of the temp chunks.
+        for i in range(total):
+            self._storage_delete(f"{user_id}/tmp/{session}/{i}", token)
+        return self._ok({"storage_path": path})
+
+    # ---- storage helpers (as the user; RLS applies) ----
+
+    def _storage_base(self):
+        return _normalize_url(os.environ.get("SUPABASE_URL", ""))
+
+    def _storage_headers(self, token, extra=None):
+        h = {
+            "Authorization": f"Bearer {token}",
+            "apikey": os.environ.get("SUPABASE_ANON_KEY", "").strip(),
+        }
+        if extra:
+            h.update(extra)
+        return h
+
+    def _storage_put(self, path, body, content_type, token):
+        req = urllib.request.Request(
+            f"{self._storage_base()}/storage/v1/object/{BUCKET}/{path}",
+            data=body, method="POST",
+            headers=self._storage_headers(token, {"Content-Type": content_type, "x-upsert": "true"}))
+        with urllib.request.urlopen(req, timeout=STORAGE_TIMEOUT_SECONDS) as resp:
+            if not (200 <= resp.status < 300):
+                raise RuntimeError(f"storage put {resp.status}")
+
+    def _storage_get(self, path, token):
+        req = urllib.request.Request(
+            f"{self._storage_base()}/storage/v1/object/{BUCKET}/{path}",
+            headers=self._storage_headers(token))
+        with urllib.request.urlopen(req, timeout=STORAGE_TIMEOUT_SECONDS) as resp:
+            return resp.read()
+
+    def _storage_delete(self, path, token):
+        try:
+            req = urllib.request.Request(
+                f"{self._storage_base()}/storage/v1/object/{BUCKET}/{path}",
+                method="DELETE", headers=self._storage_headers(token))
+            urllib.request.urlopen(req, timeout=STORAGE_TIMEOUT_SECONDS).read()
+        except Exception:
+            pass  # cleanup is best-effort
+
+    # ---- misc helpers ----
+
+    def _decode_b64(self, s):
+        try:
+            return base64.b64decode(s or "")
+        except (binascii.Error, ValueError):
+            return b""
+
+    def _safe_token(self, s):
+        """Allow only simple ids in storage paths (no slashes/traversal)."""
+        s = str(s or "")
+        return s if s and all(c.isalnum() or c in "-_" for c in s) else ""
 
     def _bearer_token(self):
         auth = self.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
-            return ""
-        return auth[len("Bearer "):].strip()
+        return auth[len("Bearer "):].strip() if auth.startswith("Bearer ") else ""
 
     def _verify_auth(self):
         token = self._bearer_token()
@@ -137,14 +188,20 @@ class handler(BaseHTTPRequestHandler):
         try:
             req = urllib.request.Request(
                 f"{supabase_url}/auth/v1/user",
-                headers={"Authorization": f"Bearer {token}", "apikey": supabase_anon},
-            )
+                headers={"Authorization": f"Bearer {token}", "apikey": supabase_anon})
             with urllib.request.urlopen(req, timeout=AUTH_TIMEOUT_SECONDS) as resp:
                 if resp.status != 200:
                     return None
                 return json.loads(resp.read().decode()).get("id")
         except Exception:
             return None
+
+    def _ok(self, obj):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self._cors()
+        self.end_headers()
+        self.wfile.write(json.dumps(obj).encode())
 
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
