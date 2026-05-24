@@ -273,12 +273,12 @@ function blobToBase64(blob) {
 }
 
 // One JSON POST to /api/upload, with auth + a short retry (small requests can
-// blip on a flaky phone connection). Returns the parsed JSON.
-async function uploadPost(payload) {
+// blip on a flaky connection). Returns the parsed JSON.
+async function uploadPost(payload, { attempts = 3, timeout = 12000 } = {}) {
   const { data: { session } } = await db.auth.getSession();
   if (!session) throw new Error("You're signed out. Refresh to sign back in.");
   let lastErr;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       const resp = await withTimeout(fetch("/api/upload", {
         method: "POST",
@@ -287,7 +287,7 @@ async function uploadPost(payload) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
-      }), 12000, "upload request timed out");
+      }), timeout, "upload request timed out");
       if (!resp.ok) {
         let body = {};
         try { body = await resp.json(); } catch (_) {}
@@ -308,18 +308,22 @@ async function uploadPost(payload) {
 const UPLOAD_CHUNK_CHARS = 8 * 1024; // tiny pieces — the phone stalls above a low threshold
 async function uploadImageBlob(blob) {
   const data = await blobToBase64(blob);
-  // Small enough to go in one shot? Still chunk if big.
+
+  // Fast path: one shot (instant on a normal connection). One quick attempt;
+  // if it fails (a restrictive network that stalls larger requests), fall
+  // back to sending in tiny pieces.
+  try {
+    const { storage_path } = await uploadPost(
+      { data, content_type: "image/jpeg" }, { attempts: 1, timeout: 15000 });
+    if (storage_path) return storage_path;
+  } catch (_) {
+    // fall through to chunked
+  }
+
   const sessionId = (window.crypto && crypto.randomUUID)
     ? crypto.randomUUID().replace(/-/g, "")
     : String(Date.now()) + Math.random().toString(36).slice(2);
   const total = Math.ceil(data.length / UPLOAD_CHUNK_CHARS) || 1;
-
-  if (total === 1) {
-    const { storage_path } = await uploadPost({ data, content_type: "image/jpeg" });
-    if (!storage_path) throw new Error("upload returned no path");
-    return storage_path;
-  }
-
   for (let i = 0; i < total; i++) {
     const chunk = data.slice(i * UPLOAD_CHUNK_CHARS, (i + 1) * UPLOAD_CHUNK_CHARS);
     flashToast(`Sending photo… part ${i + 1} of ${total}`);
