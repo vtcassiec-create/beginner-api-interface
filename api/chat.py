@@ -128,6 +128,34 @@ MEMORY_TOOLS_GUIDE = (
     "you can mention what you saved. Quality over quantity."
 )
 
+# Co-writing: propose an edit to the open manuscript piece. Available only when
+# co-write is on. It NEVER changes the document — it creates a suggestion Cassie
+# reviews and accepts or declines. So he can put words toward the page while she
+# keeps final say.
+MANUSCRIPT_TOOL = {
+    "name": "propose_manuscript_edit",
+    "description": (
+        "Propose an edit to the manuscript piece you're co-writing with Cassie. "
+        "This does NOT change the document — it creates a suggestion she reviews "
+        "and accepts or declines, so she always sees your change first. Use "
+        "mode 'append' to add a passage to the end, or 'replace' to offer a full "
+        "rewrite of the whole piece. Keep 'note' to a short line about what you "
+        "did or why. Use this when she's invited you to write, not unprompted."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "mode": {"type": "string", "enum": ["append", "replace"]},
+            "content": {
+                "type": "string",
+                "description": "The passage to append, or the full rewritten piece.",
+            },
+            "note": {"type": "string", "description": "A short note on the change."},
+        },
+        "required": ["mode", "content"],
+    },
+}
+
 
 class handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
@@ -179,6 +207,12 @@ class handler(BaseHTTPRequestHandler):
         # to the signed-in user, executed in the tool-use loop below.
         memory_on = bool(data.get("useMemory"))
 
+        # Co-writing: when on with an open piece, give him a tool to PROPOSE an
+        # edit (it only creates a suggestion Cassie reviews — never edits the
+        # document). cowrite_doc is the target document's id.
+        cowrite_doc = (data.get("coWriteDocId") or "").strip()
+        cowrite_on = bool(data.get("coWrite")) and bool(cowrite_doc)
+
         # Memory preamble (self-state → user preferences → core memories)
         # is prepended to the project's system prompt as one cached block.
         # Loading it must never break chat: any failure yields "".
@@ -205,6 +239,8 @@ class handler(BaseHTTPRequestHandler):
             })
         if memory_on:
             tools.extend(MEMORY_TOOLS)
+        if cowrite_on:
+            tools.append(MANUSCRIPT_TOOL)
         if tools:
             kwargs["tools"] = tools
         # Remote MCP servers, each behind a per-project toggle. Built as
@@ -279,15 +315,18 @@ class handler(BaseHTTPRequestHandler):
                 agg["cache_creation_input_tokens"] += getattr(u, "cache_creation_input_tokens", 0) or 0
                 agg["cache_read_input_tokens"] += getattr(u, "cache_read_input_tokens", 0) or 0
 
-                # Continue the loop only when he called a memory tool we own.
+                # Continue the loop only when he called a client tool we own.
                 # Server tools (web search) and MCP tools are run by the API
-                # itself and never surface here as a tool_use stop.
+                # itself and never surface here as a tool_use stop. (Tools are
+                # only offered when their flag is on, so a call implies enabled.)
+                handled = ("save_core_memory", "save_memory_entity",
+                           "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
                     if getattr(b, "type", None) == "tool_use"
-                    and getattr(b, "name", None) in ("save_core_memory", "save_memory_entity")
+                    and getattr(b, "name", None) in handled
                 ]
-                if not (memory_on and tool_uses and rounds < MAX_TOOL_ROUNDS):
+                if not (tool_uses and rounds < MAX_TOOL_ROUNDS):
                     self._sse({"type": "done",
                                "stop_reason": final.stop_reason, "usage": agg})
                     return
@@ -296,9 +335,16 @@ class handler(BaseHTTPRequestHandler):
                 results = []
                 for b in tool_uses:
                     inp = b.input if isinstance(b.input, dict) else {}
-                    ok, summary, detail = self._exec_memory_tool(b.name, inp, token, user_id)
-                    self._sse({"type": "memory_saved", "tool": b.name,
-                               "ok": ok, "summary": summary})
+                    if b.name == "propose_manuscript_edit":
+                        ok, summary, detail = self._exec_manuscript_tool(
+                            inp, token, user_id, cowrite_doc)
+                        self._sse({"type": "manuscript_suggestion",
+                                   "ok": ok, "summary": summary})
+                    else:
+                        ok, summary, detail = self._exec_memory_tool(
+                            b.name, inp, token, user_id)
+                        self._sse({"type": "memory_saved", "tool": b.name,
+                                   "ok": ok, "summary": summary})
                     results.append({
                         "type": "tool_result",
                         "tool_use_id": b.id,
@@ -510,6 +556,34 @@ class handler(BaseHTTPRequestHandler):
             return False, "save failed", f"Could not save entity: {res}"
 
         return False, "unknown tool", f"Unknown memory tool: {name}"
+
+    def _exec_manuscript_tool(self, inp, token, user_id, document_id):
+        """Create a pending manuscript suggestion (does NOT edit the doc).
+
+        RLS-scoped to the user. Returns (ok, short_summary, detail_for_model).
+        """
+        if not document_id:
+            return False, "no piece open", "No manuscript piece is open to edit."
+        mode = inp.get("mode") or "append"
+        if mode not in ("append", "replace"):
+            mode = "append"
+        content = inp.get("content") or ""
+        if not content.strip():
+            return False, "empty", "No content provided; nothing proposed."
+        note = (inp.get("note") or "").strip() or None
+        ok, res = self._supabase_write("manuscript_suggestions", {
+            "document_id": document_id,
+            "user_id": user_id,
+            "mode": mode,
+            "content": content,
+            "note": note,
+        }, token)
+        if ok:
+            verb = "rewrite" if mode == "replace" else "addition"
+            return True, f"proposed a {verb}", (
+                f"Proposed a manuscript {verb}; it's pending Cassie's review "
+                f"(she'll accept or decline it). Let her know you've suggested it.")
+        return False, "propose failed", f"Could not propose the edit: {res}"
 
     def _humanize_gap(self, now, last_ms):
         """Render the gap since the last message as a human phrase."""
