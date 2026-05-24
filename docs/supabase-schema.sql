@@ -49,16 +49,47 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 
 CREATE TABLE IF NOT EXISTS files (
-  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id  UUID        NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  user_id     UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  name        TEXT        NOT NULL,
-  kind        TEXT        NOT NULL,
-  media_type  TEXT,
-  size        INTEGER,
-  data        TEXT        NOT NULL,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id   UUID        NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  user_id      UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  name         TEXT        NOT NULL,
+  kind         TEXT        NOT NULL,
+  media_type   TEXT,
+  size         INTEGER,
+  -- Inline base64 for small pdf/text files. Images instead live in the
+  -- 'attachments' Storage bucket (referenced by storage_path) — base64 in a
+  -- DB column stalled larger uploads on mobile.
+  data         TEXT,
+  storage_path TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Migrations (idempotent): images moved to Storage.
+ALTER TABLE files ADD COLUMN IF NOT EXISTS storage_path TEXT;
+ALTER TABLE files ALTER COLUMN data DROP NOT NULL;
+
+-- Private bucket for image attachments + per-user RLS on storage.objects.
+-- Objects live under {uid}/... so each user only ever touches their own.
+INSERT INTO storage.buckets (id, name, public)
+  VALUES ('attachments', 'attachments', FALSE)
+  ON CONFLICT (id) DO NOTHING;
+
+DROP POLICY IF EXISTS "own attachments select" ON storage.objects;
+DROP POLICY IF EXISTS "own attachments insert" ON storage.objects;
+DROP POLICY IF EXISTS "own attachments delete" ON storage.objects;
+
+CREATE POLICY "own attachments select" ON storage.objects
+  FOR SELECT TO authenticated
+  USING (bucket_id = 'attachments'
+         AND (storage.foldername(name))[1] = auth.uid()::text);
+CREATE POLICY "own attachments insert" ON storage.objects
+  FOR INSERT TO authenticated
+  WITH CHECK (bucket_id = 'attachments'
+              AND (storage.foldername(name))[1] = auth.uid()::text);
+CREATE POLICY "own attachments delete" ON storage.objects
+  FOR DELETE TO authenticated
+  USING (bucket_id = 'attachments'
+         AND (storage.foldername(name))[1] = auth.uid()::text);
 
 -- =========================================================================
 -- Indexes
