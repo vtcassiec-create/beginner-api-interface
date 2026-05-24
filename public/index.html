@@ -132,6 +132,10 @@
           <ul id="active-files"></ul>
         </div>
 
+        <div id="cowrite-bar" class="cowrite-bar" hidden>
+          ✨ Co-writing <strong id="cowrite-title"></strong> — he can read this draft as you talk.
+        </div>
+
         <form id="composer" class="composer" autocomplete="off">
           <label id="attach-btn" for="file-input" title="Attach a file"
                  role="button" aria-label="Attach a file">📎</label>
@@ -163,6 +167,10 @@
                 <div class="ms-editor-foot">
                   <span id="ms-wordcount" class="muted small"></span>
                   <span id="ms-savestate" class="muted small"></span>
+                  <label class="toggle ms-cowrite" title="Let Claude read this piece in the chat so you can write it together">
+                    <input type="checkbox" id="ms-cowrite-toggle" />
+                    <span>✨ Co-write</span>
+                  </label>
                   <button id="ms-delete-btn" class="danger ghost small" type="button">Delete</button>
                 </div>
               </div>

@@ -517,7 +517,18 @@ button.ghost.small {
   border-top: 1px solid var(--border);
   padding-top: 8px;
 }
-.ms-editor-foot #ms-delete-btn { margin-left: auto; }
+.ms-editor-foot .ms-cowrite { margin-left: auto; }
+.ms-editor-foot #ms-delete-btn { margin-left: 0; }
+
+/* Co-write banner above the composer */
+.cowrite-bar {
+  padding: 6px 20px;
+  font-size: 12px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+  border-top: 1px solid var(--border);
+}
+.cowrite-bar strong { color: var(--text); }
 
 @media (max-width: 720px) {
   .ms-list-col { width: 130px; }

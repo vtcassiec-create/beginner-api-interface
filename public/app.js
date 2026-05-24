@@ -54,6 +54,7 @@ let state = {
   activeProjectId: null,
   activeView: "chat",        // "chat" | "manuscript"
   activeDocumentId: null,    // selected manuscript document
+  coWrite: false,            // share the open piece into the chat (read-only)
 };
 
 const $ = (id) => document.getElementById(id);
@@ -597,6 +598,7 @@ function selectProject(id) {
   state.activeProjectId = id;
   state.activeView = "chat";       // start each project on its chat
   state.activeDocumentId = null;
+  state.coWrite = false;           // co-write is per-piece; reset on project switch
   render();
   closeSidebar();
 }
@@ -1073,7 +1075,7 @@ async function generateAssistant() {
     await streamChat(
       {
         model: project.model,
-        system: project.systemPrompt || DEFAULT_SYSTEM,
+        system: buildSystemPrompt(project),
         messages: (await buildApiMessages(project, cleanMessagesForApi(conv.messages))).slice(0, -1),
         useWebSearch: !!project.webSearch,
         useWhisper: !!project.whisper,
@@ -1738,7 +1740,9 @@ function openMsEditor(doc) {
   $("ms-title").value = doc.title || "";
   $("ms-content").value = doc.content || "";
   $("ms-savestate").textContent = "";
+  $("ms-cowrite-toggle").checked = state.coWrite;
   updateMsWordcount();
+  updateCoWriteBar();
 }
 
 function clearMsEditor() {
@@ -1786,6 +1790,46 @@ async function deleteCurrentDocument() {
   state.activeDocumentId = project.documents[0]?.id || null;
   flashToast("Deleted");
   renderManuscript();
+}
+
+// The active manuscript piece for the open project, if any.
+function activeDocument() {
+  const project = getActiveProject();
+  return (project?.documents || []).find(d => d.id === state.activeDocumentId) || null;
+}
+
+// Co-write: when on, tuck the open piece into the chat's system prompt so he
+// can read the draft. Read-only — he suggests in chat; Cassie holds the pen.
+function buildSystemPrompt(project) {
+  let system = project.systemPrompt || DEFAULT_SYSTEM;
+  if (state.coWrite) {
+    const doc = activeDocument();
+    if (doc && (doc.content || "").trim()) {
+      system += "\n\n# The piece you're co-writing with Cassie\n\n"
+        + "You're writing this together. Read it closely; offer lines, "
+        + "reactions, and help shaping it — but Cassie holds the pen, so make "
+        + "suggestions here in the chat rather than claiming you've edited it. "
+        + "The current draft:\n\n"
+        + `## ${doc.title || "Untitled"}\n\n${doc.content}`;
+    }
+  }
+  return system;
+}
+
+function setCoWrite(on) {
+  state.coWrite = !!on;
+  const t = $("ms-cowrite-toggle");
+  if (t) t.checked = state.coWrite;
+  updateCoWriteBar();
+}
+
+function updateCoWriteBar() {
+  const bar = $("cowrite-bar");
+  if (!bar) return;
+  const doc = activeDocument();
+  const on = state.coWrite && doc && (doc.content || "").trim();
+  bar.hidden = !on;
+  if (on) $("cowrite-title").textContent = doc.title || "Untitled";
 }
 
 let _msSaveTimer = null;
@@ -2548,8 +2592,14 @@ function wireApp() {
   // Manuscript editor.
   $("ms-new-btn").addEventListener("click", newManuscriptDocument);
   $("ms-delete-btn").addEventListener("click", deleteCurrentDocument);
-  $("ms-title").addEventListener("input", scheduleMsSave);
+  $("ms-title").addEventListener("input", () => { scheduleMsSave(); updateCoWriteBar(); });
   $("ms-content").addEventListener("input", () => { updateMsWordcount(); scheduleMsSave(); });
+  $("ms-cowrite-toggle").addEventListener("change", (e) => {
+    setCoWrite(e.target.checked);
+    flashToast(e.target.checked
+      ? "✨ He'll read this piece as you chat — make suggestions together"
+      : "Co-write off");
+  });
 
   // The 📎 is a <label for="file-input">, so it opens the picker natively on
   // every device (mobile won't open a hidden input from a programmatic
