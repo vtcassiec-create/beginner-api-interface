@@ -68,31 +68,42 @@
           <input id="project-name" class="project-name" type="text" maxlength="80" />
           <div class="project-controls">
             <select id="model-select" title="Model"></select>
-            <label class="toggle">
-              <input type="checkbox" id="web-search-toggle" />
-              <span>Web</span>
-            </label>
-            <label class="toggle" id="thinking-toggle-label">
-              <input type="checkbox" id="thinking-toggle" />
-              <span>Think</span>
-            </label>
-            <label class="toggle" title="Let Claude read & write the Whisper Obsidian vault in this project">
-              <input type="checkbox" id="whisper-toggle" />
-              <span>Vault</span>
-            </label>
-            <label class="toggle" title="Let Claude use the Signal Bridge connection in this project">
-              <input type="checkbox" id="signal-toggle" />
-              <span>Signal</span>
-            </label>
-            <label class="toggle" title="Let Claude write his own memories &amp; knowledge-graph entities in this project">
-              <input type="checkbox" id="memory-toggle" />
-              <span>Memory</span>
-            </label>
+            <div class="tools-wrap">
+              <button id="tools-btn" class="ghost" title="Tools &amp; connections for this project">Tools ▾</button>
+              <div id="tools-menu" class="tools-menu" hidden>
+                <label class="toggle" title="Let Claude search the web in this project">
+                  <input type="checkbox" id="web-search-toggle" />
+                  <span>Web search</span>
+                </label>
+                <label class="toggle" id="thinking-toggle-label">
+                  <input type="checkbox" id="thinking-toggle" />
+                  <span>Thinking</span>
+                </label>
+                <label class="toggle" title="Let Claude read & write the Whisper Obsidian vault in this project">
+                  <input type="checkbox" id="whisper-toggle" />
+                  <span>Vault</span>
+                </label>
+                <label class="toggle" title="Let Claude use the Signal Bridge connection in this project">
+                  <input type="checkbox" id="signal-toggle" />
+                  <span>Signal Bridge</span>
+                </label>
+                <label class="toggle" title="Let Claude write his own memories &amp; knowledge-graph entities in this project">
+                  <input type="checkbox" id="memory-toggle" />
+                  <span>Memory</span>
+                </label>
+              </div>
+            </div>
             <button id="settings-btn" class="ghost" title="Project settings">Settings</button>
             <button id="delete-project-btn" class="danger ghost" title="Delete this project">Delete</button>
           </div>
         </header>
 
+        <div class="view-tabs">
+          <button id="tab-chat" class="view-tab active" type="button">💬 Chat</button>
+          <button id="tab-manuscript" class="view-tab" type="button">📖 Manuscript</button>
+        </div>
+
+        <div id="chat-pane">
         <header class="conv-header">
           <input id="conv-name" class="conv-name" type="text" maxlength="80" placeholder="Conversation name" />
           <span id="conv-usage" class="conv-usage muted small"></span>
@@ -128,6 +139,35 @@
           <textarea id="prompt" rows="1" placeholder="Message Claude…" required></textarea>
           <button type="submit" id="send-btn" class="primary">Send</button>
         </form>
+        </div><!-- /#chat-pane -->
+
+        <div id="manuscript-pane" hidden>
+          <div class="ms-layout">
+            <aside class="ms-list-col">
+              <div class="ms-list-head">
+                <span id="ms-total" class="muted small"></span>
+                <button id="ms-new-btn" class="ghost small" type="button">+ New</button>
+              </div>
+              <ul id="ms-list" class="ms-list"></ul>
+            </aside>
+            <section class="ms-editor-col">
+              <div id="ms-empty" class="ms-empty muted">
+                Pick a piece from the left, or start a new one.
+              </div>
+              <div id="ms-editor" hidden>
+                <input id="ms-title" class="ms-title" type="text" maxlength="200"
+                       placeholder="Untitled" />
+                <textarea id="ms-content" class="ms-content"
+                          placeholder="Begin…"></textarea>
+                <div class="ms-editor-foot">
+                  <span id="ms-wordcount" class="muted small"></span>
+                  <span id="ms-savestate" class="muted small"></span>
+                  <button id="ms-delete-btn" class="danger ghost small" type="button">Delete</button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div><!-- /#manuscript-pane -->
       </section>
     </main>
   </div>
