@@ -287,7 +287,7 @@ async function uploadPost(payload) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
-      }), 30000, "upload request timed out");
+      }), 12000, "upload request timed out");
       if (!resp.ok) {
         let body = {};
         try { body = await resp.json(); } catch (_) {}
@@ -305,7 +305,7 @@ async function uploadPost(payload) {
 // any upload past a certain size (to any host, in any format) but sends small
 // requests fine — so we slice the base64 into ~48KB pieces, send them one at a
 // time, and the server reassembles them into the image. Returns the path.
-const UPLOAD_CHUNK_CHARS = 48 * 1024;
+const UPLOAD_CHUNK_CHARS = 8 * 1024; // tiny pieces — the phone stalls above a low threshold
 async function uploadImageBlob(blob) {
   const data = await blobToBase64(blob);
   // Small enough to go in one shot? Still chunk if big.
