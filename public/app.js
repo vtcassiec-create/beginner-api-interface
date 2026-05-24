@@ -260,19 +260,33 @@ async function dbDeleteConversation(id) {
   if (error) throw error;
 }
 
-// Upload an image Blob through our own server (/api/upload), which writes it
-// to Storage server-side and returns the object path. This routes around a
-// phone whose direct connection to Storage stalls on larger uploads.
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = () => reject(r.error || new Error("read failed"));
+    r.onload = () => {
+      const s = r.result;
+      resolve(s.slice(s.indexOf(",") + 1)); // strip data: prefix
+    };
+    r.readAsDataURL(blob);
+  });
+}
+
+// Upload an image through our own server (/api/upload), which writes it to
+// Storage server-side and returns the object path. Sent as base64 JSON — the
+// SAME text transport the chat uses — because this phone's network stalls on
+// raw binary uploads (to any host) but passes JSON text fine.
 async function uploadImageBlob(blob) {
   const { data: { session } } = await db.auth.getSession();
   if (!session) throw new Error("You're signed out. Refresh to sign back in.");
+  const data = await blobToBase64(blob);
   const resp = await fetch("/api/upload", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${session.access_token}`,
-      "Content-Type": blob.type || "image/jpeg",
+      "Content-Type": "application/json",
     },
-    body: blob,
+    body: JSON.stringify({ data, content_type: blob.type || "image/jpeg" }),
   });
   if (!resp.ok) {
     let body = {};
