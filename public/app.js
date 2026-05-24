@@ -553,7 +553,8 @@ function fileKind(file) {
   return "text";
 }
 
-const IMAGE_MAX_EDGE = 1568; // Claude's max useful image edge
+const IMAGE_MAX_EDGE = 1280;          // plenty for Claude to see clearly
+const IMAGE_TARGET_BYTES = 150 * 1024; // keep uploads near the proven-good size
 
 // Reject if a promise hasn't settled in `ms` — so a stalled image decode
 // can't hang the attach forever (the bug: "Got… adding…" then nothing).
@@ -613,8 +614,15 @@ async function processImage(file) {
       URL.revokeObjectURL(url);
     }
   }
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.78);
-  return dataUrl.slice(dataUrl.indexOf(",") + 1); // base64, no data: prefix
+  // Step the JPEG quality down until the encoded image is comfortably small
+  // enough to upload reliably (mobile uploads stalled on ~400KB+ payloads).
+  let base64 = "";
+  for (let quality = 0.8; ; quality -= 0.12) {
+    const dataUrl = canvas.toDataURL("image/jpeg", quality);
+    base64 = dataUrl.slice(dataUrl.indexOf(",") + 1); // base64, no data: prefix
+    if (base64.length <= IMAGE_TARGET_BYTES || quality <= 0.4) break;
+  }
+  return base64;
 }
 
 async function readFile(file) {
