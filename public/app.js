@@ -260,7 +260,7 @@ async function dbDeleteConversation(id) {
 }
 
 async function dbCreateFile(projectId, file) {
-  const { data, error } = await db.from("files").insert({
+  const row = {
     project_id: projectId,
     user_id: state.user.id,
     name: file.name,
@@ -268,9 +268,15 @@ async function dbCreateFile(projectId, file) {
     media_type: file.mediaType,
     size: file.size,
     data: file.data,
-  }).select().single();
+  };
+  // Read back ONLY the generated id. The default .select() returns the whole
+  // row including the (large) data blob, so we'd upload the image and then
+  // immediately re-download it — double the transfer, which stalls a mobile
+  // upload. We already have the data locally, so reuse it.
+  const { data, error } = await db.from("files")
+    .insert(row).select("id").single();
   if (error) throw error;
-  return rowToFile(data);
+  return rowToFile({ ...row, id: data.id });
 }
 
 async function dbDeleteFile(id) {
@@ -607,7 +613,7 @@ async function processImage(file) {
       URL.revokeObjectURL(url);
     }
   }
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.78);
   return dataUrl.slice(dataUrl.indexOf(",") + 1); // base64, no data: prefix
 }
 
@@ -659,8 +665,8 @@ async function attachFiles(fileList) {
       const kb = Math.round((parsed.data?.length || 0) / 1024);
       flashToast(`Saving ${f.name} (${kb}KB)…`);
       const stored = await withTimeout(
-        dbCreateFile(project.id, parsed), 20000,
-        `saving timed out (${kb}KB) — the photo may be too large`);
+        dbCreateFile(project.id, parsed), 45000,
+        `saving timed out (${kb}KB) — your connection may be slow`);
       project.files.push(stored);
       conv.activeFileIds.push(stored.id);
       attached++;
