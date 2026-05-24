@@ -650,14 +650,21 @@ async function attachFiles(fileList) {
   let attached = 0;
   for (const f of fileList) {
     try {
-      const parsed = await readFile(f);
-      const stored = await dbCreateFile(project.id, parsed);
+      // Each stage is timeout-guarded and labelled, so a stall can never sit
+      // silently — within ~20s you get either success or a message naming the
+      // stage (and, for the save, the encoded size, to confirm downscaling).
+      flashToast(`Processing ${f.name}…`);
+      const parsed = await withTimeout(
+        readFile(f), 20000, "reading/decoding the photo timed out");
+      const kb = Math.round((parsed.data?.length || 0) / 1024);
+      flashToast(`Saving ${f.name} (${kb}KB)…`);
+      const stored = await withTimeout(
+        dbCreateFile(project.id, parsed), 20000,
+        `saving timed out (${kb}KB) — the photo may be too large`);
       project.files.push(stored);
       conv.activeFileIds.push(stored.id);
       attached++;
     } catch (e) {
-      // Surface as a top toast (a native alert() can be missed/blocked on
-      // mobile mid-flow). This is where a too-big/undecodable photo shows up.
       flashToast(`Couldn't attach ${f.name}: ${e?.message || e}`, true);
     }
   }
