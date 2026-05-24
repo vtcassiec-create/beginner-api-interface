@@ -547,6 +547,18 @@ function fileKind(file) {
   return "text";
 }
 
+const IMAGE_MAX_EDGE = 1568; // Claude's max useful image edge
+
+// Reject if a promise hasn't settled in `ms` — so a stalled image decode
+// can't hang the attach forever (the bug: "Got… adding…" then nothing).
+function withTimeout(promise, ms, message) {
+  let t;
+  const timeout = new Promise((_, reject) => {
+    t = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
+
 function loadImageEl(url) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -557,28 +569,46 @@ function loadImageEl(url) {
   });
 }
 
+function drawScaled(source, sw, sh) {
+  const scale = Math.min(1, IMAGE_MAX_EDGE / Math.max(sw, sh));
+  const w = Math.max(1, Math.round(sw * scale));
+  const h = Math.max(1, Math.round(sh * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(source, 0, 0, w, h);
+  return canvas;
+}
+
 // Downscale + re-encode an image to JPEG before storing. Phone photos
-// (e.g. a Galaxy S25's) can be tens of megabytes and sometimes HEIC —
-// which the browser can't display or send, so the attach fails silently.
-// Resizing to Claude's max useful dimension keeps the payload small and the
-// format universal (viewable thumbnail + something he can actually see).
+// (e.g. a Galaxy S25's) are huge and the old <img>-decode could silently
+// STALL on mobile — neither loading nor erroring — so the attach hung. We
+// prefer createImageBitmap (robust on mobile, decodes off the main thread,
+// fails fast) with a hard timeout, and fall back to <img>. Either way it
+// resolves or throws a clear error; it never hangs.
 async function processImage(file) {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = await loadImageEl(url);
-    const MAX = 1568; // Claude's max useful image edge
-    const scale = Math.min(1, MAX / Math.max(img.width, img.height));
-    const w = Math.max(1, Math.round(img.width * scale));
-    const h = Math.max(1, Math.round(img.height * scale));
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
-    return dataUrl.slice(dataUrl.indexOf(",") + 1); // base64, no data: prefix
-  } finally {
-    URL.revokeObjectURL(url);
+  let canvas;
+  if (typeof createImageBitmap === "function") {
+    const bmp = await withTimeout(
+      createImageBitmap(file), 20000,
+      "this photo took too long to process — it may be very large");
+    try {
+      canvas = drawScaled(bmp, bmp.width, bmp.height);
+    } finally {
+      if (bmp.close) bmp.close();
+    }
+  } else {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await withTimeout(
+        loadImageEl(url), 20000, "this photo took too long to load");
+      canvas = drawScaled(img, img.width, img.height);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+  return dataUrl.slice(dataUrl.indexOf(",") + 1); // base64, no data: prefix
 }
 
 async function readFile(file) {
@@ -2175,8 +2205,12 @@ function wireApp() {
 
   const prompt = $("prompt");
   prompt.addEventListener("input", () => autosizeTextarea(prompt));
+  // On a touch device, Enter should make a NEW LINE (send via the button) —
+  // otherwise the on-screen keyboard's Enter fires off half-written messages,
+  // which read as messages "disappearing". On desktop, Enter still sends.
+  const enterSends = !window.matchMedia("(pointer: coarse)").matches;
   prompt.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && enterSends) {
       e.preventDefault();
       $("composer").requestSubmit();
     }
