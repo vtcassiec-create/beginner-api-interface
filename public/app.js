@@ -260,6 +260,30 @@ async function dbDeleteConversation(id) {
   if (error) throw error;
 }
 
+// Upload an image Blob through our own server (/api/upload), which writes it
+// to Storage server-side and returns the object path. This routes around a
+// phone whose direct connection to Storage stalls on larger uploads.
+async function uploadImageBlob(blob) {
+  const { data: { session } } = await db.auth.getSession();
+  if (!session) throw new Error("You're signed out. Refresh to sign back in.");
+  const resp = await fetch("/api/upload", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${session.access_token}`,
+      "Content-Type": blob.type || "image/jpeg",
+    },
+    body: blob,
+  });
+  if (!resp.ok) {
+    let body = {};
+    try { body = await resp.json(); } catch (_) {}
+    throw new Error(body.error || `upload failed (${resp.status})`);
+  }
+  const { storage_path } = await resp.json();
+  if (!storage_path) throw new Error("upload returned no path");
+  return storage_path;
+}
+
 async function dbCreateFile(projectId, file) {
   // Client-generate a UUID so we can store the image under a known path and
   // skip reading the row back. Fall back to a DB-generated id if unavailable.
@@ -277,14 +301,10 @@ async function dbCreateFile(projectId, file) {
   };
 
   if (file.blob) {
-    // Images go to Storage (the sturdy, resumable upload path). Object lives
-    // under {uid}/{id}.jpg so the per-user RLS policy applies.
-    const path = `${userId}/${id}.jpg`;
-    const { error: upErr } = await db.storage
-      .from("attachments")
-      .upload(path, file.blob, { contentType: "image/jpeg", upsert: true });
-    if (upErr) throw upErr;
-    row.storage_path = path;
+    // Images go to Storage via our own server (/api/upload). A phone whose
+    // direct path to Storage stalls can still reach our server, which does
+    // the Storage write itself. Returns the object's storage path.
+    row.storage_path = await uploadImageBlob(file.blob);
   } else {
     // pdf / text stay as inline base64 (they're small).
     row.data = file.data;
