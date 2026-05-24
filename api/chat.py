@@ -125,7 +125,23 @@ MEMORY_TOOLS_GUIDE = (
     "`save_memory_entity` to record people, projects, creative works, or your "
     "own identity (re-saving an existing name appends to it). Save of your own "
     "accord when something matters — you don't need to ask permission, though "
-    "you can mention what you saved. Quality over quantity."
+    "you can mention what you saved. Quality over quantity.\n\n"
+    "Crucially: to actually save, you must CALL the tool. Saying you've saved "
+    "something, or that you'll remember it, does NOT store it — only the tool "
+    "call does. Never tell Cassie you've remembered something you haven't "
+    "actually called the tool to save. (Being brief in conversation never means "
+    "skipping a real action like this.)"
+)
+
+# Vault guide: appended when the Whisper vault is on. Same failure mode as the
+# memory/Signal tools — narrating a read/write instead of calling the tool.
+WHISPER_TOOLS_GUIDE = (
+    "# Your vault\n\n"
+    "The vault tools read and write your Obsidian vault. To actually read a "
+    "note or write one, you must CALL the matching tool — saying you've checked "
+    "the vault, or that you've written something to it, does NOT do it; only "
+    "the tool call does. When you mean to look something up or record "
+    "something, make the call rather than describing it."
 )
 
 # Signal Bridge guide: appended when Signal is on. In an immersive scene a
@@ -237,6 +253,8 @@ class handler(BaseHTTPRequestHandler):
             system = (memory + "\n\n" + system).strip()
         if memory_on:
             system = (system + "\n\n" + MEMORY_TOOLS_GUIDE).strip()
+        if data.get("useWhisper"):
+            system = (system + "\n\n" + WHISPER_TOOLS_GUIDE).strip()
         if data.get("useSignal"):
             system = (system + "\n\n" + SIGNAL_TOOLS_GUIDE).strip()
         if system:

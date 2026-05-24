@@ -278,7 +278,7 @@ function blobToBase64(blob) {
 // One JSON POST to /api/upload, with auth + a short retry (small requests can
 // blip on a flaky connection). Returns the parsed JSON.
 async function uploadPost(payload, { attempts = 3, timeout = 12000 } = {}) {
-  const { data: { session } } = await db.auth.getSession();
+  const session = await freshSession();
   if (!session) throw new Error("You're signed out. Refresh to sign back in.");
   let lastErr;
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -985,8 +985,23 @@ async function buildApiMessages(project, messages) {
 // streams send data far more often than this (even thinking streams deltas).
 const STREAM_IDLE_MS = 60000;
 
+// Get a usable session, refreshing if the token is missing or about to
+// expire — after an idle stretch the stored token can be stale, and sending
+// with it 401s (which cleared the composer and "ate" the message).
+async function freshSession() {
+  let { data: { session } } = await db.auth.getSession();
+  const expMs = session && session.expires_at ? session.expires_at * 1000 : 0;
+  if (!session || expMs - Date.now() < 60000) {
+    try {
+      const r = await db.auth.refreshSession();
+      if (r.data && r.data.session) session = r.data.session;
+    } catch (_) { /* keep whatever we had */ }
+  }
+  return session;
+}
+
 async function streamChat(payload, onEvent) {
-  const { data: { session } } = await db.auth.getSession();
+  const session = await freshSession();
   if (!session) throw new Error("You're signed out. Refresh to sign back in.");
 
   // Watchdog: abort the request if no data arrives for STREAM_IDLE_MS. The
