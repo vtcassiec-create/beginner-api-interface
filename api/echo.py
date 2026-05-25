@@ -8,7 +8,9 @@ a response?" Used by /diag.html to find the size where a phone's uploads stall.
 """
 
 from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 import json
+import time
 
 CAP = 16 * 1024 * 1024  # don't read unboundedly
 
@@ -24,6 +26,12 @@ class handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
+        # ?delay=N — wait N seconds (silently) before responding, to test
+        # whether a quiet connection gets dropped by the device's network.
+        try:
+            delay = min(float(parse_qs(urlparse(self.path).query).get("delay", ["0"])[0]), 25.0)
+        except (ValueError, TypeError):
+            delay = 0.0
         read = 0
         try:
             while read < length and read < CAP:
@@ -33,6 +41,8 @@ class handler(BaseHTTPRequestHandler):
                 read += len(buf)
         except Exception:
             pass
+        if delay > 0:
+            time.sleep(delay)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self._cors()
@@ -41,6 +51,7 @@ class handler(BaseHTTPRequestHandler):
             "ok": True,
             "received_bytes": read,
             "content_length": length,
+            "delayed": delay,
         }).encode())
 
     def _cors(self):

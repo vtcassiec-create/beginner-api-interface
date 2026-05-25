@@ -32,10 +32,12 @@
   <div id="summary"></div>
 
   <script>
+    // Size sweep (instant replies) + delay sweep (server goes silent N sec
+    // before replying — tests whether a quiet connection gets dropped).
     const SIZES = [
-      [1024, "1 KB"], [8 * 1024, "8 KB"], [32 * 1024, "32 KB"],
-      [128 * 1024, "128 KB"], [512 * 1024, "512 KB"], [1024 * 1024, "1 MB"],
+      [1024, "1 KB"], [128 * 1024, "128 KB"], [1024 * 1024, "1 MB"],
     ];
+    const DELAYS = [0, 3, 6, 10, 20]; // seconds the server waits before replying
     const btn = document.getElementById("run");
     const table = document.getElementById("results");
     const tbody = table.querySelector("tbody");
@@ -48,13 +50,14 @@
       return tr;
     }
 
-    async function post(bytes) {
+    async function post(bytes, delay) {
       const body = "x".repeat(bytes);
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 25000);
+      const t = setTimeout(() => ctrl.abort(), 30000);
       const start = performance.now();
+      const url = "/api/echo" + (delay ? `?delay=${delay}` : "");
       try {
-        const res = await fetch("/api/echo", {
+        const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "text/plain" },
           body,
@@ -64,12 +67,17 @@
         const json = await res.json().catch(() => ({}));
         clearTimeout(t);
         return { ok: res.ok && json.received_bytes === bytes, ms,
-                 detail: `HTTP ${res.status}, got ${json.received_bytes ?? "?"} bytes` };
+                 detail: `HTTP ${res.status}` };
       } catch (e) {
         clearTimeout(t);
         const ms = Math.round(performance.now() - start);
-        return { ok: false, ms, detail: ctrl.signal.aborted ? "timed out (25s)" : ("error: " + (e.message || e)) };
+        return { ok: false, ms, detail: ctrl.signal.aborted ? "timed out (30s)" : ("dropped: " + (e.message || e)) };
       }
+    }
+
+    function render(tr, r) {
+      tr.children[1].innerHTML = r.ok ? `<span class="ok">✓ ok</span>` : `<span class="fail">✗ ${r.detail}</span>`;
+      tr.children[2].textContent = r.ms + " ms";
     }
 
     btn.addEventListener("click", async () => {
@@ -77,21 +85,22 @@
       table.hidden = false;
       tbody.innerHTML = "";
       summary.textContent = "";
-      let lastOk = "nothing";
-      let firstFail = null;
-      for (const [bytes, label] of SIZES) {
-        const tr = row(label);
-        const r = await post(bytes);
-        tr.children[1].innerHTML = r.ok
-          ? `<span class="ok">✓ ok</span>`
-          : `<span class="fail">✗ ${r.detail}</span>`;
-        tr.children[2].textContent = r.ms + " ms";
-        if (r.ok) lastOk = label;
-        else if (!firstFail) firstFail = label;
+
+      // 1) size sweep, instant replies
+      tbody.appendChild(Object.assign(document.createElement("tr"), { innerHTML: "<td colspan=3 style='color:#9b9486;padding-top:12px'>— size (instant reply) —</td>" }));
+      for (const [bytes, label] of SIZES) render(row(label), await post(bytes, 0));
+
+      // 2) delay sweep, tiny body, server stays silent N seconds
+      tbody.appendChild(Object.assign(document.createElement("tr"), { innerHTML: "<td colspan=3 style='color:#9b9486;padding-top:12px'>— quiet wait before reply —</td>" }));
+      let lastDelayOk = "0s", firstDelayFail = null;
+      for (const d of DELAYS) {
+        const r = await post(1024, d);
+        render(row(d + "s wait"), r);
+        if (r.ok) lastDelayOk = d + "s"; else if (firstDelayFail === null) firstDelayFail = d + "s";
       }
-      summary.textContent = firstFail
-        ? `Biggest that worked: ${lastOk}. First to fail: ${firstFail}. Read this to Claude.`
-        : `All sizes made it through ✓ (up to 1 MB). Read this to Claude.`;
+      summary.textContent = firstDelayFail
+        ? `Connection survives a quiet wait up to ${lastDelayOk}, then fails at ${firstDelayFail}. Read this to Claude!`
+        : `Survived quiet waits all the way to 20s ✓. Read this to Claude.`;
       btn.disabled = false;
     });
   </script>
