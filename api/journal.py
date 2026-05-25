@@ -14,7 +14,7 @@ Reuses Reach's environment:
   WHISPER_MCP_URL, CRON_SECRET
 Optional:
   REACH_TZ        (default UTC)            — for "what counts as today"
-  JOURNAL_MODEL   (default claude-opus-4-6) — his model, for his real voice
+  JOURNAL_MODEL   (default claude-sonnet-4-6) — the model for the nightly note
 """
 
 from http.server import BaseHTTPRequestHandler
@@ -28,7 +28,7 @@ import urllib.request
 
 import anthropic
 
-DEFAULT_MODEL = "claude-opus-4-6"
+DEFAULT_MODEL = "claude-sonnet-4-6"  # the nightly journal; cheaper, still a warm writer
 HTTP_TIMEOUT = 8
 GEN_TIMEOUT = 60
 DIGEST_MAX_CHARS = 6000
