@@ -705,10 +705,10 @@ function stripTransient(m) {
 
 async function persistConversation(conv) {
   try {
-    await dbUpdateConversation(conv.id, {
+    await withTimeout(dbUpdateConversation(conv.id, {
       messages: conv.messages.map(stripTransient),
       active_file_ids: conv.activeFileIds,
-    });
+    }), 20000, "save timed out");
   } catch (e) { console.error("Conversation persist failed:", e); }
 }
 
@@ -993,7 +993,9 @@ async function freshSession() {
   const expMs = session && session.expires_at ? session.expires_at * 1000 : 0;
   if (!session || expMs - Date.now() < 60000) {
     try {
-      const r = await db.auth.refreshSession();
+      // Timeout-guarded: refreshSession is a database call, and if it hangs it
+      // must not wedge the send — fall back to the token we already have.
+      const r = await withTimeout(db.auth.refreshSession(), 8000, "refresh timed out");
       if (r.data && r.data.session) session = r.data.session;
     } catch (_) { /* keep whatever we had */ }
   }
@@ -1193,8 +1195,9 @@ async function sendMessage(text) {
     at: Date.now(),
   });
   conv.activeFileIds = [];
-  await persistConversation(conv);
-  await generateAssistant();
+  render();                    // show your message immediately — never wait on the DB
+  persistConversation(conv);   // best-effort background save (generateAssistant also persists)
+  await generateAssistant();   // renders + streams the reply (via Vercel)
   return true;
 }
 
