@@ -1,43 +1,24 @@
-// Petrichor service worker — minimal, and deliberately NETWORK-FIRST so a
-// fresh deploy always wins. The cache exists only so the app shell can open
-// when you're offline; it never serves stale code while you're online, and it
-// never touches /api/ calls or cross-origin requests (Supabase, the CDN).
+// Petrichor service worker — intentionally minimal.
+//
+// It exists only so the app qualifies as installable. It does NOT intercept,
+// cache, or serve anything — every request goes straight to the network, so
+// the installed app behaves EXACTLY like the browser version (which works).
+// (A previous version cached the app shell and caused a blank screen; this
+// version also wipes any caches it left behind.) Offline support is
+// intentionally dropped in favor of always-correct loading.
 
-const CACHE = "petrichor-v1";
-const SHELL = ["/", "/index.html", "/styles.css", "/app.js"];
-
-self.addEventListener("install", (event) => {
+self.addEventListener("install", () => {
   self.skipWaiting();
-  event.waitUntil(
-    caches.open(CACHE).then((c) => c.addAll(SHELL).catch(() => {}))
-  );
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
 
-self.addEventListener("fetch", (event) => {
-  const req = event.request;
-  const url = new URL(req.url);
-
-  // Only handle our own same-origin GETs. Let everything else (POSTs, the
-  // chat/upload API, Supabase, the supabase-js CDN) go straight to the network.
-  if (req.method !== "GET" || url.origin !== location.origin || url.pathname.startsWith("/api/")) {
-    return;
-  }
-
-  event.respondWith(
-    fetch(req)
-      .then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
-        return res;
-      })
-      .catch(() => caches.match(req).then((m) => m || caches.match("/")))
-  );
-});
+// A fetch handler must exist for installability — but this one does nothing,
+// so the browser handles every request normally.
+self.addEventListener("fetch", () => {});
