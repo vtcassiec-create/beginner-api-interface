@@ -315,12 +315,14 @@ async function uploadImageBlob(blob) {
   // Fast path: one shot (instant on a normal connection). One quick attempt;
   // if it fails (a restrictive network that stalls larger requests), fall
   // back to sending in tiny pieces.
+  // (Temporary step-by-step toasts so we can see exactly where it hangs.)
   try {
+    flashToast(`📤 sending to server (${Math.round(data.length / 1024)} KB)…`);
     const { storage_path } = await uploadPost(
       { data, content_type: "image/jpeg" }, { attempts: 1, timeout: 15000 });
-    if (storage_path) return storage_path;
-  } catch (_) {
-    // fall through to chunked
+    if (storage_path) { flashToast("✅ server saved the photo"); return storage_path; }
+  } catch (e) {
+    flashToast(`single-shot didn't take (${e?.message || e}); trying pieces…`, true);
   }
 
   const sessionId = (window.crypto && crypto.randomUUID)
@@ -365,6 +367,7 @@ async function dbCreateFile(projectId, file) {
     row.data = file.data;
   }
 
+  flashToast("💾 saving photo record…"); // temporary: see if the DB write is the hang
   if (id) {
     // Client-generated id → insert with return=minimal (no row read-back).
     const { error } = await db.from("files").insert({ id, ...row });
