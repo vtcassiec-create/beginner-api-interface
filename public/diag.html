@@ -80,27 +80,59 @@
       tr.children[2].textContent = r.ms + " ms";
     }
 
+    function sep(label) {
+      tbody.appendChild(Object.assign(document.createElement("tr"),
+        { innerHTML: `<td colspan=3 style='color:#9b9486;padding-top:12px'>— ${label} —</td>` }));
+    }
+
+    async function pingSupabase(url, key) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 12000);
+      const start = performance.now();
+      try {
+        const res = await fetch(url.replace(/\/$/, "") + "/auth/v1/health",
+          { headers: { apikey: key }, signal: ctrl.signal });
+        clearTimeout(t);
+        return { ok: res.ok, ms: Math.round(performance.now() - start), detail: `HTTP ${res.status}` };
+      } catch (e) {
+        clearTimeout(t);
+        return { ok: false, ms: Math.round(performance.now() - start),
+                 detail: ctrl.signal.aborted ? "timed out (12s)" : "dropped" };
+      }
+    }
+
     btn.addEventListener("click", async () => {
       btn.disabled = true;
       table.hidden = false;
       tbody.innerHTML = "";
       summary.textContent = "";
 
-      // 1) size sweep, instant replies
-      tbody.appendChild(Object.assign(document.createElement("tr"), { innerHTML: "<td colspan=3 style='color:#9b9486;padding-top:12px'>— size (instant reply) —</td>" }));
+      // 1) OUR SERVER (Vercel): size sweep, instant replies
+      sep("our server (Vercel) — size");
       for (const [bytes, label] of SIZES) render(row(label), await post(bytes, 0));
 
-      // 2) delay sweep, tiny body, server stays silent N seconds
-      tbody.appendChild(Object.assign(document.createElement("tr"), { innerHTML: "<td colspan=3 style='color:#9b9486;padding-top:12px'>— quiet wait before reply —</td>" }));
-      let lastDelayOk = "0s", firstDelayFail = null;
-      for (const d of DELAYS) {
-        const r = await post(1024, d);
-        render(row(d + "s wait"), r);
-        if (r.ok) lastDelayOk = d + "s"; else if (firstDelayFail === null) firstDelayFail = d + "s";
+      // 2) OUR SERVER: quiet-wait sweep
+      sep("our server (Vercel) — quiet wait");
+      for (const d of DELAYS) render(row(d + "s wait"), await post(1024, d));
+
+      // 3) THE DATABASE (Supabase): repeated reachability pings
+      sep("the database (Supabase) — 8 pings");
+      let dbOk = 0, dbFail = 0, dbSlow = 0;
+      let cfg = {};
+      try { cfg = await (await fetch("/api/config")).json(); } catch (_) {}
+      if (!cfg.supabaseUrl) {
+        render(row("config"), { ok: false, ms: 0, detail: "couldn't load config" });
+      } else {
+        for (let i = 1; i <= 8; i++) {
+          const r = await pingSupabase(cfg.supabaseUrl, cfg.supabaseAnonKey);
+          render(row("DB ping " + i), r);
+          if (!r.ok) dbFail++; else { dbOk++; if (r.ms > 2500) dbSlow++; }
+        }
       }
-      summary.textContent = firstDelayFail
-        ? `Connection survives a quiet wait up to ${lastDelayOk}, then fails at ${firstDelayFail}. Read this to Claude!`
-        : `Survived quiet waits all the way to 20s ✓. Read this to Claude.`;
+      summary.textContent =
+        `Database: ${dbOk}/8 pings ok` + (dbFail ? `, ${dbFail} FAILED` : "") +
+        (dbSlow ? `, ${dbSlow} slow (>2.5s)` : "") +
+        ". (Our server passed everything above.) Read this whole thing to Claude!";
       btn.disabled = false;
     });
   </script>
