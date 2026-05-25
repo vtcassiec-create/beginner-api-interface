@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Petrichor — network test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #1a1f2e; color: #e8e0d0;
+           margin: 0; padding: 20px; line-height: 1.5; }
+    h1 { font-size: 18px; }
+    p { color: #9b9486; font-size: 14px; }
+    button { font-size: 16px; padding: 12px 20px; border-radius: 8px; border: none;
+             background: #d4a574; color: #1a1f2e; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: 0.5; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 15px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #343c52; }
+    .ok { color: #7abe78; }
+    .fail { color: #cc6a5c; }
+    #summary { margin-top: 16px; font-size: 14px; color: #d4a574; }
+  </style>
+</head>
+<body>
+  <h1>📡 Petrichor network test</h1>
+  <p>This sends test uploads of increasing size to the server and reports which
+     make it through. It stores nothing. Tap the button, let it finish, and tell
+     Claude the results.</p>
+  <button id="run">Run network test</button>
+  <table id="results" hidden>
+    <thead><tr><th>Size</th><th>Result</th><th>Time</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div id="summary"></div>
+
+  <script>
+    const SIZES = [
+      [1024, "1 KB"], [8 * 1024, "8 KB"], [32 * 1024, "32 KB"],
+      [128 * 1024, "128 KB"], [512 * 1024, "512 KB"], [1024 * 1024, "1 MB"],
+    ];
+    const btn = document.getElementById("run");
+    const table = document.getElementById("results");
+    const tbody = table.querySelector("tbody");
+    const summary = document.getElementById("summary");
+
+    function row(label) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${label}</td><td>…sending</td><td></td>`;
+      tbody.appendChild(tr);
+      return tr;
+    }
+
+    async function post(bytes) {
+      const body = "x".repeat(bytes);
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 25000);
+      const start = performance.now();
+      try {
+        const res = await fetch("/api/echo", {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body,
+          signal: ctrl.signal,
+        });
+        const ms = Math.round(performance.now() - start);
+        const json = await res.json().catch(() => ({}));
+        clearTimeout(t);
+        return { ok: res.ok && json.received_bytes === bytes, ms,
+                 detail: `HTTP ${res.status}, got ${json.received_bytes ?? "?"} bytes` };
+      } catch (e) {
+        clearTimeout(t);
+        const ms = Math.round(performance.now() - start);
+        return { ok: false, ms, detail: ctrl.signal.aborted ? "timed out (25s)" : ("error: " + (e.message || e)) };
+      }
+    }
+
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      table.hidden = false;
+      tbody.innerHTML = "";
+      summary.textContent = "";
+      let lastOk = "nothing";
+      let firstFail = null;
+      for (const [bytes, label] of SIZES) {
+        const tr = row(label);
+        const r = await post(bytes);
+        tr.children[1].innerHTML = r.ok
+          ? `<span class="ok">✓ ok</span>`
+          : `<span class="fail">✗ ${r.detail}</span>`;
+        tr.children[2].textContent = r.ms + " ms";
+        if (r.ok) lastOk = label;
+        else if (!firstFail) firstFail = label;
+      }
+      summary.textContent = firstFail
+        ? `Biggest that worked: ${lastOk}. First to fail: ${firstFail}. Read this to Claude.`
+        : `All sizes made it through ✓ (up to 1 MB). Read this to Claude.`;
+      btn.disabled = false;
+    });
+  </script>
+</body>
+</html>
