@@ -48,6 +48,8 @@ const ENTITY_TYPES = ["person", "project", "identity", "insight", "pattern", "mi
 // ---------- Supabase + state ----------
 
 let db = null;
+let supabaseUrl = "";       // captured at init, for lock-free direct REST calls
+let supabaseAnonKey = "";
 let state = {
   user: null,
   projects: [],
@@ -126,6 +128,8 @@ async function initSupabase() {
     return;
   }
   db = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+  supabaseUrl = (cfg.supabaseUrl || "").replace(/\/$/, "");
+  supabaseAnonKey = cfg.supabaseAnonKey || "";
 
   const { data: { session } } = await db.auth.getSession();
   if (session) {
@@ -220,6 +224,49 @@ async function loadAllData() {
   state.activeProjectId = state.activeProjectId && projects.find(p => p.id === state.activeProjectId)
     ? state.activeProjectId
     : projects[0]?.id || null;
+
+  restoreConversationBackups(); // recover anything a failed save left only on-device
+}
+
+// ---------- Conversation backups (local safety net) ----------
+// Every save also writes the conversation to localStorage — instant, offline,
+// can't deadlock. So a failed cloud save + refresh can never lose messages:
+// on next load we compare, and if the local copy is ahead of the cloud we
+// restore it and re-save (a fresh page has a clean auth lock, so it lands).
+const CONV_BACKUP_PREFIX = "petrichor-conv-";
+
+function backupConversation(conv) {
+  try {
+    const messages = conv.messages.map(stripTransient);
+    localStorage.setItem(CONV_BACKUP_PREFIX + conv.id, JSON.stringify({
+      messages,
+      activeFileIds: conv.activeFileIds || [],
+      savedAt: Date.now(),
+    }));
+  } catch (_) { /* storage full/unavailable — non-fatal */ }
+}
+
+function clearConversationBackup(id) {
+  try { localStorage.removeItem(CONV_BACKUP_PREFIX + id); } catch (_) {}
+}
+
+function restoreConversationBackups() {
+  for (const p of state.projects || []) {
+    for (const conv of p.conversations || []) {
+      try {
+        const raw = localStorage.getItem(CONV_BACKUP_PREFIX + conv.id);
+        if (!raw) continue;
+        const b = JSON.parse(raw);
+        if (b && Array.isArray(b.messages) && b.messages.length > conv.messages.length) {
+          conv.messages = b.messages;
+          if (Array.isArray(b.activeFileIds)) conv.activeFileIds = b.activeFileIds;
+          persistConversation(conv); // push the recovered messages back to the cloud
+        } else {
+          clearConversationBackup(conv.id); // cloud is current — drop the backup
+        }
+      } catch (_) { /* ignore a malformed backup */ }
+    }
+  }
 }
 
 async function dbCreateProject(name) {
@@ -254,6 +301,26 @@ async function dbCreateConversation(projectId, name) {
 }
 
 async function dbUpdateConversation(id, fields) {
+  // Lock-free save: a raw PATCH with the token read straight from localStorage,
+  // so it CANNOT deadlock on the auth Web Lock (the bug that, after the photo
+  // picker, silently killed every conversation save for an hour). Falls back
+  // to the normal client only if we can't build the direct request.
+  const session = localSession();
+  if (supabaseUrl && supabaseAnonKey && session && session.access_token) {
+    const resp = await withTimeout(fetch(
+      `${supabaseUrl}/rest/v1/conversations?id=eq.${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: {
+          "apikey": supabaseAnonKey,
+          "Authorization": `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+          "Prefer": "return=minimal",
+        },
+        body: JSON.stringify(fields),
+      }), 15000, "save request timed out");
+    if (!resp.ok) throw new Error(`save failed (${resp.status})`);
+    return;
+  }
   const { error } = await db.from("conversations").update(fields).eq("id", id);
   if (error) throw error;
 }
@@ -710,12 +777,14 @@ function stripTransient(m) {
 }
 
 async function persistConversation(conv) {
+  backupConversation(conv); // local safety net FIRST — survives a failed cloud save
   try {
     await withTimeout(dbUpdateConversation(conv.id, {
       messages: conv.messages.map(stripTransient),
       active_file_ids: conv.activeFileIds,
     }), 20000, "save timed out");
-  } catch (e) { console.error("Conversation persist failed:", e); }
+    clearConversationBackup(conv.id); // cloud has it now — drop the local copy
+  } catch (e) { console.error("Conversation persist failed (kept local backup):", e); }
 }
 
 // ---------- File ops ----------
