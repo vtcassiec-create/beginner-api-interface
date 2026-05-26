@@ -278,10 +278,13 @@ function blobToBase64(blob) {
 // One JSON POST to /api/upload, with auth + a short retry (small requests can
 // blip on a flaky connection). Returns the parsed JSON.
 async function uploadPost(payload, { attempts = 3, timeout = 12000 } = {}) {
-  flashToast("🔑 checking login…"); // DIAG: marker before the session check
-  const session = await freshSession();
-  if (!session) throw new Error("You're signed out. Refresh to sign back in.");
-  flashToast("📡 sending piece…"); // DIAG: marker after session, before the fetch
+  // Lock-free token: read the saved session directly (no Web Lock, so the
+  // photo-picker deadlock can't bite). Only fall back to freshSession() if
+  // there's no stored token at all.
+  const session = localSession() || await freshSession();
+  if (!session || !session.access_token) {
+    throw new Error("You're signed out. Refresh to sign back in.");
+  }
   let lastErr;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
@@ -306,29 +309,35 @@ async function uploadPost(payload, { attempts = 3, timeout = 12000 } = {}) {
   throw lastErr;
 }
 
-// Upload an image through our own server in SMALL CHUNKS. This phone stalls on
-// any upload past a certain size (to any host, in any format) but sends small
-// requests fine — so we slice the base64 into ~48KB pieces, send them one at a
-// time, and the server reassembles them into the image. Returns the path.
-const UPLOAD_CHUNK_CHARS = 8 * 1024; // tiny pieces — the phone stalls above a low threshold
+// Upload an image through our own server. The real bug was never size — it was
+// the auth lock deadlocking after the photo-picker backgrounds the app (now
+// fixed in freshSession/localSession). So send it in ONE fast shot (the diag
+// proved the phone can POST a big authed body to /api/upload fine). Only if
+// that genuinely fails do we fall back to larger chunks — and at 64KB each
+// that's a handful of requests, not dozens, so it finishes before the screen
+// can sleep.
+const UPLOAD_CHUNK_CHARS = 64 * 1024;
 async function uploadImageBlob(blob) {
   const data = await blobToBase64(blob);
+  flashToast(`📤 sending photo (${Math.round(data.length / 1024)} KB)…`);
 
-  // DIAGNOSTIC: the single big POST never even reaches the server from this
-  // phone (the flight recorder logged nothing for it). Small requests do
-  // arrive (every chat message proves it). So skip the single-shot entirely
-  // and send the photo only in tiny pieces — each piece is a small request
-  // like a chat message. If this lands, the big-body theory is confirmed and
-  // this IS the fix.
-  flashToast(`📤 sending photo in pieces (${Math.round(data.length / 1024)} KB)…`);
+  // Fast path: one shot.
+  try {
+    const { storage_path } = await uploadPost(
+      { data, content_type: "image/jpeg" }, { attempts: 2, timeout: 30000 });
+    if (storage_path) return storage_path;
+  } catch (_) {
+    flashToast("retrying in pieces…", true);
+  }
 
+  // Fallback: a few larger chunks.
   const sessionId = (window.crypto && crypto.randomUUID)
     ? crypto.randomUUID().replace(/-/g, "")
     : String(Date.now()) + Math.random().toString(36).slice(2);
   const total = Math.ceil(data.length / UPLOAD_CHUNK_CHARS) || 1;
   for (let i = 0; i < total; i++) {
     const chunk = data.slice(i * UPLOAD_CHUNK_CHARS, (i + 1) * UPLOAD_CHUNK_CHARS);
-    flashToast(`Sending photo… part ${i + 1} of ${total}`);
+    flashToast(`sending photo… ${i + 1}/${total}`);
     await uploadPost({ session: sessionId, index: i, total, chunk });
   }
   const { storage_path } = await uploadPost({
