@@ -312,18 +312,13 @@ const UPLOAD_CHUNK_CHARS = 8 * 1024; // tiny pieces — the phone stalls above a
 async function uploadImageBlob(blob) {
   const data = await blobToBase64(blob);
 
-  // Fast path: one shot (instant on a normal connection). One quick attempt;
-  // if it fails (a restrictive network that stalls larger requests), fall
-  // back to sending in tiny pieces.
-  // (Temporary step-by-step toasts so we can see exactly where it hangs.)
-  try {
-    flashToast(`📤 sending to server (${Math.round(data.length / 1024)} KB)…`);
-    const { storage_path } = await uploadPost(
-      { data, content_type: "image/jpeg" }, { attempts: 1, timeout: 15000 });
-    if (storage_path) { flashToast("✅ server saved the photo"); return storage_path; }
-  } catch (e) {
-    flashToast(`single-shot didn't take (${e?.message || e}); trying pieces…`, true);
-  }
+  // DIAGNOSTIC: the single big POST never even reaches the server from this
+  // phone (the flight recorder logged nothing for it). Small requests do
+  // arrive (every chat message proves it). So skip the single-shot entirely
+  // and send the photo only in tiny pieces — each piece is a small request
+  // like a chat message. If this lands, the big-body theory is confirmed and
+  // this IS the fix.
+  flashToast(`📤 sending photo in pieces (${Math.round(data.length / 1024)} KB)…`);
 
   const sessionId = (window.crypto && crypto.randomUUID)
     ? crypto.randomUUID().replace(/-/g, "")
