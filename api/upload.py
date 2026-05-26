@@ -28,6 +28,8 @@ from urllib.parse import urlsplit
 
 MAX_BYTES = 12 * 1024 * 1024
 MAX_CHUNKS = 400
+DIAG_UID = (os.environ.get("REACH_USER_ID", "").strip()
+            or "11e2fa54-8d74-41ee-b7bc-b5ec8b52ba19")  # log owner for diagnostics
 AUTH_TIMEOUT_SECONDS = 5
 STORAGE_TIMEOUT_SECONDS = 30
 BUCKET = "attachments"
@@ -50,8 +52,13 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        # Pre-auth marker: logs the instant ANY request touches this endpoint,
+        # before auth can reject it — so an empty log means "never arrived"
+        # vs. "arrived but auth failed". Uses the known user id as the log owner.
+        self._diag(DIAG_UID, "hit /api/upload (pre-auth)")
         user_id = self._verify_auth()
         if not user_id:
+            self._diag(DIAG_UID, "auth FAILED -> 401")
             return self._json_error(401, "Authentication required. Please sign in.")
 
         try:
