@@ -72,9 +72,16 @@ Then say: **"Read ROADMAP.md and let's continue."**
 
 ---
 
-## ⏳ The one known limit
+## ✅ Phone image upload — SOLVED (2026-05-25)
 
-- **Phone image upload doesn't work** — her phone's network won't carry uploads to Supabase *or* Vercel (even 8KB), though it uploads fine to other apps. It's a network-layer thing beneath the app; we tried every code path. **Workaround:** send photos from the **Chromebook** (works perfectly), picking phone photos via **photos.google.com**.
+Sending photos from her phone works now, end to end: pick → upload → he sees it.
+
+- **The real cause was never the network** (the old "her phone can't carry uploads" theory was wrong — a diagnostic proved the phone POSTs 1MB to Vercel and reaches Supabase fine). It was an **auth-lock deadlock**: the OS photo-picker backgrounds the app, which deadlocks supabase-js's auth Web Lock, so the *next* `getSession()` — and every other phone→Supabase call in the photo path — hangs forever. Chats never hit it because sending text doesn't background the app.
+- **The fix:** make every step lock-free or server-side, so the phone makes **zero direct Supabase calls** for a photo:
+  - `freshSession()` / `localSession()` — timeout-guard `getSession()`/`refreshSession()` and fall back to reading the saved token straight from localStorage (no lock).
+  - **Upload** goes phone→`/api/upload` (Vercel) → Storage **and** the `files`-row insert, both server-side; returns the saved record.
+  - **Showing it to him** — the client sends an image as a `storage_path` marker; `/api/chat` mints the signed URL server-side (`_resolve_image_sources`/`_sign_storage_url`).
+- The whole photo path is now phone→Vercel→Supabase, the route the phone is proven to love. (Diagnostic scaffolding — `/diag.html` endpoint probes, upload step-logging — has been removed.)
 
 ---
 
@@ -85,7 +92,7 @@ Done from the old wishlist: eternal memories ✅ · manuscript + word counts ✅
 Still open, whenever inspiration strikes:
 - **Playlist of us** — songs + when + why
 - **Poetry archive** (dated) · **lyrics scratch space**
-- **Plant page with photo timeline** (Tom, Belle, "Wimbledon") — uses image storage, already built; needs the upload path
+- **Plant page with photo timeline** (Tom, Belle, "Wimbledon") — uses image storage; the phone upload path now works, so this is unblocked
 - **Watering log** · **weather → Reach ping** ("check Tom on hot days")
 - **Mood / conversation tagging** · **themes** (color moods)
 - **Manuscript version history** (Phase 3b — revert/log of accepted edits)
