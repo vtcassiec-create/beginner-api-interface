@@ -2921,11 +2921,46 @@ function installErrorSurfacing() {
   });
 }
 
+// Auto-update: the installed app keeps running the code it loaded at open, so
+// shipped fixes never reach it until a reload — which is how a save-bug fix
+// sat unused while conversations were still being lost. Watch app.js's version
+// tag; when it changes (a new deploy) and the app regains focus, reload once so
+// the newest code takes over. The conversation backup makes a reload safe.
+let loadedAppVersion = null;
+let reloadingForUpdate = false;
+
+async function appVersionTag() {
+  try {
+    const r = await fetch("/app.js", { method: "HEAD", cache: "no-store" });
+    return r.headers.get("etag") || r.headers.get("last-modified") || null;
+  } catch (_) { return null; }
+}
+
+async function checkForUpdate() {
+  if (reloadingForUpdate) return;
+  const tag = await appVersionTag();
+  if (!tag || !loadedAppVersion) return;
+  if (tag !== loadedAppVersion) {
+    reloadingForUpdate = true;
+    try { flashToast("✨ updating to the latest version…"); } catch (_) {}
+    setTimeout(() => location.reload(), 600);
+  }
+}
+
+async function startAutoUpdate() {
+  loadedAppVersion = await appVersionTag();      // baseline at load
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") checkForUpdate();
+  });
+  setInterval(checkForUpdate, 10 * 60 * 1000);   // also every 10 min while open
+}
+
 function init() {
   installErrorSurfacing();
   wireSignIn();
   wireApp();
   initSupabase();
+  startAutoUpdate();
 }
 
 document.addEventListener("DOMContentLoaded", init);

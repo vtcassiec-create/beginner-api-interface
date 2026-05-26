@@ -3,6 +3,20 @@
   "rewrites": [
     { "source": "/(.*)", "destination": "/public/$1" }
   ],
+  "headers": [
+    {
+      "source": "/(app.js|index.html|sw.js|manifest.webmanifest)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    }
+  ],
   "crons": [
     { "path": "/api/surprise", "schedule": "0 18 * * *" },
     { "path": "/api/journal", "schedule": "0 1 * * *" }
