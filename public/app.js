@@ -317,20 +317,22 @@ async function uploadPost(payload, { attempts = 3, timeout = 12000 } = {}) {
 // that's a handful of requests, not dozens, so it finishes before the screen
 // can sleep.
 const UPLOAD_CHUNK_CHARS = 64 * 1024;
-async function uploadImageBlob(blob) {
+async function uploadImageBlob(blob, { projectId, name } = {}) {
   const data = await blobToBase64(blob);
   flashToast(`📤 sending photo (${Math.round(data.length / 1024)} KB)…`);
+  const meta = { project_id: projectId, name: name || "photo.jpg" };
 
-  // Fast path: one shot.
+  // Fast path: one shot. The server stores the image and writes its db record,
+  // returning the saved row in `file`.
   try {
-    const { storage_path } = await uploadPost(
-      { data, content_type: "image/jpeg" }, { attempts: 2, timeout: 30000 });
-    if (storage_path) return storage_path;
+    const res = await uploadPost(
+      { data, content_type: "image/jpeg", ...meta }, { attempts: 2, timeout: 30000 });
+    if (res && res.file) return res.file;
   } catch (_) {
     flashToast("retrying in pieces…", true);
   }
 
-  // Fallback: a few larger chunks.
+  // Fallback: a few larger chunks; finalize stores + records and returns `file`.
   const sessionId = (window.crypto && crypto.randomUUID)
     ? crypto.randomUUID().replace(/-/g, "")
     : String(Date.now()) + Math.random().toString(36).slice(2);
@@ -340,42 +342,37 @@ async function uploadImageBlob(blob) {
     flashToast(`sending photo… ${i + 1}/${total}`);
     await uploadPost({ session: sessionId, index: i, total, chunk });
   }
-  const { storage_path } = await uploadPost({
-    session: sessionId, total, finalize: true, content_type: "image/jpeg",
+  const res = await uploadPost({
+    session: sessionId, total, finalize: true, content_type: "image/jpeg", ...meta,
   });
-  if (!storage_path) throw new Error("upload returned no path");
-  return storage_path;
+  if (!res || !res.file) throw new Error("upload returned no record");
+  return res.file;
 }
 
 async function dbCreateFile(projectId, file) {
-  // Client-generate a UUID so we can store the image under a known path and
-  // skip reading the row back. Fall back to a DB-generated id if unavailable.
+  if (file.blob) {
+    // Image: our server both stores the file AND writes its database record,
+    // so the phone makes ZERO direct database writes — which is essential,
+    // because the auth lock deadlocks after the photo-picker backgrounds the
+    // app. The server returns the saved record; we use it as-is.
+    const rec = await uploadImageBlob(file.blob, { projectId, name: file.name });
+    return rowToFile(rec);
+  }
+
+  // pdf / text: small inline base64, written directly (no picker-deadlock
+  // concern in practice).
   const id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : null;
-  const userId = state.user.id;
   const row = {
     project_id: projectId,
-    user_id: userId,
+    user_id: state.user.id,
     name: file.name,
     kind: file.kind,
     media_type: file.mediaType,
     size: file.size,
-    data: null,
+    data: file.data,
     storage_path: null,
   };
-
-  if (file.blob) {
-    // Images go to Storage via our own server (/api/upload). A phone whose
-    // direct path to Storage stalls can still reach our server, which does
-    // the Storage write itself. Returns the object's storage path.
-    row.storage_path = await uploadImageBlob(file.blob);
-  } else {
-    // pdf / text stay as inline base64 (they're small).
-    row.data = file.data;
-  }
-
-  flashToast("💾 saving photo record…"); // temporary: see if the DB write is the hang
   if (id) {
-    // Client-generated id → insert with return=minimal (no row read-back).
     const { error } = await db.from("files").insert({ id, ...row });
     if (error) throw error;
     return rowToFile({ ...row, id });

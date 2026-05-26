@@ -105,7 +105,9 @@ class handler(BaseHTTPRequestHandler):
         self._diag(user_id, f"single: decoded {len(body)}b, calling storage…")
         self._storage_put(path, body, "image/jpeg", token)
         self._diag(user_id, "single: storage PUT returned OK")
-        return self._ok({"storage_path": path})
+        row = self._insert_file_row(payload, user_id, token, path, len(body))
+        self._diag(user_id, "single: db record written OK")
+        return self._ok({"storage_path": path, "file": row})
 
     def _store_chunk(self, payload, user_id, token):
         session = self._safe_token(payload.get("session"))
@@ -134,7 +136,35 @@ class handler(BaseHTTPRequestHandler):
         # Best-effort cleanup of the temp chunks.
         for i in range(total):
             self._storage_delete(f"{user_id}/tmp/{session}/{i}", token)
-        return self._ok({"storage_path": path})
+        row = self._insert_file_row(payload, user_id, token, path, len(body))
+        return self._ok({"storage_path": path, "file": row})
+
+    def _insert_file_row(self, payload, user_id, token, path, size):
+        """Write the files-table record server-side (the phone can't, because
+        its auth lock deadlocks after the photo picker). Done as the user via
+        their forwarded token, so RLS still applies. Returns the row in the
+        shape rowToFile() expects on the client."""
+        file_id = str(uuid.uuid4())
+        row = {
+            "id": file_id,
+            "project_id": payload.get("project_id"),
+            "user_id": user_id,
+            "name": payload.get("name") or "photo.jpg",
+            "kind": "image",
+            "media_type": "image/jpeg",
+            "size": size,
+            "data": None,
+            "storage_path": path,
+        }
+        req = urllib.request.Request(
+            f"{self._storage_base()}/rest/v1/files",
+            data=json.dumps(row).encode(), method="POST",
+            headers=self._storage_headers(token, {
+                "Content-Type": "application/json", "Prefer": "return=minimal"}))
+        with urllib.request.urlopen(req, timeout=STORAGE_TIMEOUT_SECONDS) as resp:
+            if not (200 <= resp.status < 300):
+                raise RuntimeError(f"files insert {resp.status}")
+        return row
 
     # ---- storage helpers (as the user; RLS applies) ----
 
