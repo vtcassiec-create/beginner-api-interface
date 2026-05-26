@@ -104,17 +104,15 @@
     // Reachability of a specific endpoint with a tiny POST. We do NOT send
     // auth — a 401/400 reply still PROVES the request reached the function
     // (which is all we're testing). Only a timeout means "can't reach it".
-    async function reach(path) {
+    async function reach(path, { auth = false, bytes = 0 } = {}) {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 20000);
       const start = performance.now();
+      const headers = { "Content-Type": "application/json" };
+      if (auth) headers["Authorization"] = "Bearer diagnostic-fake-token";
+      const body = JSON.stringify(bytes ? { pad: "x".repeat(bytes) } : { ping: "x" });
       try {
-        const res = await fetch(path, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ping: "x" }),
-          signal: ctrl.signal,
-        });
+        const res = await fetch(path, { method: "POST", headers, body, signal: ctrl.signal });
         clearTimeout(t);
         return { ok: true, ms: Math.round(performance.now() - start),
                  detail: `reached (HTTP ${res.status})` };
@@ -132,10 +130,14 @@
       summary.textContent = "";
 
       // 0) ENDPOINT REACHABILITY: can the phone touch each function at all?
-      sep("endpoint reachability (tiny POST, no auth)");
-      for (const p of ["/api/echo", "/api/chat", "/api/upload"]) {
-        render(row(p), await reach(p));
-      }
+      sep("endpoint reachability");
+      render(row("/api/echo"), await reach("/api/echo"));
+      render(row("/api/chat"), await reach("/api/chat"));
+      render(row("/api/upload (plain)"), await reach("/api/upload"));
+      // The two ways the real app's request differs from the plain one above:
+      render(row("/api/upload + AUTH header"), await reach("/api/upload", { auth: true }));
+      render(row("/api/upload + 64KB body"), await reach("/api/upload", { bytes: 64 * 1024 }));
+      render(row("/api/upload + AUTH + 64KB"), await reach("/api/upload", { auth: true, bytes: 64 * 1024 }));
 
       // 1) OUR SERVER (Vercel): size sweep, instant replies
       sep("our server (Vercel) — size");
