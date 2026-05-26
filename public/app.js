@@ -278,8 +278,10 @@ function blobToBase64(blob) {
 // One JSON POST to /api/upload, with auth + a short retry (small requests can
 // blip on a flaky connection). Returns the parsed JSON.
 async function uploadPost(payload, { attempts = 3, timeout = 12000 } = {}) {
+  flashToast("🔑 checking login…"); // DIAG: marker before the session check
   const session = await freshSession();
   if (!session) throw new Error("You're signed out. Refresh to sign back in.");
+  flashToast("📡 sending piece…"); // DIAG: marker after session, before the fetch
   let lastErr;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
