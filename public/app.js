@@ -985,21 +985,48 @@ async function buildApiMessages(project, messages) {
 // streams send data far more often than this (even thinking streams deltas).
 const STREAM_IDLE_MS = 60000;
 
+// Read the saved session straight from localStorage — synchronous, no Web
+// Lock, so it CANNOT deadlock. supabase-js persists it under a key like
+// "sb-<ref>-auth-token". This is our lock-free fallback when getSession()
+// hangs (which it does after the OS photo-picker backgrounds the app: the
+// auth lock can deadlock and getSession() never resolves).
+function localSession() {
+  try {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith("sb-") && k.endsWith("-auth-token")) {
+        let v = JSON.parse(localStorage.getItem(k));
+        if (v && v.currentSession) v = v.currentSession; // older shape
+        if (v && v.access_token) return v;
+      }
+    }
+  } catch (_) { /* storage unavailable / malformed */ }
+  return null;
+}
+
 // Get a usable session, refreshing if the token is missing or about to
 // expire — after an idle stretch the stored token can be stale, and sending
 // with it 401s (which cleared the composer and "ate" the message).
 async function freshSession() {
-  let { data: { session } } = await db.auth.getSession();
+  let session = null;
+  try {
+    // Timeout-guarded: getSession() acquires an auth Web Lock that can
+    // deadlock after the app is backgrounded (e.g. the photo picker) — it
+    // must never hang the caller. If it stalls, fall back to the stored token.
+    const r = await withTimeout(db.auth.getSession(), 4000, "getSession timed out");
+    session = (r && r.data && r.data.session) || null;
+  } catch (_) { /* fall back below */ }
+  if (!session) session = localSession();
+
   const expMs = session && session.expires_at ? session.expires_at * 1000 : 0;
-  if (!session || expMs - Date.now() < 60000) {
+  if (!session || (expMs && expMs - Date.now() < 60000)) {
     try {
-      // Timeout-guarded: refreshSession is a database call, and if it hangs it
-      // must not wedge the send — fall back to the token we already have.
+      // Same guard: refreshSession is a database call (and also takes the
+      // lock) — if it hangs, keep whatever token we already have.
       const r = await withTimeout(db.auth.refreshSession(), 8000, "refresh timed out");
       if (r.data && r.data.session) session = r.data.session;
     } catch (_) { /* keep whatever we had */ }
   }
-  return session;
+  return session || localSession();
 }
 
 async function streamChat(payload, onEvent) {
