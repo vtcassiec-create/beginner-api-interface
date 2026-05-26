@@ -933,11 +933,11 @@ function cleanMessagesForApi(messages) {
 // gracefully. Returns null if the image can't be resolved (it's then skipped).
 async function imageSourceFor(f) {
   if (f.storagePath) {
-    const { data, error } = await db.storage
-      .from("attachments")
-      .createSignedUrl(f.storagePath, 3600); // 1h — ample for the request
-    if (error || !data?.signedUrl) return null;
-    return { type: "url", url: data.signedUrl };
+    // Hand the storage path to the server, which mints the signed URL itself.
+    // We must NOT call createSignedUrl here: it's a phone→Supabase auth-lock
+    // call that deadlocks after the photo picker backgrounds the app (the same
+    // bug that blocked the upload). This marker is rewritten in /api/chat.
+    return { type: "storage_path", storage_path: f.storagePath };
   }
   if (f.data) return { type: "base64", media_type: f.mediaType, data: f.data };
   return null;

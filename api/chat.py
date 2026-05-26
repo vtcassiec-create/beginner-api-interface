@@ -231,7 +231,8 @@ class handler(BaseHTTPRequestHandler):
         kwargs = {
             "model": model,
             "max_tokens": max_tokens,
-            "messages": data.get("messages") or [],
+            "messages": self._resolve_image_sources(
+                data.get("messages") or [], self._bearer_token()),
         }
         # Self-authored memory: when on, hand him the save_* tools and tell
         # him (in the preamble) that they exist. The DB writes are RLS-scoped
@@ -443,6 +444,62 @@ class handler(BaseHTTPRequestHandler):
         if not auth.startswith("Bearer "):
             return ""
         return auth[len("Bearer "):].strip()
+
+    def _resolve_image_sources(self, messages, token):
+        """Rewrite image blocks the client sent as a storage_path marker into
+        real, fetchable URLs. The phone can't mint signed URLs (its auth lock
+        deadlocks after the photo picker), so it sends
+        {type:'image', source:{type:'storage_path', storage_path:'<uid>/<f>.jpg'}}
+        and we sign it here, as the user. Unsignable images are dropped so a
+        bad attachment can never wedge the whole turn."""
+        if not isinstance(messages, list):
+            return messages
+        for m in messages:
+            content = m.get("content") if isinstance(m, dict) else None
+            if not isinstance(content, list):
+                continue
+            kept = []
+            for block in content:
+                if (isinstance(block, dict) and block.get("type") == "image"
+                        and isinstance(block.get("source"), dict)
+                        and block["source"].get("type") == "storage_path"):
+                    url = self._sign_storage_url(
+                        block["source"].get("storage_path"), token)
+                    if not url:
+                        continue  # drop the image we couldn't sign
+                    block = {"type": "image", "source": {"type": "url", "url": url}}
+                kept.append(block)
+            m["content"] = kept
+        return messages
+
+    def _sign_storage_url(self, path, token):
+        """Mint a short-lived signed URL for a private 'attachments' object,
+        as the signed-in user (RLS applies). Returns an absolute URL Anthropic
+        can fetch, or None on any failure."""
+        if not path or not token:
+            return None
+        base = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        if not base or not anon:
+            return None
+        try:
+            req = urllib.request.Request(
+                f"{base}/storage/v1/object/sign/attachments/{path}",
+                data=json.dumps({"expiresIn": 3600}).encode(), method="POST",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "apikey": anon,
+                    "Content-Type": "application/json",
+                })
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if not (200 <= resp.status < 300):
+                    return None
+                signed = json.loads(resp.read().decode()).get("signedURL")
+            # signedURL is relative to /storage/v1, e.g.
+            # "/object/sign/attachments/<path>?token=<jwt>"
+            return f"{base}/storage/v1{signed}" if signed else None
+        except Exception:
+            return None
 
     def _supabase_rest_get(self, query, token):
         """GET {SUPABASE_URL}/rest/v1/{query} as the signed-in user.
