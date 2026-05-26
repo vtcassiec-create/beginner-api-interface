@@ -48,6 +48,11 @@ def _normalize_url(raw):
 
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
+# If a project's chosen model has been retired/removed from the API, fall back
+# to this (the current Sonnet) so chat keeps working instead of erroring. His
+# identity lives in the system prompt + memory, not the model id, so the swap
+# is seamless. The client is told so it can persist the new model.
+FALLBACK_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 4096
 THINKING_BUDGET = 4096
 AUTH_TIMEOUT_SECONDS = 5
@@ -410,9 +415,36 @@ class handler(BaseHTTPRequestHandler):
             msg = (getattr(err, "message", "") or "").lower()
             return getattr(err, "status_code", None) == 400 and "mcp" in msg
 
+        def _is_model_gone(err):
+            # A retired/unknown model id: 404, or an invalid-request that names
+            # the model. Happens at request start (before any text), so a retry
+            # with the fallback can't duplicate output.
+            msg = (getattr(err, "message", "") or "").lower()
+            code = getattr(err, "status_code", None)
+            if code == 404:
+                return True
+            return code == 400 and "model" in msg and (
+                "not found" in msg or "not_found" in msg
+                or "does not exist" in msg or "deprecat" in msg or "retir" in msg)
+
         try:
             run_stream()
         except anthropic.APIStatusError as e:
+            # Model retired/removed → swap to the current Sonnet and retry, and
+            # tell the client so it can save the new model to his project.
+            if _is_model_gone(e) and kwargs.get("model") != FALLBACK_MODEL:
+                kwargs["model"] = FALLBACK_MODEL
+                self._sse({"type": "notice",
+                           "text": f"{model} isn't available anymore — switched to "
+                                   f"{FALLBACK_MODEL.replace('claude-', '')} so nothing breaks."})
+                self._sse({"type": "model_fallback", "model": FALLBACK_MODEL})
+                try:
+                    run_stream()
+                except anthropic.APIStatusError as e2:
+                    self._sse({"type": "error", "error": f"{e2.status_code}: {e2.message}"})
+                except Exception as e2:
+                    self._sse({"type": "error", "error": str(e2)})
+                return
             # Reactive fault-isolation: only the connector knows whether it can
             # reach an MCP server (it connects from Anthropic's network, not
             # ours). If it reports a connection failure — which happens before

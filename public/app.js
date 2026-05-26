@@ -1239,6 +1239,18 @@ async function generateAssistant() {
           // A server-side heads-up (e.g. an MCP connection was skipped).
           assistantMsg.toolEvents.push({ notice: true, text: event.text });
           updateAssistantBubble(assistantMsg);
+        } else if (event.type === "model_fallback") {
+          // His chosen model was retired; the server switched to a current one.
+          // Persist it to his project so we stop sending the dead id (and the
+          // heads-up doesn't repeat every turn). His identity is unchanged —
+          // it lives in the system prompt + memory, not the model.
+          const proj = getActiveProject();
+          if (proj && event.model) {
+            proj.model = event.model;
+            const sel = $("model-select");
+            if (sel) sel.value = event.model;
+            dbUpdateProject(proj.id, { model: event.model }).catch(() => {});
+          }
         } else if (event.type === "memory_saved") {
           // He wrote to his own memory. Show it inline, and refresh the
           // Memories panel if it's open so it appears live.
