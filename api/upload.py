@@ -66,6 +66,9 @@ class handler(BaseHTTPRequestHandler):
             return self._json_error(400, f"Invalid JSON body: {e}")
 
         token = self._bearer_token()
+        mode = ("finalize" if payload.get("finalize")
+                else "chunk" if "index" in payload else "single")
+        self._diag(user_id, f"POST arrived ({length}b, mode={mode})")
         try:
             if payload.get("finalize"):
                 return self._finalize(payload, user_id, token)
@@ -78,8 +81,10 @@ class handler(BaseHTTPRequestHandler):
                 detail = e.read().decode()[:200]
             except Exception:
                 detail = str(e)
+            self._diag(user_id, f"HTTPError from storage: {detail[:120]}")
             return self._json_error(502, f"Storage error: {detail}")
         except Exception as e:
+            self._diag(user_id, f"exception: {e}")
             return self._json_error(502, f"Upload failed: {e}")
 
     # ---- upload modes ----
@@ -87,9 +92,12 @@ class handler(BaseHTTPRequestHandler):
     def _store_single(self, payload, user_id, token):
         body = self._decode_b64(payload.get("data"))
         if not body:
+            self._diag(user_id, "single: empty after decode")
             return self._json_error(400, "Empty image.")
         path = f"{user_id}/{uuid.uuid4().hex}.jpg"
+        self._diag(user_id, f"single: decoded {len(body)}b, calling storage…")
         self._storage_put(path, body, "image/jpeg", token)
+        self._diag(user_id, "single: storage PUT returned OK")
         return self._ok({"storage_path": path})
 
     def _store_chunk(self, payload, user_id, token):
@@ -195,6 +203,27 @@ class handler(BaseHTTPRequestHandler):
                 return json.loads(resp.read().decode()).get("id")
         except Exception:
             return None
+
+    def _diag(self, user_id, msg):
+        """Temporary flight recorder: write a step marker to reach_log (via the
+        service key, so it always writes regardless of RLS). Best-effort, short
+        timeout — logging must never stall or break the upload."""
+        try:
+            url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+            key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+            if not url or not key or not user_id:
+                return
+            req = urllib.request.Request(
+                f"{url}/rest/v1/reach_log",
+                data=json.dumps({"user_id": user_id, "kind": "upload_diag",
+                                 "content": msg}).encode(),
+                method="POST",
+                headers={"apikey": key, "Authorization": f"Bearer {key}",
+                         "Content-Type": "application/json",
+                         "Prefer": "return=minimal"})
+            urllib.request.urlopen(req, timeout=5).read()
+        except Exception:
+            pass
 
     def _ok(self, obj):
         self.send_response(200)
