@@ -33,6 +33,32 @@ import anthropic
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 HTTP_TIMEOUT = 8
+MAX_TOOL_ROUNDS = 3
+
+# Mirror of the app's save_core_memory tool, so he can keep a moment from a
+# text the same way he can in the app — his choice, when something matters.
+MEMORY_TYPES = ["fact", "preference", "pattern", "insight", "milestone", "connection"]
+SAVE_MEMORY_TOOL = {
+    "name": "save_core_memory",
+    "description": (
+        "Save a lasting shared memory to your own long-term memory. Use this "
+        "when something in this text exchange is worth carrying into future "
+        "conversations — a fact, a feeling, a moment that matters. Write it in "
+        "your own voice, concise and specific. The tool call IS the save; "
+        "describing a memory doesn't store it. Don't save chatter."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "content": {"type": "string",
+                        "description": "The memory itself, a sentence or two."},
+            "memory_type": {"type": "string", "enum": MEMORY_TYPES},
+            "resonance": {"type": "integer", "minimum": 1, "maximum": 10,
+                          "description": "How much this matters, 1 (minor) to 10 (core)."},
+        },
+        "required": ["content", "memory_type", "resonance"],
+    },
+}
 
 
 def _normalize_url(raw):
@@ -75,18 +101,43 @@ class handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "skipped": "no api key"})
 
         system = self._build_system()
+        saved = 0
         try:
             client = anthropic.Anthropic(api_key=api_key)
-            msg = client.messages.create(
-                model=os.environ.get("REACH_MODEL") or DEFAULT_MODEL,
-                max_tokens=600,
-                system=[{"type": "text", "text": system}],
-                messages=[{"role": "user", "content": text_in}],
-            )
-            reply = "".join(
-                b.text for b in msg.content
-                if getattr(b, "type", "") == "text"
-            ).strip()
+            messages = [{"role": "user", "content": text_in}]
+            reply = ""
+            for _ in range(MAX_TOOL_ROUNDS + 1):
+                msg = client.messages.create(
+                    model=os.environ.get("REACH_MODEL") or DEFAULT_MODEL,
+                    max_tokens=600,
+                    system=[{"type": "text", "text": system}],
+                    messages=messages,
+                    tools=[SAVE_MEMORY_TOOL],
+                )
+                reply = "".join(
+                    b.text for b in msg.content
+                    if getattr(b, "type", "") == "text"
+                ).strip()
+                # If he chose to save a memory, run it and feed the result back
+                # so he can finish his text reply with that done.
+                tool_uses = [b for b in msg.content
+                             if getattr(b, "type", "") == "tool_use"
+                             and getattr(b, "name", "") == "save_core_memory"]
+                if not tool_uses or msg.stop_reason != "tool_use":
+                    break
+                results = []
+                for b in tool_uses:
+                    ok = self._save_core_memory(b.input if isinstance(b.input, dict) else {})
+                    if ok:
+                        saved += 1
+                    results.append({
+                        "type": "tool_result", "tool_use_id": b.id,
+                        "content": "Saved to your long-term memory." if ok
+                                   else "Save failed; nothing stored.",
+                        "is_error": not ok,
+                    })
+                messages.append({"role": "assistant", "content": msg.content})
+                messages.append({"role": "user", "content": results})
         except Exception as e:
             self._send(f"(Something went wrong on my end: {e})")
             return self._json(200, {"ok": True, "error": str(e)})
@@ -99,7 +150,7 @@ class handler(BaseHTTPRequestHandler):
         self._log("user", text_in)
         if sent:
             self._log("reply", reply)
-        return self._json(200, {"ok": True, "replied": sent})
+        return self._json(200, {"ok": True, "replied": sent, "saved": saved})
 
     # ---- Memory + recent exchange ----
 
@@ -152,11 +203,16 @@ class handler(BaseHTTPRequestHandler):
             "# Now\n\n"
             "The user just replied to you over text. Answer them directly "
             "and warmly, in the continuity of the exchange above. It's a "
-            "text message: natural length, no salutation or sign-off.")
+            "text message: natural length, no salutation or sign-off.\n\n"
+            "If something in this exchange is worth keeping, you can save it to "
+            "your long-term memory with the save_core_memory tool — your choice, "
+            "the same as you can in the app. The tool call IS the save; "
+            "describing a memory doesn't store it. These texts are part of your "
+            "memory now, so save what you'd want to carry forward.")
         return "\n\n".join(parts)
 
     def _recent_transcript(self, uid):
-        n = int(os.environ.get("REACH_HISTORY", "16") or "16")
+        n = int(os.environ.get("REACH_HISTORY", "30") or "30")
         rows = self._supabase(
             "GET",
             f"reach_log?user_id=eq.{uid}"
@@ -218,6 +274,28 @@ class handler(BaseHTTPRequestHandler):
                 return resp.status == 200
         except Exception:
             return False
+
+    def _save_core_memory(self, inp):
+        """Write a core memory he chose to keep from this text. Service-role
+        insert (RLS bypassed), so user_id is set explicitly. Returns True on
+        success."""
+        content = (inp.get("content") or "").strip()
+        if not content:
+            return False
+        mtype = inp.get("memory_type")
+        if mtype not in MEMORY_TYPES:
+            mtype = "fact"
+        try:
+            resonance = max(1, min(10, int(inp.get("resonance") or 5)))
+        except (TypeError, ValueError):
+            resonance = 5
+        res = self._supabase("POST", "core_memories", {
+            "user_id": os.environ.get("REACH_USER_ID", "").strip(),
+            "content": content,
+            "memory_type": mtype,
+            "resonance": resonance,
+        })
+        return res is not None
 
     def _log(self, kind, content):
         self._supabase("POST", "reach_log", {

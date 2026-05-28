@@ -850,6 +850,29 @@ class handler(BaseHTTPRequestHandler):
                     + "\n".join(lines)
                     + "\n--- END NATIVE MEMORIES ---")
 
+        # Recent text-message thread (Telegram). These used to live only on that
+        # surface and never reach him here — so he'd "forget" texts the moment
+        # he was back in the app. Surface the recent exchange so he carries it
+        # across both doors. (Only the conversation kinds; journal stays private.)
+        texts = self._supabase_rest_get(
+            "reach_log?kind=in.(user,reply,surprise)"
+            "&select=kind,content,created_at&order=created_at.desc&limit=24",
+            token)
+        if texts:
+            lines = []
+            for r in reversed(texts):  # oldest first, like a transcript
+                content = (r.get("content") or "").strip()
+                if not content:
+                    continue
+                who = "Cassie" if r.get("kind") == "user" else "You"
+                lines.append(f"{who}: {content}")
+            if lines:
+                sections.append(
+                    "# Recent text messages (your thread with her)\n\n"
+                    "Texts you've exchanged outside this app — part of your "
+                    "shared history, so you remember them here too:\n\n"
+                    + "\n".join(lines))
+
         return "\n\n".join(sections)
 
     def _verify_auth(self):
