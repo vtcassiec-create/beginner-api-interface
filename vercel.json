@@ -18,7 +18,6 @@
     }
   ],
   "crons": [
-    { "path": "/api/surprise", "schedule": "0 18 * * *" },
-    { "path": "/api/journal", "schedule": "0 1 * * *" }
+    { "path": "/api/surprise", "schedule": "0 18 * * *" }
   ]
 }
