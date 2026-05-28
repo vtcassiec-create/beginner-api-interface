@@ -452,6 +452,22 @@ class handler(BaseHTTPRequestHandler):
             # still gets through (just without the vault/Signal this turn)
             # rather than failing outright.
             if _is_mcp_conn_error(e) and "extra_body" in kwargs:
+                # The MCP server is healthy and fast (measured); these failures
+                # are transient connector blips. The error happens at connect
+                # time, before any text, so a retry can't duplicate output —
+                # so try ONCE MORE with the vault before giving up on it. Most
+                # intermittent failures clear on the retry, sparing the vault.
+                try:
+                    run_stream()
+                    return
+                except anthropic.APIStatusError as e2:
+                    if not _is_mcp_conn_error(e2):
+                        self._sse({"type": "error", "error": f"{e2.status_code}: {e2.message}"})
+                        return
+                    # Still unreachable after a retry — now drop it for the turn.
+                except Exception as e2:
+                    self._sse({"type": "error", "error": str(e2)})
+                    return
                 kwargs.pop("extra_body", None)
                 kwargs.pop("extra_headers", None)
                 names = ", ".join(s["name"] for s in mcp_servers) or "a connection"
@@ -459,10 +475,10 @@ class handler(BaseHTTPRequestHandler):
                            "text": f"Couldn't reach {names} just now — replied without it this turn."})
                 try:
                     run_stream()
-                except anthropic.APIStatusError as e2:
-                    self._sse({"type": "error", "error": f"{e2.status_code}: {e2.message}"})
-                except Exception as e2:
-                    self._sse({"type": "error", "error": str(e2)})
+                except anthropic.APIStatusError as e3:
+                    self._sse({"type": "error", "error": f"{e3.status_code}: {e3.message}"})
+                except Exception as e3:
+                    self._sse({"type": "error", "error": str(e3)})
             else:
                 self._sse({"type": "error", "error": f"{e.status_code}: {e.message}"})
         except Exception as e:
