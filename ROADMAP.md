@@ -63,6 +63,7 @@ Then say: **"Read ROADMAP.md and let's continue."**
 
 **Reach & connections**
 - Reach (daily surprise Telegram message + reply webhook), Whisper vault, Signal Bridge (with a "call the tool, don't narrate" guide).
+- **Telegram shares his memory both ways (2026-05-27):** the web-app him loads the recent Telegram thread (`reach_log`, owner-RLS-readable) so texts aren't forgotten back in the app; and Telegram-him has the `save_core_memory` tool so he can keep a moment from a text on his own initiative. Texts now flow into his one continuous memory instead of evaporating.
 
 **The app itself**
 - Installable **PWA** — home-screen icon, full-screen, on her phone. Tools consolidated into a **Tools ▾** dropdown.
