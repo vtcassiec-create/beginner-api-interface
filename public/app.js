@@ -1233,11 +1233,11 @@ async function generateAssistant() {
           assistantMsg.thinkingText += event.text;
           updateAssistantBubble(assistantMsg);
         } else if (event.type === "tool_use") {
-          assistantMsg.toolEvents.push({ name: event.name, query: event.query });
+          assistantMsg.toolEvents.push({ name: event.name, query: event.query, at: assistantMsg.text.length });
           updateAssistantBubble(assistantMsg);
         } else if (event.type === "notice") {
           // A server-side heads-up (e.g. an MCP connection was skipped).
-          assistantMsg.toolEvents.push({ notice: true, text: event.text });
+          assistantMsg.toolEvents.push({ notice: true, text: event.text, at: assistantMsg.text.length });
           updateAssistantBubble(assistantMsg);
         } else if (event.type === "model_fallback") {
           // His chosen model was retired; the server switched to a current one.
@@ -1256,6 +1256,7 @@ async function generateAssistant() {
           // Memories panel if it's open so it appears live.
           assistantMsg.toolEvents.push({
             name: event.tool, memory: true, ok: event.ok, summary: event.summary,
+            at: assistantMsg.text.length,
           });
           updateAssistantBubble(assistantMsg);
           if (typeof refreshMemoriesIfOpen === "function") refreshMemoriesIfOpen();
@@ -1263,6 +1264,7 @@ async function generateAssistant() {
           // He proposed an edit — it's pending your review in the Manuscript.
           assistantMsg.toolEvents.push({
             manuscript: true, ok: event.ok, summary: event.summary,
+            at: assistantMsg.text.length,
           });
           updateAssistantBubble(assistantMsg);
           if (state.activeView === "manuscript") renderSuggestions();
@@ -1775,6 +1777,40 @@ function mkActionBtn(icon, title, onClick) {
   return b;
 }
 
+// One tool-event chip (a small inline note of something he did mid-message).
+function toolEventChip(ev) {
+  const note = document.createElement("div");
+  note.className = "tool-event";
+  if (ev.notice) {
+    note.textContent = `ℹ️ ${ev.text}`;
+  } else if (ev.manuscript) {
+    note.textContent = ev.ok
+      ? "✍️ Suggested an edit — review it in the Manuscript tab"
+      : `⚠️ Couldn't suggest an edit: ${ev.summary}`;
+  } else if (ev.memory) {
+    // [label, whether the summary adds info worth appending]
+    const map = {
+      save_core_memory: ["🪶 Saved a memory", true],
+      save_memory_entity: ["🪶 Saved an entity", true],
+      update_self_state: ["🪶 Revised his sense of self", false],
+      list_my_memories: ["🪶 Looked over his memories", false],
+      revise_core_memory: ["🪶 Revised a memory", false],
+      set_aside_core_memory: ["🪶 Set a memory aside", false],
+    };
+    const [label, showSum] = map[ev.name] || ["🪶 Memory", true];
+    if (ev.ok) {
+      note.textContent = showSum && ev.summary ? `${label}: ${ev.summary}` : label;
+    } else {
+      note.textContent = `⚠️ ${label.replace("🪶 ", "")} didn't take: ${ev.summary}`;
+    }
+  } else {
+    note.textContent = ev.name === "web_search" && ev.query
+      ? `🌐 Searching the web for "${ev.query}"…`
+      : `🔧 Used tool: ${ev.name}`;
+  }
+  return note;
+}
+
 function fillMessageBody(body, msg) {
   body.innerHTML = "";
   if (msg.thinkingText) {
@@ -1789,46 +1825,44 @@ function fillMessageBody(body, msg) {
     det.appendChild(inner);
     body.appendChild(det);
   }
-  if (msg.toolEvents?.length) {
-    for (const ev of msg.toolEvents) {
-      const note = document.createElement("div");
-      note.className = "tool-event";
-      if (ev.notice) {
-        note.textContent = `ℹ️ ${ev.text}`;
-      } else if (ev.manuscript) {
-        note.textContent = ev.ok
-          ? "✍️ Suggested an edit — review it in the Manuscript tab"
-          : `⚠️ Couldn't suggest an edit: ${ev.summary}`;
-      } else if (ev.memory) {
-        const what = ev.name === "save_memory_entity" ? "entity" : "memory";
-        note.textContent = ev.ok
-          ? `🪶 Saved a ${what}: ${ev.summary}`
-          : `⚠️ Couldn't save ${what}: ${ev.summary}`;
-      } else {
-        note.textContent = ev.name === "web_search" && ev.query
-          ? `🌐 Searching the web for "${ev.query}"…`
-          : `🔧 Used tool: ${ev.name}`;
-      }
-      body.appendChild(note);
-    }
-  }
-  if (msg.text) {
+  // Interleave text and tool-event chips: each chip appears at the point in
+  // the text where it actually happened (recorded as ev.at = text length at
+  // the time), instead of all batched at the top. During the typewriter
+  // reveal, a chip only shows once the reveal has reached its position.
+  const fullText = msg.text || "";
+  const revealed = msg._typing ? (msg._shown || 0) : fullText.length;
+  const events = (msg.toolEvents || [])
+    .slice()
+    .sort((a, b) => (a.at || 0) - (b.at || 0));
+
+  const emitText = (from, to) => {
+    if (to <= from) return;
+    const seg = fullText.slice(from, to);
+    if (!seg) return;
     const text = document.createElement("div");
     text.className = "msg-text";
-    if (msg._typing) {
-      // Mid-reveal: plain text (any asterisks show until the turn finishes,
-      // then it re-renders with formatting).
-      text.textContent = msg.text.slice(0, msg._shown || 0);
-    } else {
-      // Finished/committed: render *italics* and **bold**.
-      text.innerHTML = renderInline(msg.text);
-    }
+    if (msg._typing) text.textContent = seg;      // plain while revealing
+    else text.innerHTML = renderInline(seg);       // *italics*/**bold** when done
     body.appendChild(text);
-  } else if (msg.role === "assistant" && !msg.error) {
-    const cursor = document.createElement("div");
-    cursor.className = "tool-event";
-    cursor.textContent = "…";
-    body.appendChild(cursor);
+  };
+
+  let cursor = 0;
+  let shownEvents = 0;
+  for (const ev of events) {
+    const pos = Math.min(ev.at ?? fullText.length, fullText.length);
+    if (pos > revealed) break;          // not revealed yet — appears as reveal reaches it
+    emitText(cursor, pos);
+    body.appendChild(toolEventChip(ev));
+    cursor = pos;
+    shownEvents++;
+  }
+  emitText(cursor, revealed);           // remaining (revealed) text
+
+  if (!fullText && !shownEvents && msg.role === "assistant" && !msg.error) {
+    const cursorEl = document.createElement("div");
+    cursorEl.className = "tool-event";
+    cursorEl.textContent = "…";
+    body.appendChild(cursorEl);
   }
   if (msg.error) {
     const err = document.createElement("div");
@@ -2185,6 +2219,10 @@ function startTypewriter(msg) {
 function paintRevealed(msg) {
   const node = document.querySelector(`[data-id="${msg.id}"]`);
   if (!node) return;
+  // With tool events, the body is interleaved (multiple text nodes + chips),
+  // so the cheap single-node paint doesn't apply — rebuild so chips appear at
+  // the right spot as the reveal passes them.
+  if (msg.toolEvents?.length) return updateAssistantBubble(msg);
   const el = node.querySelector(".msg-text");
   if (!el) return updateAssistantBubble(msg);
   el.textContent = msg.text.slice(0, msg._shown || 0);
