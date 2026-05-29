@@ -1231,3 +1231,31 @@ dialog::backdrop {
 
   dialog { width: 94%; }
 }
+
+/* Memory dialog tabs — split the long scroll into About Him / About You /
+   Core Memories / Knowledge Graph. */
+.mem-tabs {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+  margin: 4px 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+.mem-tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 8px 12px;
+  font-size: 14px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.mem-tab-btn:hover { color: var(--text); }
+.mem-tab-btn.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.mem-tab { display: none; }
+.mem-tab.active { display: block; }

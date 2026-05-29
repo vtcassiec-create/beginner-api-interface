@@ -2477,12 +2477,22 @@ async function deleteEntity(id) {
 
 async function openMemoriesDialog() {
   closeSidebar();
+  switchMemTab("identity"); // always open on the first tab
   fillSelectOnce($("mem-type"), MEMORY_TYPES);
   fillSelectOnce($("entity-type"), ENTITY_TYPES);
   await loadIdentityAndPrefs();
   await renderMemoryList();
   await renderEntityList();
   $("memories-dialog").showModal();
+}
+
+// Show one memory tab (About Him / About You / Core Memories / Knowledge
+// Graph) and hide the rest — replaces the old one-long-scroll layout.
+function switchMemTab(name) {
+  document.querySelectorAll("#memories-dialog .mem-tab-btn").forEach((b) =>
+    b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll("#memories-dialog .mem-tab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.tab === name));
 }
 
 // When he saves a memory mid-chat and the Memories panel happens to be
@@ -2816,6 +2826,8 @@ function wireApp() {
   $("settings-btn").addEventListener("click", () => $("settings-dialog").showModal());
 
   $("memories-btn").addEventListener("click", openMemoriesDialog);
+  document.querySelectorAll("#memories-dialog .mem-tab-btn").forEach((btn) =>
+    btn.addEventListener("click", () => switchMemTab(btn.dataset.tab)));
   $("self-state-save-btn").addEventListener("click", saveSelfState);
   $("user-prefs-save-btn").addEventListener("click", saveUserPreferences);
   $("mem-add-btn").addEventListener("click", addCoreMemory);

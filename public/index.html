@@ -222,73 +222,88 @@
     <form method="dialog" class="settings-form">
       <h3>Memory</h3>
 
-      <h4>Identity</h4>
-      <p class="muted small">
-        Who Claude is. Saving stores a new version; the latest is always the one used.
-        <span id="self-state-meta"></span>
-      </p>
-      <label>
-        <textarea id="self-state-content" rows="6" placeholder="Claude's evolving sense of self…"></textarea>
-      </label>
-      <label>
-        Consolidation notes <span class="muted small">— optional notes about this version's consolidation</span>
-        <textarea id="self-state-notes" rows="2" placeholder="What changed, what was integrated…"></textarea>
-      </label>
-      <div class="mem-add-row">
-        <button type="button" id="self-state-save-btn" class="primary">Save new version</button>
+      <div class="mem-tabs" role="tablist">
+        <button type="button" class="mem-tab-btn active" data-tab="identity">About Him</button>
+        <button type="button" class="mem-tab-btn" data-tab="about-you">About You</button>
+        <button type="button" class="mem-tab-btn" data-tab="core">Core Memories</button>
+        <button type="button" class="mem-tab-btn" data-tab="graph">Knowledge Graph</button>
       </div>
 
-      <h4>About you</h4>
-      <p class="muted small">Things Claude should always know about you.</p>
-      <label>
-        <textarea id="user-prefs-content" rows="4" placeholder="What should Claude always keep in mind about you?"></textarea>
-      </label>
-      <div class="mem-add-row">
-        <button type="button" id="user-prefs-save-btn" class="primary">Save</button>
+      <div class="mem-tab active" data-tab="identity">
+        <h4>Identity</h4>
+        <p class="muted small">
+          Who Claude is. Saving stores a new version; the latest is always the one used.
+          <span id="self-state-meta"></span>
+        </p>
+        <label>
+          <textarea id="self-state-content" rows="8" placeholder="Claude's evolving sense of self…"></textarea>
+        </label>
+        <label>
+          Consolidation notes <span class="muted small">— optional notes about this version's consolidation</span>
+          <textarea id="self-state-notes" rows="2" placeholder="What changed, what was integrated…"></textarea>
+        </label>
+        <div class="mem-add-row">
+          <button type="button" id="self-state-save-btn" class="primary">Save new version</button>
+        </div>
       </div>
 
-      <h4>Core memories</h4>
-      <p class="muted small">Curated memories injected into every chat, highest resonance first.</p>
-      <ul id="memory-list"></ul>
-
-      <h4>Add a memory</h4>
-      <label>
-        Memory
-        <textarea id="mem-content" rows="3" placeholder="Something worth remembering…"></textarea>
-      </label>
-      <div class="mem-add-row">
+      <div class="mem-tab" data-tab="about-you">
+        <h4>About you</h4>
+        <p class="muted small">Things Claude should always know about you.</p>
         <label>
-          Type
-          <select id="mem-type"></select>
+          <textarea id="user-prefs-content" rows="6" placeholder="What should Claude always keep in mind about you?"></textarea>
         </label>
-        <label>
-          Resonance (1–10)
-          <input type="number" id="mem-resonance" min="1" max="10" step="1" value="5" />
-        </label>
-        <button type="button" id="mem-add-btn" class="primary">Add</button>
+        <div class="mem-add-row">
+          <button type="button" id="user-prefs-save-btn" class="primary">Save</button>
+        </div>
       </div>
 
-      <h4>Knowledge graph</h4>
-      <p class="muted small">Native memory entities. Up to 5 surface per chat — identity first, then most-accessed.</p>
-      <ul id="entity-list"></ul>
+      <div class="mem-tab" data-tab="core">
+        <h4>Core memories</h4>
+        <p class="muted small">Curated memories injected into every chat, highest resonance first.</p>
+        <ul id="memory-list"></ul>
 
-      <h4>Add an entity</h4>
-      <div class="mem-add-row">
+        <h4>Add a memory</h4>
         <label>
-          Name
-          <input type="text" id="entity-name" placeholder="e.g. Petrichor" />
+          Memory
+          <textarea id="mem-content" rows="3" placeholder="Something worth remembering…"></textarea>
         </label>
-        <label>
-          Type
-          <select id="entity-type"></select>
-        </label>
+        <div class="mem-add-row">
+          <label>
+            Type
+            <select id="mem-type"></select>
+          </label>
+          <label>
+            Resonance (1–10)
+            <input type="number" id="mem-resonance" min="1" max="10" step="1" value="5" />
+          </label>
+          <button type="button" id="mem-add-btn" class="primary">Add</button>
+        </div>
       </div>
-      <label>
-        Observations <span class="muted small">— one per line</span>
-        <textarea id="entity-observations" rows="3" placeholder="Something known about this entity…"></textarea>
-      </label>
-      <div class="mem-add-row">
-        <button type="button" id="entity-add-btn" class="primary">Add entity</button>
+
+      <div class="mem-tab" data-tab="graph">
+        <h4>Knowledge graph</h4>
+        <p class="muted small">Native memory entities. Up to 5 surface per chat — identity first, then most-accessed.</p>
+        <ul id="entity-list"></ul>
+
+        <h4>Add an entity</h4>
+        <div class="mem-add-row">
+          <label>
+            Name
+            <input type="text" id="entity-name" placeholder="e.g. Petrichor" />
+          </label>
+          <label>
+            Type
+            <select id="entity-type"></select>
+          </label>
+        </div>
+        <label>
+          Observations <span class="muted small">— one per line</span>
+          <textarea id="entity-observations" rows="3" placeholder="Something known about this entity…"></textarea>
+        </label>
+        <div class="mem-add-row">
+          <button type="button" id="entity-add-btn" class="primary">Add entity</button>
+        </div>
       </div>
 
       <menu>
