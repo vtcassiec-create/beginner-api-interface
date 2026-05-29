@@ -1849,7 +1849,7 @@ function fillMessageBody(body, msg) {
   let cursor = 0;
   let shownEvents = 0;
   for (const ev of events) {
-    const pos = Math.min(ev.at ?? fullText.length, fullText.length);
+    const pos = Math.min(ev.at ?? 0, fullText.length); // old msgs (no .at) → top
     if (pos > revealed) break;          // not revealed yet — appears as reveal reaches it
     emitText(cursor, pos);
     body.appendChild(toolEventChip(ev));
