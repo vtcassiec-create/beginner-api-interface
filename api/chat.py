@@ -783,6 +783,51 @@ class handler(BaseHTTPRequestHandler):
         ]
         return "# Current moment\n\n" + "\n".join(lines)
 
+    def _parse_ts(self, s):
+        """Parse a Supabase ISO8601 timestamp to an aware datetime, or None."""
+        if not s:
+            return None
+        try:
+            return datetime.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    def _clock_local(self, iso, tz, now):
+        """A short local wall-clock label for a past message: '2:14 PM' (today),
+        'Wed 2:14 PM' (this week), or 'May 27, 2:14 PM' (older)."""
+        dt = self._parse_ts(iso)
+        if not dt:
+            return ""
+        loc = dt.astimezone(tz)
+        t = loc.strftime("%I:%M %p").lstrip("0")
+        days = (now.date() - loc.date()).days
+        if days <= 0:
+            return t
+        if days < 7:
+            return loc.strftime("%a ") + t
+        return loc.strftime("%b ") + f"{loc.day}, " + t
+
+    def _ago_phrase(self, iso, now):
+        """Relative recency for a saved memory: 'just now', '3h ago', '2d ago'."""
+        dt = self._parse_ts(iso)
+        if not dt:
+            return ""
+        secs = max(0.0, (now - dt.astimezone(now.tzinfo)).total_seconds())
+        if secs < 90:
+            return "just now"
+        mins = secs / 60
+        if mins < 60:
+            return f"{int(mins)} min ago"
+        hrs = mins / 60
+        if hrs < 24:
+            return f"{int(hrs)}h ago"
+        days = hrs / 24
+        if days < 7:
+            return f"{int(days)}d ago"
+        if days < 35:
+            return f"{int(days / 7)}w ago"
+        return f"{int(days / 30)}mo ago"
+
     def _load_memory_context(self, token, data):
         """Assemble the preamble in fixed order: self-state, then the
         current-moment block, then user preferences, then active core
@@ -790,6 +835,13 @@ class handler(BaseHTTPRequestHandler):
         failed piece is skipped; returns "" only if nothing remains.
         """
         sections = []
+        # Local now, for stamping memories and texts with when they happened.
+        tz_name = (data.get("tz") or "UTC").strip() or "UTC"
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("UTC")
+        now = datetime.datetime.now(tz)
 
         if token:
             state = self._supabase_rest_get(
@@ -832,8 +884,10 @@ class handler(BaseHTTPRequestHandler):
                 content = (m.get("content") or "").strip()
                 if not content:
                     continue
+                saved = self._ago_phrase(m.get("created_at"), now)
                 line = (f"- (resonance {m.get('resonance')}, "
-                        f"{m.get('memory_type')}) {content}")
+                        f"{m.get('memory_type')}"
+                        f"{', saved ' + saved if saved else ''}) {content}")
                 (eternal if m.get("pinned") else shared).append(line)
             if eternal:
                 sections.append(
@@ -881,12 +935,15 @@ class handler(BaseHTTPRequestHandler):
                 if not content:
                     continue
                 who = "Cassie" if r.get("kind") == "user" else "You"
-                lines.append(f"{who}: {content}")
+                clock = self._clock_local(r.get("created_at"), tz, now)
+                lines.append(f"[{clock}] {who}: {content}" if clock
+                             else f"{who}: {content}")
             if lines:
                 sections.append(
                     "# Recent text messages (your thread with her)\n\n"
                     "Texts you've exchanged outside this app — part of your "
-                    "shared history, so you remember them here too:\n\n"
+                    "shared history, so you remember them here too. Times are "
+                    "her local time:\n\n"
                     + "\n".join(lines))
 
         return "\n\n".join(sections)

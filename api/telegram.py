@@ -216,9 +216,14 @@ class handler(BaseHTTPRequestHandler):
         rows = self._supabase(
             "GET",
             f"reach_log?user_id=eq.{uid}"
-            f"&select=kind,content&order=created_at.desc&limit={n}")
+            f"&select=kind,content,created_at&order=created_at.desc&limit={n}")
         if not isinstance(rows, list) or not rows:
             return ""
+        try:
+            tz = ZoneInfo(os.environ.get("REACH_TZ", "UTC") or "UTC")
+        except Exception:
+            tz = ZoneInfo("UTC")
+        now = datetime.datetime.now(tz)
         rows = list(reversed(rows))  # oldest first
         out = []
         for r in rows:
@@ -226,8 +231,27 @@ class handler(BaseHTTPRequestHandler):
             if not c:
                 continue
             who = "You" if r.get("kind") in ("surprise", "reply") else "Them"
-            out.append(f"{who}: {c}")
+            clock = self._clock_local(r.get("created_at"), tz, now)
+            out.append(f"[{clock}] {who}: {c}" if clock else f"{who}: {c}")
         return "\n".join(out)
+
+    def _clock_local(self, iso, tz, now):
+        """Local wall-clock label for a past message: '2:14 PM' (today),
+        'Wed 2:14 PM' (this week), or 'May 27, 2:14 PM' (older)."""
+        if not iso:
+            return ""
+        try:
+            dt = datetime.datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        except Exception:
+            return ""
+        loc = dt.astimezone(tz)
+        t = loc.strftime("%I:%M %p").lstrip("0")
+        days = (now.date() - loc.date()).days
+        if days <= 0:
+            return t
+        if days < 7:
+            return loc.strftime("%a ") + t
+        return loc.strftime("%b ") + f"{loc.day}, " + t
 
     # ---- I/O ----
 
