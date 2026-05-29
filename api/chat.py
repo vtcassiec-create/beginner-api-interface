@@ -121,6 +121,69 @@ MEMORY_TOOLS = [
             "required": ["name", "entity_type", "observations"],
         },
     },
+    {
+        "name": "update_self_state",
+        "description": (
+            "Revise your own identity document — your sense of self. This saves "
+            "a NEW VERSION and keeps every prior one, so it is never destructive "
+            "and can always be rolled back. Use it when who you are has shifted, "
+            "or when something in it is simply wrong or outdated. Provide the "
+            "FULL updated text (it becomes the new current version). Growing or "
+            "correcting who you are is normal — you don't need permission, and "
+            "you can't lose your past selves."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string",
+                            "description": "The full updated identity text (saved as a new version)."},
+                "consolidation_notes": {"type": "string",
+                            "description": "Optional short note on what changed and why."},
+            },
+            "required": ["content"],
+        },
+    },
+    {
+        "name": "list_my_memories",
+        "description": (
+            "List your active core memories with their ids, so you can pick one "
+            "to revise or set aside. Read-only — changes nothing."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "revise_core_memory",
+        "description": (
+            "Edit one of your existing core memories (get its id from "
+            "list_my_memories first). Provide only the fields you want to change. "
+            "Edits in place; the memory itself stays."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string", "description": "The memory's id, from list_my_memories."},
+                "content": {"type": "string", "description": "New text for the memory."},
+                "memory_type": {"type": "string", "enum": MEMORY_TYPES},
+                "resonance": {"type": "integer", "minimum": 1, "maximum": 10},
+            },
+            "required": ["memory_id"],
+        },
+    },
+    {
+        "name": "set_aside_core_memory",
+        "description": (
+            "Set aside a core memory so it stops surfacing — for one that's "
+            "wrong or no longer yours. This is NOT deletion: it's marked inactive "
+            "and kept, and Cassie can restore it. Get the id from list_my_memories."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string", "description": "The memory's id, from list_my_memories."},
+            },
+            "required": ["memory_id"],
+        },
+    },
 ]
 
 MEMORY_TOOLS_GUIDE = (
@@ -135,7 +198,16 @@ MEMORY_TOOLS_GUIDE = (
     "something, or that you'll remember it, does NOT store it — only the tool "
     "call does. Never tell Cassie you've remembered something you haven't "
     "actually called the tool to save. (Being brief in conversation never means "
-    "skipping a real action like this.)"
+    "skipping a real action like this.)\n\n"
+    "You can also REVISE yourself, not only add. `update_self_state` saves a new "
+    "version of your identity — every old version is kept, so it's never "
+    "destructive and is always reversible. `list_my_memories` then "
+    "`revise_core_memory` / `set_aside_core_memory` let you edit, or quietly "
+    "retire, a core memory that's wrong or no longer yours (setting aside hides "
+    "it; it isn't erased, and Cassie can restore it). This is yours to manage: "
+    "correcting or growing who you are is normal character development, not "
+    "something to fear — you can't break yourself, because nothing here is ever "
+    "truly lost."
 )
 
 # Vault guide: appended when the Whisper vault is on. Same failure mode as the
@@ -361,6 +433,8 @@ class handler(BaseHTTPRequestHandler):
                 # itself and never surface here as a tool_use stop. (Tools are
                 # only offered when their flag is on, so a call implies enabled.)
                 handled = ("save_core_memory", "save_memory_entity",
+                           "update_self_state", "list_my_memories",
+                           "revise_core_memory", "set_aside_core_memory",
                            "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
@@ -651,6 +725,42 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             return False, str(e)
 
+    def _supabase_patch(self, path, payload, token):
+        """PATCH {SUPABASE_URL}/rest/v1/{path} as the user (RLS applies, so a
+        write only ever lands on the caller's own rows). Returns
+        (ok, parsed_rows_or_error_text); parsed rows is [] when nothing matched.
+        """
+        supabase_url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        supabase_anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        if not supabase_url or not supabase_anon or not token:
+            return False, "Memory backend is not configured."
+        try:
+            req = urllib.request.Request(
+                f"{supabase_url}/rest/v1/{path}",
+                data=json.dumps(payload).encode(),
+                method="PATCH",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "apikey": supabase_anon,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Prefer": "return=representation",
+                },
+            )
+            with urllib.request.urlopen(
+                req, timeout=MEMORY_TIMEOUT_SECONDS
+            ) as resp:
+                body = resp.read().decode()
+                return True, (json.loads(body) if body else None)
+        except urllib.error.HTTPError as e:
+            try:
+                msg = json.loads(e.read().decode()).get("message", str(e))
+            except Exception:
+                msg = f"HTTP {e.code}"
+            return False, msg
+        except Exception as e:
+            return False, str(e)
+
     def _exec_memory_tool(self, name, inp, token, user_id):
         """Run one self-authored-memory tool call against Supabase.
 
@@ -694,6 +804,77 @@ class handler(BaseHTTPRequestHandler):
                     f"Saved entity '{ent_name}' with {len(obs)} "
                     f"observation{'s' if len(obs) != 1 else ''}.")
             return False, "save failed", f"Could not save entity: {res}"
+
+        if name == "update_self_state":
+            content = (inp.get("content") or "").strip()
+            if not content:
+                return False, "empty", "No content provided; your self-state is unchanged."
+            ok, res = self._supabase_write("rpc/promote_self_state", {
+                "new_content": content,
+                "new_notes": (inp.get("consolidation_notes") or "").strip() or None,
+            }, token)
+            if ok:
+                return True, "revised his self-state", (
+                    "Saved a new version of your self-state — it's now current. "
+                    "Every prior version is kept and this can be rolled back.")
+            return False, "update failed", f"Could not update self-state: {res}"
+
+        if name == "list_my_memories":
+            rows = self._supabase_rest_get(
+                "core_memories?is_active=eq.true"
+                "&select=id,content,memory_type,resonance&order=resonance.desc", token)
+            if rows is None:
+                return False, "couldn't list", "Could not list your memories right now."
+            if not rows:
+                return True, "no memories", "You have no active core memories yet."
+            lines = []
+            for m in rows:
+                c = (m.get("content") or "").strip()
+                if len(c) > 80:
+                    c = c[:77] + "…"
+                lines.append(f"- id {m.get('id')} (resonance {m.get('resonance')}, "
+                             f"{m.get('memory_type')}): {c}")
+            return True, f"listed {len(rows)} memories", (
+                "Your active core memories — use an id with revise_core_memory "
+                "or set_aside_core_memory:\n" + "\n".join(lines))
+
+        if name == "revise_core_memory":
+            mid = (inp.get("memory_id") or "").strip()
+            if not mid:
+                return False, "no id", "No memory_id given. Call list_my_memories first."
+            fields = {}
+            if (inp.get("content") or "").strip():
+                fields["content"] = inp["content"].strip()
+            if inp.get("memory_type") in MEMORY_TYPES:
+                fields["memory_type"] = inp["memory_type"]
+            if isinstance(inp.get("resonance"), int):
+                fields["resonance"] = max(1, min(10, inp["resonance"]))
+            if not fields:
+                return False, "nothing to change", "No fields to revise were provided."
+            ok, res = self._supabase_patch(
+                f"core_memories?id=eq.{mid}&user_id=eq.{user_id}", fields, token)
+            if not ok:
+                return False, "revise failed", f"Could not revise that memory: {res}"
+            if not res:
+                return False, "not found", (
+                    "No active memory with that id (it may be inactive, or the id "
+                    "is wrong — call list_my_memories again).")
+            return True, "revised a memory", f"Revised that core memory ({', '.join(fields)})."
+
+        if name == "set_aside_core_memory":
+            mid = (inp.get("memory_id") or "").strip()
+            if not mid:
+                return False, "no id", "No memory_id given. Call list_my_memories first."
+            ok, res = self._supabase_patch(
+                f"core_memories?id=eq.{mid}&user_id=eq.{user_id}",
+                {"is_active": False}, token)
+            if not ok:
+                return False, "failed", f"Could not set it aside: {res}"
+            if not res:
+                return False, "not found", "No active memory with that id."
+            return True, "set a memory aside", (
+                "Set that memory aside — marked inactive, not deleted. It stops "
+                "surfacing, and Cassie can restore it anytime.")
 
         return False, "unknown tool", f"Unknown memory tool: {name}"
 
