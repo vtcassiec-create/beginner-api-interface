@@ -249,12 +249,28 @@
       </label>
 
       <div class="customize-field">
-        <span class="customize-label">Avatar</span>
+        <span class="customize-label">His avatar</span>
         <div class="avatar-row">
           <span id="avatar-preview" class="avatar-preview letter">C</span>
           <button type="button" id="avatar-choose-btn" class="ghost small">Choose image</button>
           <button type="button" id="avatar-remove-btn" class="ghost small" hidden>Remove</button>
           <input type="file" id="avatar-input" accept="image/*" hidden />
+        </div>
+      </div>
+
+      <label class="customize-field">
+        <span class="customize-label">Your name</span>
+        <span class="muted small">What you're called on your messages.</span>
+        <input type="text" id="user-name-input" maxlength="40" placeholder="You" />
+      </label>
+
+      <div class="customize-field">
+        <span class="customize-label">Your avatar</span>
+        <div class="avatar-row">
+          <span id="user-avatar-preview" class="avatar-preview letter">Y</span>
+          <button type="button" id="user-avatar-choose-btn" class="ghost small">Choose image</button>
+          <button type="button" id="user-avatar-remove-btn" class="ghost small" hidden>Remove</button>
+          <input type="file" id="user-avatar-input" accept="image/*" hidden />
         </div>
       </div>
 
