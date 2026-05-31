@@ -87,6 +87,17 @@ function companionAvatar() {
   try { return localStorage.getItem("petrichor-companion-avatar") || ""; } catch (e) { return ""; }
 }
 
+// Your (the user's) name + avatar — same device-preference idea, for your own
+// message bubbles. Name defaults to "You".
+function userName() {
+  let n = "";
+  try { n = (localStorage.getItem("petrichor-user-name") || "").trim(); } catch (e) {}
+  return n || "You";
+}
+function userAvatar() {
+  try { return localStorage.getItem("petrichor-user-avatar") || ""; } catch (e) { return ""; }
+}
+
 // Shrink a picked image to a square ~128px data URL via canvas, so it stays
 // tiny in localStorage and loads instantly. Resolves to a data: URL string.
 function avatarDataUrlFromFile(file, size = 128) {
@@ -108,12 +119,16 @@ function avatarDataUrlFromFile(file, size = 128) {
   });
 }
 
-// Sync the avatar preview + Remove button in the customize panel to the
-// current saved avatar/name. Safe to call even if the panel isn't open.
-function refreshAvatarPreview() {
-  const prev = $("avatar-preview");
+// Sync an avatar preview + its Remove button in the customize panel to the
+// current saved avatar/name. who is "companion" or "user". Safe to call even
+// if the panel isn't open.
+function refreshAvatarPreview(who = "companion") {
+  const isUser = who === "user";
+  const prev = $(isUser ? "user-avatar-preview" : "avatar-preview");
   if (!prev) return;
-  const src = companionAvatar();
+  const src = isUser ? userAvatar() : companionAvatar();
+  const fallback = (isUser ? userName() : companionName()).charAt(0).toUpperCase()
+    || (isUser ? "Y" : "C");
   if (src) {
     prev.classList.remove("letter");
     prev.textContent = "";
@@ -121,23 +136,25 @@ function refreshAvatarPreview() {
   } else {
     prev.classList.add("letter");
     prev.style.backgroundImage = "";
-    prev.textContent = companionName().charAt(0).toUpperCase() || "C";
+    prev.textContent = fallback;
   }
-  const removeBtn = $("avatar-remove-btn");
+  const removeBtn = $(isUser ? "user-avatar-remove-btn" : "avatar-remove-btn");
   if (removeBtn) removeBtn.hidden = !src;
 }
 
-// Build the little round avatar element for his messages: his image if set,
-// otherwise a lettered chip from his name's first character.
-function avatarNode() {
+// Build the little round avatar element for a message: the image if set,
+// otherwise a lettered chip from the name's first character. role picks whose.
+function avatarNode(role) {
+  const isUser = role === "user";
+  const src = isUser ? userAvatar() : companionAvatar();
+  const name = isUser ? userName() : companionName();
   const el = document.createElement("span");
   el.className = "msg-avatar";
-  const src = companionAvatar();
   if (src) {
     el.style.backgroundImage = `url("${src}")`;
   } else {
     el.classList.add("letter");
-    el.textContent = companionName().charAt(0).toUpperCase() || "C";
+    el.textContent = name.charAt(0).toUpperCase() || (isUser ? "Y" : "C");
   }
   return el;
 }
@@ -1602,7 +1619,7 @@ function exportConversationMarkdown() {
   if (project.systemPrompt) md += `## System\n\n${project.systemPrompt}\n\n`;
   md += `---\n\n`;
   for (const m of conv.messages) {
-    md += `## ${m.role === "user" ? "You" : companionName()}\n\n`;
+    md += `## ${m.role === "user" ? userName() : companionName()}\n\n`;
     if (m.fileIds?.length) {
       const names = m.fileIds.map(id => project.files.find(f => f.id === id)?.name).filter(Boolean);
       if (names.length) md += `*Attached: ${names.join(", ")}*\n\n`;
@@ -1893,10 +1910,8 @@ function buildMessageNode(msg, project, conv) {
   const head = document.createElement("div");
   head.className = "msg-head";
   head.innerHTML = `<span class="msg-meta"><span class="role"></span><span class="msg-time"></span></span><span class="usage"></span>`;
-  if (msg.role === "assistant") {
-    head.querySelector(".msg-meta").prepend(avatarNode());
-  }
-  head.querySelector(".role").textContent = msg.role === "user" ? "You" : companionName();
+  head.querySelector(".msg-meta").prepend(avatarNode(msg.role));
+  head.querySelector(".role").textContent = msg.role === "user" ? userName() : companionName();
   head.querySelector(".msg-time").textContent = msg.at ? formatClockTime(msg.at) : "";
   head.querySelector(".usage").textContent = msg.role === "assistant" ? messageUsageLabel(msg, project) : "";
   wrap.appendChild(head);
@@ -3229,6 +3244,44 @@ function wireApp() {
     $("avatar-remove-btn").addEventListener("click", () => {
       try { localStorage.removeItem("petrichor-companion-avatar"); } catch (e) {}
       refreshAvatarPreview();
+      renderMessages();
+    });
+  }
+
+  // Your name: cosmetic device preference for your own message labels.
+  const userNameInput = $("user-name-input");
+  if (userNameInput) {
+    let saved = "";
+    try { saved = localStorage.getItem("petrichor-user-name") || ""; } catch (e) {}
+    userNameInput.value = saved;
+    userNameInput.addEventListener("input", () => {
+      try { localStorage.setItem("petrichor-user-name", userNameInput.value.trim()); } catch (e) {}
+      refreshAvatarPreview("user");
+      renderMessages();
+    });
+  }
+
+  // Your avatar: same pick → shrink → store, under your own key.
+  const userAvatarInput = $("user-avatar-input");
+  if (userAvatarInput) {
+    refreshAvatarPreview("user");
+    $("user-avatar-choose-btn").addEventListener("click", () => userAvatarInput.click());
+    userAvatarInput.addEventListener("change", async (e) => {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = "";
+      if (!file) return;
+      try {
+        const url = await avatarDataUrlFromFile(file);
+        localStorage.setItem("petrichor-user-avatar", url);
+        refreshAvatarPreview("user");
+        renderMessages();
+      } catch (err) {
+        flashToast(err.message || "Couldn't set that image.", true);
+      }
+    });
+    $("user-avatar-remove-btn").addEventListener("click", () => {
+      try { localStorage.removeItem("petrichor-user-avatar"); } catch (e) {}
+      refreshAvatarPreview("user");
       renderMessages();
     });
   }
