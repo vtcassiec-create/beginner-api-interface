@@ -152,20 +152,57 @@ async function initSupabase() {
   });
 }
 
-async function signIn(email) {
+// Sign-in is a two-step email OTP: send a 6-digit code, then verify it.
+// We deliberately do NOT pass emailRedirectTo — there's no link to follow,
+// so nothing can hijack the tap into the installed app, and there's no
+// redirect to misfire. The email carries a code the person types here.
+let signinEmail = "";
+
+async function sendCode(email) {
   if (!db) return;
   const { error } = await db.auth.signInWithOtp({
     email,
-    options: { emailRedirectTo: window.location.origin },
+    options: { shouldCreateUser: true },
   });
   const msg = $("signin-msg");
   if (error) {
     msg.textContent = error.message;
     msg.className = "signin-msg error";
-  } else {
-    msg.textContent = `Check ${email} for a sign-in link.`;
-    msg.className = "signin-msg success";
+    return;
   }
+  signinEmail = email;
+  $("signin-email").hidden = true;
+  $("signin-code").hidden = false;
+  $("signin-code").value = "";
+  $("signin-code").focus();
+  $("signin-submit").textContent = "Verify & sign in";
+  $("signin-restart").hidden = false;
+  msg.textContent = `Enter the 6-digit code sent to ${email}.`;
+  msg.className = "signin-msg success";
+}
+
+async function verifyCode(email, code) {
+  if (!db) return;
+  const { error } = await db.auth.verifyOtp({ email, token: code, type: "email" });
+  // On success, onAuthStateChange fires SIGNED_IN → enterApp(); nothing to do.
+  if (error) {
+    const msg = $("signin-msg");
+    msg.textContent = error.message;
+    msg.className = "signin-msg error";
+  }
+}
+
+function resetSignIn() {
+  signinEmail = "";
+  $("signin-code").value = "";
+  $("signin-code").hidden = true;
+  $("signin-email").hidden = false;
+  $("signin-email").focus();
+  $("signin-submit").textContent = "Send code";
+  $("signin-restart").hidden = true;
+  const msg = $("signin-msg");
+  msg.textContent = "";
+  msg.className = "signin-msg";
 }
 
 async function signOut() {
@@ -2746,10 +2783,17 @@ async function addCoreMemory() {
 function wireSignIn() {
   $("signin-form").addEventListener("submit", (e) => {
     e.preventDefault();
-    const email = $("signin-email").value.trim();
-    if (!email) return;
-    signIn(email);
+    if (!$("signin-code").hidden) {
+      const code = $("signin-code").value.trim();
+      if (!code) return;
+      verifyCode(signinEmail, code);
+    } else {
+      const email = $("signin-email").value.trim();
+      if (!email) return;
+      sendCode(email);
+    }
   });
+  $("signin-restart").addEventListener("click", resetSignIn);
 }
 
 function wireApp() {

@@ -65,10 +65,13 @@
     <div class="signin-card">
       <button class="js-theme-toggle ghost small signin-theme-toggle" title="Light / dark" aria-label="Toggle light or dark">☀</button>
       <h1>Petrichor</h1>
-      <p class="muted">Sign in with a magic link sent to your email.</p>
+      <p class="muted">Sign in with a 6-digit code sent to your email.</p>
       <form id="signin-form" class="signin-form" autocomplete="off">
         <input type="email" id="signin-email" placeholder="you@example.com" required />
-        <button type="submit" class="primary">Send link</button>
+        <input type="text" id="signin-code" inputmode="numeric" pattern="[0-9]*"
+               maxlength="6" autocomplete="one-time-code" placeholder="6-digit code" hidden />
+        <button type="submit" id="signin-submit" class="primary">Send code</button>
+        <button type="button" id="signin-restart" class="ghost small" hidden>Use a different email</button>
       </form>
       <p id="signin-msg" class="signin-msg"></p>
       <p class="muted small">No account needed — first sign-in creates one automatically.</p>
