@@ -20,30 +20,31 @@
     // With no saved choice, the stylesheet follows the OS (prefers-color-scheme).
     (function () {
       var KEY = "petrichor-theme";
+      function buttons() { return document.querySelectorAll(".js-theme-toggle"); }
+      function effective() {
+        var t = document.documentElement.getAttribute("data-theme");
+        if (t) return t;
+        return (window.matchMedia &&
+          window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+      }
       function apply(theme) {
         var root = document.documentElement;
         if (theme === "light" || theme === "dark") root.setAttribute("data-theme", theme);
         else root.removeAttribute("data-theme");
         var meta = document.querySelector('meta[name="theme-color"]');
-        if (meta) meta.setAttribute("content", theme === "light" ? "#efe9da" : "#1a1f2e");
-        var btn = document.getElementById("theme-toggle");
-        if (btn) btn.textContent = theme === "light" ? "☾" : "☀";
+        if (meta) meta.setAttribute("content", effective() === "light" ? "#efe9da" : "#1a1f2e");
+        var glyph = effective() === "light" ? "☾" : "☀";
+        buttons().forEach(function (b) { b.textContent = glyph; });
       }
       try { apply(localStorage.getItem(KEY)); } catch (e) {}
       window.addEventListener("DOMContentLoaded", function () {
-        var btn = document.getElementById("theme-toggle");
-        if (!btn) return;
-        function effective() {
-          var t = document.documentElement.getAttribute("data-theme");
-          if (t) return t;
-          return (window.matchMedia &&
-            window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
-        }
-        btn.textContent = effective() === "light" ? "☾" : "☀";
-        btn.addEventListener("click", function () {
-          var next = effective() === "light" ? "dark" : "light";
-          try { localStorage.setItem(KEY, next); } catch (e) {}
-          apply(next);
+        apply(localStorage.getItem(KEY));
+        buttons().forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            var next = effective() === "light" ? "dark" : "light";
+            try { localStorage.setItem(KEY, next); } catch (e) {}
+            apply(next);
+          });
         });
       });
     })();
@@ -62,6 +63,7 @@
   <!-- Sign-in screen (shown when not authenticated) -->
   <section id="signin-screen" class="signin-screen" hidden>
     <div class="signin-card">
+      <button class="js-theme-toggle ghost small signin-theme-toggle" title="Light / dark" aria-label="Toggle light or dark">☀</button>
       <h1>Petrichor</h1>
       <p class="muted">Sign in with a magic link sent to your email.</p>
       <form id="signin-form" class="signin-form" autocomplete="off">
@@ -91,7 +93,7 @@
     <aside id="sidebar">
       <header class="sidebar-header">
         <h1>Petrichor</h1>
-        <button id="theme-toggle" class="ghost small" title="Light / dark" aria-label="Toggle light or dark">☀</button>
+        <button id="theme-toggle" class="js-theme-toggle ghost small" title="Light / dark" aria-label="Toggle light or dark">☀</button>
         <button id="new-project-btn" class="primary" title="New project">+ New project</button>
       </header>
       <nav id="project-list" aria-label="Projects"></nav>

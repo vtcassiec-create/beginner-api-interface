@@ -90,6 +90,7 @@ body {
 }
 
 .signin-card {
+  position: relative;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -97,6 +98,14 @@ body {
   max-width: 420px;
   width: 100%;
   text-align: center;
+}
+
+.signin-theme-toggle {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 18px;
+  line-height: 1;
 }
 
 .signin-card h1 {
