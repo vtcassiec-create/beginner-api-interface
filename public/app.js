@@ -2958,7 +2958,7 @@ function wireApp() {
     }, 500);
   });
 
-  $("settings-btn").addEventListener("click", () => $("settings-dialog").showModal());
+  $("customize-btn").addEventListener("click", () => $("settings-dialog").showModal());
 
   document.querySelectorAll("#memories-dialog .mem-tab-btn").forEach((btn) =>
     btn.addEventListener("click", () => switchMemTab(btn.dataset.tab)));
@@ -2999,16 +2999,6 @@ function wireApp() {
     if (e.target.files[0]) await importConversationJson(e.target.files[0]);
     e.target.value = "";
   });
-
-  // Tools dropdown (consolidates the per-project toggles).
-  const toolsBtn = $("tools-btn");
-  const toolsMenu = $("tools-menu");
-  toolsBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    toolsMenu.hidden = !toolsMenu.hidden;
-  });
-  document.addEventListener("click", () => { toolsMenu.hidden = true; });
-  toolsMenu.addEventListener("click", (e) => e.stopPropagation());
 
   // Chat / Manuscript tabs.
   $("tab-chat").addEventListener("click", () => showView("chat"));

@@ -104,6 +104,7 @@
           </button>
           <div id="project-menu" class="project-menu" hidden></div>
         </div>
+        <button id="customize-btn" class="ghost small" title="Customize companion" aria-label="Customize companion">🎛️</button>
         <button id="theme-toggle" class="js-theme-toggle ghost small" title="Light / dark" aria-label="Toggle light or dark">☀</button>
       </header>
       <button id="new-chat-btn" class="primary new-chat-btn" type="button">＋ New chat</button>
@@ -147,32 +148,6 @@
                  placeholder="Untitled project" title="Click to rename this project" />
           <div class="project-controls">
             <select id="model-select" title="Model"></select>
-            <div class="tools-wrap">
-              <button id="tools-btn" class="ghost" title="Tools &amp; connections for this project">Tools ▾</button>
-              <div id="tools-menu" class="tools-menu" hidden>
-                <label class="toggle" title="Let Claude search the web in this project">
-                  <input type="checkbox" id="web-search-toggle" />
-                  <span>Web search</span>
-                </label>
-                <label class="toggle" id="thinking-toggle-label">
-                  <input type="checkbox" id="thinking-toggle" />
-                  <span>Thinking</span>
-                </label>
-                <label class="toggle" title="Let Claude read & write the Whisper Obsidian vault in this project">
-                  <input type="checkbox" id="whisper-toggle" />
-                  <span>Vault</span>
-                </label>
-                <label class="toggle" title="Let Claude use the Signal Bridge connection in this project">
-                  <input type="checkbox" id="signal-toggle" />
-                  <span>Signal Bridge</span>
-                </label>
-                <label class="toggle" title="Let Claude write his own memories &amp; knowledge-graph entities in this project">
-                  <input type="checkbox" id="memory-toggle" />
-                  <span>Memory</span>
-                </label>
-              </div>
-            </div>
-            <button id="settings-btn" class="ghost" title="Project settings">Settings</button>
             <button id="delete-project-btn" class="danger ghost" title="Delete this project">Delete</button>
           </div>
         </header>
@@ -260,17 +235,53 @@
     </main>
   </div>
 
-  <dialog id="settings-dialog">
-    <form method="dialog" class="settings-form">
-      <h3>Project settings</h3>
-      <label>
-        System prompt
-        <textarea id="system-prompt" rows="6" placeholder="You are a helpful assistant…"></textarea>
+  <dialog id="settings-dialog" class="customize-dialog">
+    <form method="dialog" class="settings-form customize-form">
+      <header class="customize-head">
+        <h3>Customize companion</h3>
+        <p class="muted small">Configure this companion's instructions and behavior.</p>
+      </header>
+
+      <label class="customize-field">
+        <span class="customize-label">Custom instructions</span>
+        <span class="muted small">His system prompt — who he is and how he shows up. Edits save automatically.</span>
+        <textarea id="system-prompt" rows="8" placeholder="You are a helpful assistant…"></textarea>
       </label>
 
-      <h4>File library</h4>
-      <p class="muted small">Files you upload live here. Toggle them on to send with your next message.</p>
-      <ul id="file-library"></ul>
+      <details class="customize-section" open>
+        <summary>Tools</summary>
+        <div class="customize-section-body">
+          <p class="muted small">What this project lets him do. Per-project; saves on change.</p>
+          <label class="toggle" title="Let Claude search the web in this project">
+            <input type="checkbox" id="web-search-toggle" />
+            <span>Web search</span>
+          </label>
+          <label class="toggle" id="thinking-toggle-label">
+            <input type="checkbox" id="thinking-toggle" />
+            <span>Thinking</span>
+          </label>
+          <label class="toggle" title="Let Claude read & write the Whisper Obsidian vault in this project">
+            <input type="checkbox" id="whisper-toggle" />
+            <span>Vault</span>
+          </label>
+          <label class="toggle" title="Let Claude use the Signal Bridge connection in this project">
+            <input type="checkbox" id="signal-toggle" />
+            <span>Signal Bridge</span>
+          </label>
+          <label class="toggle" title="Let Claude write his own memories &amp; knowledge-graph entities in this project">
+            <input type="checkbox" id="memory-toggle" />
+            <span>Memory</span>
+          </label>
+        </div>
+      </details>
+
+      <details class="customize-section">
+        <summary>File library</summary>
+        <div class="customize-section-body">
+          <p class="muted small">Files you upload live here. Toggle them on to send with your next message.</p>
+          <ul id="file-library"></ul>
+        </div>
+      </details>
 
       <menu>
         <button value="cancel" class="ghost">Close</button>
