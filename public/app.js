@@ -160,18 +160,10 @@ async function initSupabase() {
 // redirect to misfire. The email carries a code the person types here.
 let signinEmail = "";
 
-async function sendCode(email) {
-  if (!db) return;
-  const { error } = await db.auth.signInWithOtp({
-    email,
-    options: { shouldCreateUser: true },
-  });
-  const msg = $("signin-msg");
-  if (error) {
-    msg.textContent = error.message;
-    msg.className = "signin-msg error";
-    return;
-  }
+// Reveal the code-entry step for a given email. Shared by sendCode() and the
+// "I already have a code" path — so someone who's rate-limited can still type
+// a code already sitting in their inbox without triggering another send.
+function showCodeStep(email, message) {
   signinEmail = email;
   $("signin-email").hidden = true;
   $("signin-code").hidden = false;
@@ -179,8 +171,41 @@ async function sendCode(email) {
   $("signin-code").focus();
   $("signin-submit").textContent = "Verify & sign in";
   $("signin-restart").hidden = false;
-  msg.textContent = `Enter the code sent to ${email}.`;
+  $("signin-have-code").hidden = true;
+  const msg = $("signin-msg");
+  msg.textContent = message;
   msg.className = "signin-msg success";
+}
+
+async function sendCode(email) {
+  if (!db) return;
+  const { error } = await db.auth.signInWithOtp({
+    email,
+    options: { shouldCreateUser: true },
+  });
+  if (error) {
+    const msg = $("signin-msg");
+    msg.textContent = error.message;
+    msg.className = "signin-msg error";
+    // Even if a fresh send is rate-limited, a code from a previous send may
+    // still be valid — so let them proceed to type it instead of dead-ending.
+    $("signin-have-code").hidden = false;
+    return;
+  }
+  showCodeStep(email, `Enter the code sent to ${email}.`);
+}
+
+// "I already have a code": skip the send entirely, just show the code box.
+function useExistingCode() {
+  const email = $("signin-email").value.trim();
+  if (!email) {
+    const msg = $("signin-msg");
+    msg.textContent = "Enter your email first, then your code.";
+    msg.className = "signin-msg error";
+    $("signin-email").focus();
+    return;
+  }
+  showCodeStep(email, `Enter the code from your email for ${email}.`);
 }
 
 async function verifyCode(email, code) {
@@ -202,6 +227,7 @@ function resetSignIn() {
   $("signin-email").focus();
   $("signin-submit").textContent = "Send code";
   $("signin-restart").hidden = true;
+  $("signin-have-code").hidden = false;
   const msg = $("signin-msg");
   msg.textContent = "";
   msg.className = "signin-msg";
@@ -2796,6 +2822,7 @@ function wireSignIn() {
     }
   });
   $("signin-restart").addEventListener("click", resetSignIn);
+  $("signin-have-code").addEventListener("click", useExistingCode);
 }
 
 function wireApp() {

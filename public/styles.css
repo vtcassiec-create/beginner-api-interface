@@ -149,6 +149,19 @@ body {
 .signin-msg.success { color: var(--accent); }
 .signin-msg.error { color: var(--danger); }
 
+/* A quiet text link ("I already have a code"). */
+.linklike {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px;
+  font: inherit;
+}
+.linklike.small { font-size: 12px; }
+.linklike:hover { color: var(--text); }
+
 /* Sidebar */
 #sidebar {
   background: var(--bg-elev);
