@@ -271,10 +271,6 @@
             <input type="checkbox" id="web-search-toggle" />
             <span>Web search</span>
           </label>
-          <label class="toggle" id="thinking-toggle-label">
-            <input type="checkbox" id="thinking-toggle" />
-            <span>Thinking</span>
-          </label>
           <label class="toggle" title="Let Claude read & write the Whisper Obsidian vault in this project">
             <input type="checkbox" id="whisper-toggle" />
             <span>Vault</span>
@@ -293,6 +289,10 @@
       <details class="customize-section">
         <summary>Model</summary>
         <div class="customize-section-body">
+          <label class="toggle" id="thinking-toggle-label" title="Let Claude reason before he replies">
+            <input type="checkbox" id="thinking-toggle" />
+            <span>Thinking</span>
+          </label>
           <div class="customize-row">
             <span>Max response length</span>
             <span id="max-tokens-value" class="muted small">4096</span>
