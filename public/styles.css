@@ -1121,7 +1121,46 @@ select {
   color: var(--text);
 }
 .customize-section-body .toggle > span { flex: 1; text-align: left; }
-.customize-section-body .toggle > input { flex-shrink: 0; }
+
+/* Cute sliding-pill switch — replaces the default checkbox in this panel only.
+   Off = muted track; on = accent track with the knob slid right. */
+.customize-section-body .toggle > input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  position: relative;
+  width: 40px;
+  height: 22px;
+  margin: 0;
+  border-radius: 22px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.customize-section-body .toggle > input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.customize-section-body .toggle > input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.customize-section-body .toggle > input[type="checkbox"]:checked::after {
+  transform: translateX(18px);
+  background: #fff;
+}
+.customize-section-body .toggle > input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 /* Settings dialog */
 dialog {
