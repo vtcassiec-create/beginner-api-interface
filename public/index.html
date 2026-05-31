@@ -248,6 +248,16 @@
         <input type="text" id="companion-name-input" maxlength="40" placeholder="Claude" />
       </label>
 
+      <div class="customize-field">
+        <span class="customize-label">Avatar</span>
+        <div class="avatar-row">
+          <span id="avatar-preview" class="avatar-preview letter">C</span>
+          <button type="button" id="avatar-choose-btn" class="ghost small">Choose image</button>
+          <button type="button" id="avatar-remove-btn" class="ghost small" hidden>Remove</button>
+          <input type="file" id="avatar-input" accept="image/*" hidden />
+        </div>
+      </div>
+
       <label class="customize-field">
         <span class="customize-label">Custom instructions</span>
         <span class="muted small">His system prompt — who he is and how he shows up. Edits save automatically.</span>

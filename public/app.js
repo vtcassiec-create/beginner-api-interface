@@ -81,6 +81,67 @@ function companionName() {
   return n || "Claude";
 }
 
+// His avatar: a small image stored as a compact data URL on this device (no
+// upload, no Storage, never expires). "" = none, fall back to a lettered chip.
+function companionAvatar() {
+  try { return localStorage.getItem("petrichor-companion-avatar") || ""; } catch (e) { return ""; }
+}
+
+// Shrink a picked image to a square ~128px data URL via canvas, so it stays
+// tiny in localStorage and loads instantly. Resolves to a data: URL string.
+function avatarDataUrlFromFile(file, size = 128) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const side = Math.min(img.width, img.height);   // center-crop to a square
+      const sx = (img.width - side) / 2;
+      const sy = (img.height - side) / 2;
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
+      URL.revokeObjectURL(img.src);
+      resolve(canvas.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => { URL.revokeObjectURL(img.src); reject(new Error("Couldn't read that image.")); };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+// Sync the avatar preview + Remove button in the customize panel to the
+// current saved avatar/name. Safe to call even if the panel isn't open.
+function refreshAvatarPreview() {
+  const prev = $("avatar-preview");
+  if (!prev) return;
+  const src = companionAvatar();
+  if (src) {
+    prev.classList.remove("letter");
+    prev.textContent = "";
+    prev.style.backgroundImage = `url("${src}")`;
+  } else {
+    prev.classList.add("letter");
+    prev.style.backgroundImage = "";
+    prev.textContent = companionName().charAt(0).toUpperCase() || "C";
+  }
+  const removeBtn = $("avatar-remove-btn");
+  if (removeBtn) removeBtn.hidden = !src;
+}
+
+// Build the little round avatar element for his messages: his image if set,
+// otherwise a lettered chip from his name's first character.
+function avatarNode() {
+  const el = document.createElement("span");
+  el.className = "msg-avatar";
+  const src = companionAvatar();
+  if (src) {
+    el.style.backgroundImage = `url("${src}")`;
+  } else {
+    el.classList.add("letter");
+    el.textContent = companionName().charAt(0).toUpperCase() || "C";
+  }
+  return el;
+}
+
 // ---------- Mappers (DB row ↔ in-memory shape) ----------
 
 function rowToProject(row) {
@@ -1832,6 +1893,9 @@ function buildMessageNode(msg, project, conv) {
   const head = document.createElement("div");
   head.className = "msg-head";
   head.innerHTML = `<span class="msg-meta"><span class="role"></span><span class="msg-time"></span></span><span class="usage"></span>`;
+  if (msg.role === "assistant") {
+    head.querySelector(".msg-meta").prepend(avatarNode());
+  }
   head.querySelector(".role").textContent = msg.role === "user" ? "You" : companionName();
   head.querySelector(".msg-time").textContent = msg.at ? formatClockTime(msg.at) : "";
   head.querySelector(".usage").textContent = msg.role === "assistant" ? messageUsageLabel(msg, project) : "";
@@ -3138,6 +3202,33 @@ function wireApp() {
     nameInput.value = saved;
     nameInput.addEventListener("input", () => {
       try { localStorage.setItem("petrichor-companion-name", nameInput.value.trim()); } catch (e) {}
+      refreshAvatarPreview();
+      renderMessages();
+    });
+  }
+
+  // Avatar: pick → shrink to a tiny data URL → store on this device. The
+  // hidden file input is triggered by the "Choose image" button.
+  const avatarInput = $("avatar-input");
+  if (avatarInput) {
+    refreshAvatarPreview();
+    $("avatar-choose-btn").addEventListener("click", () => avatarInput.click());
+    avatarInput.addEventListener("change", async (e) => {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = "";
+      if (!file) return;
+      try {
+        const url = await avatarDataUrlFromFile(file);
+        localStorage.setItem("petrichor-companion-avatar", url);
+        refreshAvatarPreview();
+        renderMessages();
+      } catch (err) {
+        flashToast(err.message || "Couldn't set that image.", true);
+      }
+    });
+    $("avatar-remove-btn").addEventListener("click", () => {
+      try { localStorage.removeItem("petrichor-companion-avatar"); } catch (e) {}
+      refreshAvatarPreview();
       renderMessages();
     });
   }
