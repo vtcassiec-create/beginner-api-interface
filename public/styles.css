@@ -1108,12 +1108,20 @@ select {
   gap: 10px;
   padding: 8px 0 4px 1.2em;
 }
-/* Toggles inside the customize panel stack as full rows. */
+/* Toggles inside the customize panel: label on the left, switch on the right,
+   on one line. (row-reverse keeps the HTML order but flips it visually so the
+   <span> label sits left and the checkbox sits at the far right.) */
 .customize-section-body .toggle {
   display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
   font-size: 14px;
   color: var(--text);
 }
+.customize-section-body .toggle > span { flex: 1; text-align: left; }
+.customize-section-body .toggle > input { flex-shrink: 0; }
 
 /* Settings dialog */
 dialog {
