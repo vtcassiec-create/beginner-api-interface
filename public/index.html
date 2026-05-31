@@ -15,6 +15,39 @@
   <meta name="apple-mobile-web-app-title" content="Petrichor" />
 
   <link rel="stylesheet" href="/styles.css" />
+  <script>
+    // Theme: apply a saved manual choice before paint; wire the toggle on load.
+    // With no saved choice, the stylesheet follows the OS (prefers-color-scheme).
+    (function () {
+      var KEY = "petrichor-theme";
+      function apply(theme) {
+        var root = document.documentElement;
+        if (theme === "light" || theme === "dark") root.setAttribute("data-theme", theme);
+        else root.removeAttribute("data-theme");
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute("content", theme === "light" ? "#efe9da" : "#1a1f2e");
+        var btn = document.getElementById("theme-toggle");
+        if (btn) btn.textContent = theme === "light" ? "☾" : "☀";
+      }
+      try { apply(localStorage.getItem(KEY)); } catch (e) {}
+      window.addEventListener("DOMContentLoaded", function () {
+        var btn = document.getElementById("theme-toggle");
+        if (!btn) return;
+        function effective() {
+          var t = document.documentElement.getAttribute("data-theme");
+          if (t) return t;
+          return (window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+        }
+        btn.textContent = effective() === "light" ? "☾" : "☀";
+        btn.addEventListener("click", function () {
+          var next = effective() === "light" ? "dark" : "light";
+          try { localStorage.setItem(KEY, next); } catch (e) {}
+          apply(next);
+        });
+      });
+    })();
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
     // Register the service worker so the app is installable to the home screen.
@@ -58,6 +91,7 @@
     <aside id="sidebar">
       <header class="sidebar-header">
         <h1>Petrichor</h1>
+        <button id="theme-toggle" class="ghost small" title="Light / dark" aria-label="Toggle light or dark">☀</button>
         <button id="new-project-btn" class="primary" title="New project">+ New project</button>
       </header>
       <nav id="project-list" aria-label="Projects"></nav>

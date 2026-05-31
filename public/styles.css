@@ -19,9 +19,23 @@
 }
 
 /* Daylight: aged ecru paper, warm ink, the same amber a shade deeper so
-   it still carries contrast against cream. */
+   it still carries contrast against cream. A manual toggle (data-theme on
+   <html>) wins; with no manual choice we follow the OS preference. */
+:root[data-theme="light"] {
+  --bg: #efe9da;
+  --bg-elev: #f7f3e8;
+  --bg-elev-2: #e6dfca;
+  --border: #d8cfb8;
+  --text: #2a2620;
+  --text-muted: #6b6354;
+  --accent: #b9824b;
+  --accent-hover: #a5703c;
+  --user-bubble: #e6dfca;
+  --danger: #b5503f;
+}
+
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
     --bg: #efe9da;
     --bg-elev: #f7f3e8;
     --bg-elev-2: #e6dfca;
