@@ -2513,9 +2513,9 @@ async function deleteEntity(id) {
   await renderEntityList();
 }
 
-async function openMemoriesDialog() {
+async function openMemoriesDialog(tab = "identity") {
   closeSidebar();
-  switchMemTab("identity"); // always open on the first tab
+  switchMemTab(typeof tab === "string" ? tab : "identity");
   fillSelectOnce($("mem-type"), MEMORY_TYPES);
   fillSelectOnce($("entity-type"), ENTITY_TYPES);
   await loadIdentityAndPrefs();
@@ -2863,9 +2863,16 @@ function wireApp() {
 
   $("settings-btn").addEventListener("click", () => $("settings-dialog").showModal());
 
-  $("memories-btn").addEventListener("click", openMemoriesDialog);
+  $("memories-btn").addEventListener("click", () => openMemoriesDialog("identity"));
   document.querySelectorAll("#memories-dialog .mem-tab-btn").forEach((btn) =>
     btn.addEventListener("click", () => switchMemTab(btn.dataset.tab)));
+
+  // StillHere icon nav. Memories + Knowledge Graph open the real dialog
+  // (graph is a tab within it). Search & Diary are their own upcoming bricks.
+  $("nav-memories").addEventListener("click", () => openMemoriesDialog("identity"));
+  $("nav-graph").addEventListener("click", () => openMemoriesDialog("graph"));
+  $("nav-search").addEventListener("click", () => flashToast("Search is coming soon"));
+  $("nav-diary").addEventListener("click", () => flashToast("Diary is coming soon"));
   $("self-state-save-btn").addEventListener("click", saveSelfState);
   $("user-prefs-save-btn").addEventListener("click", saveUserPreferences);
   $("mem-add-btn").addEventListener("click", addCoreMemory);
