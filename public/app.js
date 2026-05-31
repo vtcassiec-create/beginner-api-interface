@@ -152,7 +152,9 @@ async function initSupabase() {
   });
 }
 
-// Sign-in is a two-step email OTP: send a 6-digit code, then verify it.
+// Sign-in is a two-step email OTP: send a numeric code, then verify it.
+// (Supabase's token length varies by project — 6 to 8 digits — so the
+// input accepts up to 8 and we don't promise an exact count anywhere.)
 // We deliberately do NOT pass emailRedirectTo — there's no link to follow,
 // so nothing can hijack the tap into the installed app, and there's no
 // redirect to misfire. The email carries a code the person types here.
@@ -177,7 +179,7 @@ async function sendCode(email) {
   $("signin-code").focus();
   $("signin-submit").textContent = "Verify & sign in";
   $("signin-restart").hidden = false;
-  msg.textContent = `Enter the 6-digit code sent to ${email}.`;
+  msg.textContent = `Enter the code sent to ${email}.`;
   msg.className = "signin-msg success";
 }
 
