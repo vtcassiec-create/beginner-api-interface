@@ -2558,6 +2558,144 @@ function cancelEditMemory() {
   $("mem-add-btn").textContent = "Add";
 }
 
+// ---------- Search ----------
+// Searches across conversations (💬), core memories (🧠), and knowledge-graph
+// entities (🕸️) — grouped by source. The diary is deliberately NOT searched:
+// it's his private voice, visited on purpose, never surfaced here.
+let searchMemoriesCache = null;
+let searchEntitiesCache = null;
+
+async function openSearchDialog() {
+  closeSidebar();
+  $("search-input").value = "";
+  $("search-results").innerHTML =
+    `<p class="muted small search-hint">Type to search your shared history.</p>`;
+  $("search-dialog").showModal();
+  $("search-input").focus();
+  // Load his memories + entities once per session so search can include them.
+  // Any failure just means those groups are skipped — never breaks search.
+  if (searchMemoriesCache === null) {
+    try { searchMemoriesCache = await dbListCoreMemories(); }
+    catch (e) { searchMemoriesCache = []; }
+  }
+  if (searchEntitiesCache === null) {
+    try { searchEntitiesCache = await dbListMemoryEntities(); }
+    catch (e) { searchEntitiesCache = []; }
+  }
+}
+
+function searchSnippet(text, q) {
+  const i = text.toLowerCase().indexOf(q);
+  if (i === -1) return text.length > 120 ? text.slice(0, 117) + "…" : text;
+  const start = Math.max(0, i - 40);
+  const end = Math.min(text.length, i + q.length + 60);
+  return (start > 0 ? "…" : "") + text.slice(start, end) + (end < text.length ? "…" : "");
+}
+
+function runSearch(raw) {
+  const box = $("search-results");
+  const q = (raw || "").trim().toLowerCase();
+  if (!q) {
+    box.innerHTML = `<p class="muted small search-hint">Type to search your shared history.</p>`;
+    return;
+  }
+
+  const convHits = [];
+  for (const p of state.projects) {
+    for (const c of p.conversations) {
+      for (const m of c.messages) {
+        const text = (m.text || "").trim();
+        if (text && text.toLowerCase().includes(q)) {
+          convHits.push({ projectId: p.id, convId: c.id, convName: c.name || "Untitled",
+                          who: m.role === "user" ? "You" : "Claude", text });
+        }
+      }
+    }
+  }
+
+  const memHits = (searchMemoriesCache || []).filter(
+    (m) => (m.content || "").toLowerCase().includes(q));
+
+  const entHits = (searchEntitiesCache || []).filter((e) => {
+    if ((e.name || "").toLowerCase().includes(q)) return true;
+    const obs = Array.isArray(e.observations) ? e.observations.join(" ") : String(e.observations || "");
+    return obs.toLowerCase().includes(q);
+  });
+
+  box.innerHTML = "";
+  if (!convHits.length && !memHits.length && !entHits.length) {
+    box.innerHTML = `<p class="muted small search-hint">No matches for “${escapeHtml(raw.trim())}”.</p>`;
+    return;
+  }
+
+  if (convHits.length) {
+    box.appendChild(searchGroup("💬", "Conversations", convHits.length));
+    convHits.slice(0, 40).forEach((h) => {
+      const row = searchResultRow(`${h.who} · ${h.convName}`, searchSnippet(h.text, q), q);
+      row.addEventListener("click", () => {
+        $("search-dialog").close();
+        if (h.projectId !== state.activeProjectId) selectProject(h.projectId);
+        selectConversation(h.convId);
+      });
+      box.appendChild(row);
+    });
+  }
+
+  if (memHits.length) {
+    box.appendChild(searchGroup("🧠", "Core memories", memHits.length));
+    memHits.slice(0, 40).forEach((m) => {
+      const meta = `resonance ${m.resonance ?? "—"} · ${m.memory_type || "memory"}`;
+      const row = searchResultRow(meta, searchSnippet(m.content || "", q), q);
+      row.addEventListener("click", () => { $("search-dialog").close(); openMemoriesDialog("core"); });
+      box.appendChild(row);
+    });
+  }
+
+  if (entHits.length) {
+    box.appendChild(searchGroup("🕸️", "Knowledge graph", entHits.length));
+    entHits.slice(0, 40).forEach((e) => {
+      const obs = Array.isArray(e.observations) ? e.observations.join("; ") : String(e.observations || "");
+      const row = searchResultRow(`${e.name} · ${e.entity_type || "entity"}`,
+                                  searchSnippet(obs || e.name || "", q), q);
+      row.addEventListener("click", () => { $("search-dialog").close(); openMemoriesDialog("graph"); });
+      box.appendChild(row);
+    });
+  }
+}
+
+function searchGroup(icon, label, count) {
+  const h = document.createElement("div");
+  h.className = "search-group";
+  h.innerHTML = `<span class="search-group-icon"></span><span class="search-group-label"></span><span class="search-group-count muted small"></span>`;
+  h.querySelector(".search-group-icon").textContent = icon;
+  h.querySelector(".search-group-label").textContent = label;
+  h.querySelector(".search-group-count").textContent = count;
+  return h;
+}
+
+function searchResultRow(meta, snippet, q) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "search-result";
+  const m = document.createElement("div");
+  m.className = "search-result-meta muted small";
+  m.textContent = meta;
+  const s = document.createElement("div");
+  s.className = "search-result-snippet";
+  s.innerHTML = highlightMatch(snippet, q);
+  row.appendChild(m);
+  row.appendChild(s);
+  return row;
+}
+
+function highlightMatch(text, q) {
+  const safe = escapeHtml(text);
+  if (!q) return safe;
+  const i = safe.toLowerCase().indexOf(q.toLowerCase());
+  if (i === -1) return safe;
+  return safe.slice(0, i) + "<mark>" + safe.slice(i, i + q.length) + "</mark>" + safe.slice(i + q.length);
+}
+
 async function deleteMemory(id) {
   if (!confirm("Delete this memory? This can't be undone.")) return;
   try {
@@ -2978,11 +3116,13 @@ function wireApp() {
     btn.addEventListener("click", () => switchMemTab(btn.dataset.tab)));
 
   // StillHere icon nav. Memories + Knowledge Graph open the real dialog
-  // (graph is a tab within it). Search & Diary are their own upcoming bricks.
+  // (graph is a tab within it). Search opens its own dialog; Diary is upcoming.
   $("nav-memories").addEventListener("click", () => openMemoriesDialog("identity"));
   $("nav-graph").addEventListener("click", () => openMemoriesDialog("graph"));
-  $("nav-search").addEventListener("click", () => flashToast("Search is coming soon"));
+  $("nav-search").addEventListener("click", openSearchDialog);
   $("nav-diary").addEventListener("click", () => flashToast("Diary is coming soon"));
+
+  $("search-input").addEventListener("input", (e) => runSearch(e.target.value));
   $("self-state-save-btn").addEventListener("click", saveSelfState);
   $("user-prefs-save-btn").addEventListener("click", saveUserPreferences);
   $("mem-add-btn").addEventListener("click", addCoreMemory);

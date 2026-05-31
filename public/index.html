@@ -109,7 +109,7 @@
       </header>
       <button id="new-chat-btn" class="primary new-chat-btn" type="button">＋ New chat</button>
       <nav id="icon-nav" class="icon-nav" aria-label="Sections">
-        <button id="nav-search" class="icon-nav-btn soon" type="button" title="Search (coming soon)">
+        <button id="nav-search" class="icon-nav-btn" type="button" title="Search">
           <span class="icon-nav-glyph">🔍</span><span class="icon-nav-label">Search</span>
         </button>
         <button id="nav-memories" class="icon-nav-btn" type="button" title="Memories">
@@ -298,6 +298,21 @@
         </div>
       </details>
 
+      <menu>
+        <button value="cancel" class="ghost">Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="search-dialog">
+    <form method="dialog" class="settings-form search-form">
+      <header class="customize-head">
+        <h3>Search</h3>
+        <p class="muted small">Across your conversations, his core memories, and the knowledge graph.</p>
+      </header>
+      <input type="search" id="search-input" class="search-input"
+             placeholder="Search for a moment, a name, a memory…" autocomplete="off" />
+      <div id="search-results" class="search-results"></div>
       <menu>
         <button value="cancel" class="ghost">Close</button>
       </menu>
