@@ -172,17 +172,82 @@ body {
 }
 
 .sidebar-header {
-  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
   border-bottom: 1px solid var(--border);
 }
 
-.sidebar-header h1 {
-  margin: 0 0 12px;
-  font-size: 14px;
+/* Project chip (StillHere-style): a pill that names the active project and
+   opens a dropdown to switch projects or make a new one. */
+.project-chip-wrap { position: relative; flex: 1; min-width: 0; }
+
+.project-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 15px;
   font-weight: 600;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--text);
+}
+.project-chip .chip-folder { flex-shrink: 0; }
+.project-chip .chip-name {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-chip .chip-caret { color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
+
+.project-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.project-menu[hidden] { display: none; }
+
+.project-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+}
+.project-menu-item:hover { background: var(--bg-elev); }
+.project-menu-item .pm-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-menu-item .pm-tag { font-size: 11px; color: var(--text-muted); }
+.project-menu-item.active { font-weight: 600; }
+.project-menu-new { color: var(--accent); border-top: 1px solid var(--border); border-radius: 0 0 var(--radius-sm) var(--radius-sm); margin-top: 2px; }
+.project-menu-new .pm-plus { width: 16px; text-align: center; }
+
+/* The big "New chat" button under the header. */
+.new-chat-btn {
+  margin: 12px;
+  width: calc(100% - 24px);
 }
 
 #project-list {
@@ -195,40 +260,56 @@ body {
   margin-bottom: 4px;
 }
 
-/* StillHere-style icon nav: a tidy row of sections under the header. */
+.conv-heading {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 4px 10px 6px;
+}
+
+/* StillHere-style icon nav: a tidy ROW of little section buttons. */
 .icon-nav {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px;
+  flex-direction: row;
+  gap: 4px;
+  padding: 0 12px 12px;
   border-bottom: 1px solid var(--border);
 }
 
 .icon-nav-btn {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
-  width: 100%;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
   background: transparent;
   border: none;
-  text-align: left;
-  padding: 8px 10px;
+  padding: 8px 4px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   font: inherit;
-  font-size: 14px;
+  font-size: 11px;
   color: var(--text);
 }
 
 .icon-nav-btn:hover { background: var(--bg-elev-2); }
 
 .icon-nav-glyph {
-  width: 20px;
-  text-align: center;
-  flex-shrink: 0;
+  font-size: 18px;
+  line-height: 1;
 }
 
-.icon-nav-btn.soon { color: var(--text-muted); }
+.icon-nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.icon-nav-btn.soon { opacity: 0.5; }
 
 .project-head {
   display: flex;
@@ -1264,6 +1345,9 @@ dialog::backdrop {
   #main { height: 100vh; height: 100dvh; }
 
   .menu-btn { display: flex; }
+  /* When the sidebar is open it covers the title — hide the ☰ so it doesn't
+     overlap; the dimmed backdrop (tap to close) takes over. */
+  body.sidebar-open .menu-btn { display: none; }
 
   #sidebar {
     position: fixed;

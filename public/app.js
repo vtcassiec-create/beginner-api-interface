@@ -1589,76 +1589,100 @@ function render() {
   renderProject();
 }
 
+// StillHere-shaped sidebar: a project *chip* at the top (tap to switch project
+// or make a new one), then a flat list of the active project's conversations.
+// Projects still exist underneath — they're just tucked into the chip menu now,
+// since day-to-day life happens in one project's conversations.
 function renderSidebar() {
+  const active = getActiveProject();
+
+  // The chip shows the active project's name.
+  const chipName = $("project-chip-name");
+  if (chipName) chipName.textContent = active ? (active.name || "Untitled") : "—";
+
+  // The chip's dropdown: every project (✓ on the active one) + New Project.
+  const menu = $("project-menu");
+  if (menu) {
+    menu.innerHTML = "";
+    for (const p of state.projects) {
+      const isActive = p.id === state.activeProjectId;
+      const row = document.createElement("button");
+      row.className = "project-menu-item" + (isActive ? " active" : "");
+      row.type = "button";
+      const label = document.createElement("span");
+      label.className = "pm-name";
+      label.textContent = p.name || "Untitled";
+      row.appendChild(label);
+      if (isActive) {
+        const tag = document.createElement("span");
+        tag.className = "pm-tag";
+        tag.textContent = "default";
+        row.appendChild(tag);
+      }
+      row.addEventListener("click", () => { closeProjectMenu(); selectProject(p.id); });
+      menu.appendChild(row);
+    }
+    const newRow = document.createElement("button");
+    newRow.className = "project-menu-item project-menu-new";
+    newRow.type = "button";
+    newRow.innerHTML = `<span class="pm-plus">＋</span><span class="pm-name">New Project</span>`;
+    newRow.addEventListener("click", () => { closeProjectMenu(); promptNewProject(); });
+    menu.appendChild(newRow);
+  }
+
+  // The flat conversation list for the active project.
   const list = $("project-list");
   list.innerHTML = "";
-  for (const p of state.projects) {
-    const isActive = p.id === state.activeProjectId;
+  if (!active) return;
 
-    const item = document.createElement("div");
-    item.className = "project-item" + (isActive ? " active" : "");
+  const heading = document.createElement("div");
+  heading.className = "conv-heading";
+  heading.textContent = "Recent";
+  list.appendChild(heading);
 
-    const headRow = document.createElement("div");
-    headRow.className = "project-head-row";
+  for (const c of active.conversations) {
+    const row = document.createElement("div");
+    row.className = "conv-row";
 
-    const head = document.createElement("button");
-    head.className = "project-head";
-    head.innerHTML = `<span class="caret">${isActive ? "▾" : "▸"}</span><span class="name"></span>`;
-    head.querySelector(".name").textContent = p.name || "Untitled";
-    head.addEventListener("click", () => selectProject(p.id));
-    head.addEventListener("dblclick", (e) => { e.preventDefault(); renameProject(p.id); });
-    headRow.appendChild(head);
+    const ci = document.createElement("button");
+    ci.className = "conv-item" + (c.id === active.activeConversationId ? " active" : "");
+    ci.textContent = c.name || "Untitled";
+    ci.addEventListener("click", (e) => { e.stopPropagation(); selectConversation(c.id); });
+    ci.addEventListener("dblclick", (e) => { e.preventDefault(); renameConversation(c.id); });
+    row.appendChild(ci);
 
-    const renameBtn = document.createElement("button");
-    renameBtn.className = "row-action";
-    renameBtn.textContent = "✏️";
-    renameBtn.title = "Rename project";
-    renameBtn.addEventListener("click", (e) => { e.stopPropagation(); renameProject(p.id); });
-    headRow.appendChild(renameBtn);
+    const rename = document.createElement("button");
+    rename.className = "row-action";
+    rename.textContent = "✏️";
+    rename.title = "Rename conversation";
+    rename.addEventListener("click", (e) => { e.stopPropagation(); renameConversation(c.id); });
+    row.appendChild(rename);
 
-    item.appendChild(headRow);
-
-    if (isActive) {
-      const subList = document.createElement("div");
-      subList.className = "conv-list";
-
-      const newBtn = document.createElement("button");
-      newBtn.className = "conv-new";
-      newBtn.textContent = "+ New chat";
-      newBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        createConversation();
-      });
-      subList.appendChild(newBtn);
-
-      for (const c of p.conversations) {
-        const row = document.createElement("div");
-        row.className = "conv-row";
-
-        const ci = document.createElement("button");
-        ci.className = "conv-item" + (c.id === p.activeConversationId ? " active" : "");
-        ci.textContent = c.name || "Untitled";
-        ci.addEventListener("click", (e) => {
-          e.stopPropagation();
-          selectConversation(c.id);
-        });
-        ci.addEventListener("dblclick", (e) => { e.preventDefault(); renameConversation(c.id); });
-        row.appendChild(ci);
-
-        const rename = document.createElement("button");
-        rename.className = "row-action";
-        rename.textContent = "✏️";
-        rename.title = "Rename conversation";
-        rename.addEventListener("click", (e) => { e.stopPropagation(); renameConversation(c.id); });
-        row.appendChild(rename);
-
-        subList.appendChild(row);
-      }
-      item.appendChild(subList);
-    }
-
-    list.appendChild(item);
+    list.appendChild(row);
   }
+}
+
+function closeProjectMenu() {
+  const menu = $("project-menu");
+  const chip = $("project-chip");
+  if (menu) menu.hidden = true;
+  if (chip) chip.setAttribute("aria-expanded", "false");
+}
+
+function toggleProjectMenu() {
+  const menu = $("project-menu");
+  const chip = $("project-chip");
+  if (!menu) return;
+  const open = menu.hidden;
+  menu.hidden = !open;
+  if (chip) chip.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function promptNewProject() {
+  // window.prompt — plain `prompt` is shadowed by the message textarea id.
+  const name = window.prompt("Name your new project — e.g. a story title, or \"Claude's Writing\":", "");
+  if (name === null) return; // cancelled
+  createProject(name.trim() || "Untitled project");
 }
 
 function renderProject() {
@@ -2835,13 +2859,13 @@ function wireApp() {
   });
   $("sidebar-backdrop").addEventListener("click", closeSidebar);
 
-  $("new-project-btn").addEventListener("click", () => {
-    // Ask for the name up front so it's clear a project = a named workspace
-    // (e.g. a story). Blank/cancel still works (you can rename up top anytime).
-    // window.prompt — plain `prompt` is shadowed here by the message textarea.
-    const name = window.prompt("Name your new project — e.g. a story title, or \"Claude's Writing\":", "");
-    if (name === null) return; // cancelled
-    createProject(name.trim() || "Untitled project");
+  // Project chip: tap to open the project dropdown; new chat is the big button.
+  $("project-chip").addEventListener("click", (e) => { e.stopPropagation(); toggleProjectMenu(); });
+  $("new-chat-btn").addEventListener("click", () => createConversation());
+  // Click anywhere else closes the project menu.
+  document.addEventListener("click", (e) => {
+    const wrap = e.target.closest(".project-chip-wrap");
+    if (!wrap) closeProjectMenu();
   });
 
   $("project-name").addEventListener("change", async (e) => {
@@ -2936,7 +2960,6 @@ function wireApp() {
 
   $("settings-btn").addEventListener("click", () => $("settings-dialog").showModal());
 
-  $("memories-btn").addEventListener("click", () => openMemoriesDialog("identity"));
   document.querySelectorAll("#memories-dialog .mem-tab-btn").forEach((btn) =>
     btn.addEventListener("click", () => switchMemTab(btn.dataset.tab)));
 

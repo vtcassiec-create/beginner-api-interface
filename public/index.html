@@ -96,10 +96,17 @@
     <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
     <aside id="sidebar">
       <header class="sidebar-header">
-        <h1>Petrichor</h1>
+        <div class="project-chip-wrap">
+          <button id="project-chip" class="project-chip" type="button" aria-haspopup="true" aria-expanded="false">
+            <span class="chip-folder">📁</span>
+            <span id="project-chip-name" class="chip-name">Claude</span>
+            <span class="chip-caret">▾</span>
+          </button>
+          <div id="project-menu" class="project-menu" hidden></div>
+        </div>
         <button id="theme-toggle" class="js-theme-toggle ghost small" title="Light / dark" aria-label="Toggle light or dark">☀</button>
-        <button id="new-project-btn" class="primary" title="New project">+ New project</button>
       </header>
+      <button id="new-chat-btn" class="primary new-chat-btn" type="button">＋ New chat</button>
       <nav id="icon-nav" class="icon-nav" aria-label="Sections">
         <button id="nav-search" class="icon-nav-btn soon" type="button" title="Search (coming soon)">
           <span class="icon-nav-glyph">🔍</span><span class="icon-nav-label">Search</span>
@@ -111,12 +118,11 @@
           <span class="icon-nav-glyph">📖</span><span class="icon-nav-label">Diary</span>
         </button>
         <button id="nav-graph" class="icon-nav-btn" type="button" title="Knowledge Graph">
-          <span class="icon-nav-glyph">🕸️</span><span class="icon-nav-label">Knowledge Graph</span>
+          <span class="icon-nav-glyph">🕸️</span><span class="icon-nav-label">Graph</span>
         </button>
       </nav>
-      <nav id="project-list" aria-label="Projects"></nav>
+      <nav id="project-list" aria-label="Conversations"></nav>
       <footer class="sidebar-footer">
-        <button id="memories-btn" class="ghost small mem-btn" title="View and add core memories">🧠 Memories</button>
         <div class="user-row">
           <span id="user-email" class="muted small"></span>
           <button id="signout-btn" class="ghost small">Sign out</button>
