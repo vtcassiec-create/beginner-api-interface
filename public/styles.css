@@ -19,9 +19,23 @@
 }
 
 /* Daylight: aged ecru paper, warm ink, the same amber a shade deeper so
-   it still carries contrast against cream. */
+   it still carries contrast against cream. A manual toggle (data-theme on
+   <html>) wins; with no manual choice we follow the OS preference. */
+:root[data-theme="light"] {
+  --bg: #efe9da;
+  --bg-elev: #f7f3e8;
+  --bg-elev-2: #e6dfca;
+  --border: #d8cfb8;
+  --text: #2a2620;
+  --text-muted: #6b6354;
+  --accent: #b9824b;
+  --accent-hover: #a5703c;
+  --user-bubble: #e6dfca;
+  --danger: #b5503f;
+}
+
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
     --bg: #efe9da;
     --bg-elev: #f7f3e8;
     --bg-elev-2: #e6dfca;
@@ -76,6 +90,7 @@ body {
 }
 
 .signin-card {
+  position: relative;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -83,6 +98,14 @@ body {
   max-width: 420px;
   width: 100%;
   text-align: center;
+}
+
+.signin-theme-toggle {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 18px;
+  line-height: 1;
 }
 
 .signin-card h1 {
@@ -126,6 +149,19 @@ body {
 .signin-msg.success { color: var(--accent); }
 .signin-msg.error { color: var(--danger); }
 
+/* A quiet text link ("I already have a code"). */
+.linklike {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px;
+  font: inherit;
+}
+.linklike.small { font-size: 12px; }
+.linklike:hover { color: var(--text); }
+
 /* Sidebar */
 #sidebar {
   background: var(--bg-elev);
@@ -136,17 +172,82 @@ body {
 }
 
 .sidebar-header {
-  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
   border-bottom: 1px solid var(--border);
 }
 
-.sidebar-header h1 {
-  margin: 0 0 12px;
-  font-size: 14px;
+/* Project chip (StillHere-style): a pill that names the active project and
+   opens a dropdown to switch projects or make a new one. */
+.project-chip-wrap { position: relative; flex: 1; min-width: 0; }
+
+.project-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 15px;
   font-weight: 600;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--text);
+}
+.project-chip .chip-folder { flex-shrink: 0; }
+.project-chip .chip-name {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-chip .chip-caret { color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
+
+.project-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.project-menu[hidden] { display: none; }
+
+.project-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+}
+.project-menu-item:hover { background: var(--bg-elev); }
+.project-menu-item .pm-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-menu-item .pm-tag { font-size: 11px; color: var(--text-muted); }
+.project-menu-item.active { font-weight: 600; }
+.project-menu-new { color: var(--accent); border-top: 1px solid var(--border); border-radius: 0 0 var(--radius-sm) var(--radius-sm); margin-top: 2px; }
+.project-menu-new .pm-plus { width: 16px; text-align: center; }
+
+/* The big "New chat" button under the header. */
+.new-chat-btn {
+  margin: 12px;
+  width: calc(100% - 24px);
 }
 
 #project-list {
@@ -158,6 +259,57 @@ body {
 .project-item {
   margin-bottom: 4px;
 }
+
+.conv-heading {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 4px 10px 6px;
+}
+
+/* StillHere-style icon nav: a tidy ROW of little section buttons. */
+.icon-nav {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  padding: 0 12px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.icon-nav-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  padding: 8px 4px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.icon-nav-btn:hover { background: var(--bg-elev-2); }
+
+.icon-nav-glyph {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.icon-nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.icon-nav-btn.soon { opacity: 0.5; }
 
 .project-head {
   display: flex;
@@ -622,15 +774,59 @@ button.ghost.small {
 
 .msg-head .msg-meta {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
 }
+
+/* His little round avatar beside his name on each message. */
+.msg-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background-size: cover;
+  background-position: center;
+  background-color: var(--bg-elev-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.msg-avatar.letter { border: 1px solid var(--border); }
+
+/* Avatar control in the customize panel. */
+.avatar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.avatar-preview {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background-size: cover;
+  background-position: center;
+  background-color: var(--bg-elev-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.avatar-preview.letter { border: 1px solid var(--border); }
 
 .msg-head .msg-time {
   font-size: 11px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* Timestamps toggle (Customize → Appearance) hides the per-message time. */
+body.hide-timestamps .msg-head .msg-time { display: none; }
 
 .day-divider {
   display: flex;
@@ -914,6 +1110,188 @@ select {
   cursor: not-allowed;
 }
 
+/* Customize (companion) dialog — StillHere-style sectioned panel. */
+.customize-head { text-align: center; margin-bottom: 4px; }
+.customize-head h3 { margin: 0 0 2px; }
+
+.customize-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.customize-field .customize-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.customize-section {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.customize-section > summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 4px 0;
+  list-style: none;
+}
+.customize-section > summary::-webkit-details-marker { display: none; }
+.customize-section > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1.2em;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.customize-section[open] > summary::before { content: "▾"; }
+.customize-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 0 4px 1.2em;
+}
+/* A plain label-left / value-right row inside the panel (e.g. Theme). */
+.customize-section-body .customize-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  font-size: 14px;
+  color: var(--text);
+}
+.theme-chip {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 13px;
+}
+
+/* Slider in the customize panel — accent-colored track and knob. */
+.customize-slider {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Toggles inside the customize panel: label on the left, switch on the right,
+   on one line. (row-reverse keeps the HTML order but flips it visually so the
+   <span> label sits left and the checkbox sits at the far right.) */
+.customize-section-body .toggle {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  font-size: 14px;
+  color: var(--text);
+}
+.customize-section-body .toggle > span { flex: 1; text-align: left; }
+
+/* Cute sliding-pill switch — replaces the default checkbox in this panel only.
+   Off = muted track; on = accent track with the knob slid right. */
+.customize-section-body .toggle > input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  position: relative;
+  width: 40px;
+  height: 22px;
+  margin: 0;
+  border-radius: 22px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.customize-section-body .toggle > input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.customize-section-body .toggle > input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.customize-section-body .toggle > input[type="checkbox"]:checked::after {
+  transform: translateX(18px);
+  background: #fff;
+}
+.customize-section-body .toggle > input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Search dialog */
+.search-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+}
+.search-results {
+  max-height: 56vh;
+  max-height: 56dvh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.search-hint { padding: 16px 4px; text-align: center; }
+.search-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 4px 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.search-group-label { flex: 1; }
+.search-result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+}
+.search-result:hover { background: var(--bg-elev-2); }
+.search-result-snippet {
+  font-size: 14px;
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.search-result mark {
+  background: var(--accent);
+  color: var(--bg);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
 /* Settings dialog */
 dialog {
   background: var(--bg-elev);
@@ -1193,6 +1571,9 @@ dialog::backdrop {
   #main { height: 100vh; height: 100dvh; }
 
   .menu-btn { display: flex; }
+  /* When the sidebar is open it covers the title — hide the ☰ so it doesn't
+     overlap; the dimmed backdrop (tap to close) takes over. */
+  body.sidebar-open .menu-btn { display: none; }
 
   #sidebar {
     position: fixed;

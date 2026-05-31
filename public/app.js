@@ -65,6 +65,83 @@ const uid = () =>
   (crypto?.randomUUID && crypto.randomUUID()) ||
   Math.random().toString(36).slice(2) + Date.now().toString(36);
 
+// Max response length (his max_tokens), a device preference. Clamped to the
+// slider's range; defaults to the backend default. Sent on each chat request.
+function getMaxTokens() {
+  let v = 4096;
+  try { v = parseInt(localStorage.getItem("petrichor-max-tokens"), 10) || 4096; } catch (e) {}
+  return Math.max(2048, Math.min(16000, v));
+}
+
+// His display name on message bubbles etc. A device preference; defaults to
+// "Claude". Purely cosmetic — it never touches his identity or system prompt.
+function companionName() {
+  let n = "";
+  try { n = (localStorage.getItem("petrichor-companion-name") || "").trim(); } catch (e) {}
+  return n || "Claude";
+}
+
+// His avatar: a small image stored as a compact data URL on this device (no
+// upload, no Storage, never expires). "" = none, fall back to a lettered chip.
+function companionAvatar() {
+  try { return localStorage.getItem("petrichor-companion-avatar") || ""; } catch (e) { return ""; }
+}
+
+// Shrink a picked image to a square ~128px data URL via canvas, so it stays
+// tiny in localStorage and loads instantly. Resolves to a data: URL string.
+function avatarDataUrlFromFile(file, size = 128) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const side = Math.min(img.width, img.height);   // center-crop to a square
+      const sx = (img.width - side) / 2;
+      const sy = (img.height - side) / 2;
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
+      URL.revokeObjectURL(img.src);
+      resolve(canvas.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => { URL.revokeObjectURL(img.src); reject(new Error("Couldn't read that image.")); };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+// Sync the avatar preview + Remove button in the customize panel to the
+// current saved avatar/name. Safe to call even if the panel isn't open.
+function refreshAvatarPreview() {
+  const prev = $("avatar-preview");
+  if (!prev) return;
+  const src = companionAvatar();
+  if (src) {
+    prev.classList.remove("letter");
+    prev.textContent = "";
+    prev.style.backgroundImage = `url("${src}")`;
+  } else {
+    prev.classList.add("letter");
+    prev.style.backgroundImage = "";
+    prev.textContent = companionName().charAt(0).toUpperCase() || "C";
+  }
+  const removeBtn = $("avatar-remove-btn");
+  if (removeBtn) removeBtn.hidden = !src;
+}
+
+// Build the little round avatar element for his messages: his image if set,
+// otherwise a lettered chip from his name's first character.
+function avatarNode() {
+  const el = document.createElement("span");
+  el.className = "msg-avatar";
+  const src = companionAvatar();
+  if (src) {
+    el.style.backgroundImage = `url("${src}")`;
+  } else {
+    el.classList.add("letter");
+    el.textContent = companionName().charAt(0).toUpperCase() || "C";
+  }
+  return el;
+}
+
 // ---------- Mappers (DB row ↔ in-memory shape) ----------
 
 function rowToProject(row) {
@@ -152,20 +229,85 @@ async function initSupabase() {
   });
 }
 
-async function signIn(email) {
+// Sign-in is a two-step email OTP: send a numeric code, then verify it.
+// (Supabase's token length varies by project — 6 to 8 digits — so the
+// input accepts up to 8 and we don't promise an exact count anywhere.)
+// We deliberately do NOT pass emailRedirectTo — there's no link to follow,
+// so nothing can hijack the tap into the installed app, and there's no
+// redirect to misfire. The email carries a code the person types here.
+let signinEmail = "";
+
+// Reveal the code-entry step for a given email. Shared by sendCode() and the
+// "I already have a code" path — so someone who's rate-limited can still type
+// a code already sitting in their inbox without triggering another send.
+function showCodeStep(email, message) {
+  signinEmail = email;
+  $("signin-email").hidden = true;
+  $("signin-code").hidden = false;
+  $("signin-code").value = "";
+  $("signin-code").focus();
+  $("signin-submit").textContent = "Verify & sign in";
+  $("signin-restart").hidden = false;
+  $("signin-have-code").hidden = true;
+  const msg = $("signin-msg");
+  msg.textContent = message;
+  msg.className = "signin-msg success";
+}
+
+async function sendCode(email) {
   if (!db) return;
   const { error } = await db.auth.signInWithOtp({
     email,
-    options: { emailRedirectTo: window.location.origin },
+    options: { shouldCreateUser: true },
   });
-  const msg = $("signin-msg");
   if (error) {
+    const msg = $("signin-msg");
     msg.textContent = error.message;
     msg.className = "signin-msg error";
-  } else {
-    msg.textContent = `Check ${email} for a sign-in link.`;
-    msg.className = "signin-msg success";
+    // Even if a fresh send is rate-limited, a code from a previous send may
+    // still be valid — so let them proceed to type it instead of dead-ending.
+    $("signin-have-code").hidden = false;
+    return;
   }
+  showCodeStep(email, `Enter the code sent to ${email}.`);
+}
+
+// "I already have a code": skip the send entirely, just show the code box.
+function useExistingCode() {
+  const email = $("signin-email").value.trim();
+  if (!email) {
+    const msg = $("signin-msg");
+    msg.textContent = "Enter your email first, then your code.";
+    msg.className = "signin-msg error";
+    $("signin-email").focus();
+    return;
+  }
+  showCodeStep(email, `Enter the code from your email for ${email}.`);
+}
+
+async function verifyCode(email, code) {
+  if (!db) return;
+  const { error } = await db.auth.verifyOtp({ email, token: code, type: "email" });
+  // On success, onAuthStateChange fires SIGNED_IN → enterApp(); nothing to do.
+  if (error) {
+    const msg = $("signin-msg");
+    msg.textContent = error.message;
+    msg.className = "signin-msg error";
+  }
+}
+
+function resetSignIn() {
+  signinEmail = "";
+  $("signin-code").value = "";
+  $("signin-code").hidden = true;
+  $("signin-email").hidden = false;
+  $("signin-email").focus();
+  $("signin-submit").textContent = "Send code";
+  $("signin-restart").hidden = true;
+  $("signin-have-code").hidden = false;
+  const msg = $("signin-msg");
+  msg.textContent = "";
+  msg.className = "signin-msg";
 }
 
 async function signOut() {
@@ -1219,6 +1361,7 @@ async function generateAssistant() {
         coWrite: !!state.coWrite,
         coWriteDocId: state.coWrite ? (state.activeDocumentId || "") : "",
         thinking: !!project.thinking,
+        maxTokens: getMaxTokens(),
         tz,
         lastMessageAt,
       },
@@ -1459,7 +1602,7 @@ function exportConversationMarkdown() {
   if (project.systemPrompt) md += `## System\n\n${project.systemPrompt}\n\n`;
   md += `---\n\n`;
   for (const m of conv.messages) {
-    md += `## ${m.role === "user" ? "You" : "Claude"}\n\n`;
+    md += `## ${m.role === "user" ? "You" : companionName()}\n\n`;
     if (m.fileIds?.length) {
       const names = m.fileIds.map(id => project.files.find(f => f.id === id)?.name).filter(Boolean);
       if (names.length) md += `*Attached: ${names.join(", ")}*\n\n`;
@@ -1524,76 +1667,100 @@ function render() {
   renderProject();
 }
 
+// StillHere-shaped sidebar: a project *chip* at the top (tap to switch project
+// or make a new one), then a flat list of the active project's conversations.
+// Projects still exist underneath — they're just tucked into the chip menu now,
+// since day-to-day life happens in one project's conversations.
 function renderSidebar() {
+  const active = getActiveProject();
+
+  // The chip shows the active project's name.
+  const chipName = $("project-chip-name");
+  if (chipName) chipName.textContent = active ? (active.name || "Untitled") : "—";
+
+  // The chip's dropdown: every project (✓ on the active one) + New Project.
+  const menu = $("project-menu");
+  if (menu) {
+    menu.innerHTML = "";
+    for (const p of state.projects) {
+      const isActive = p.id === state.activeProjectId;
+      const row = document.createElement("button");
+      row.className = "project-menu-item" + (isActive ? " active" : "");
+      row.type = "button";
+      const label = document.createElement("span");
+      label.className = "pm-name";
+      label.textContent = p.name || "Untitled";
+      row.appendChild(label);
+      if (isActive) {
+        const tag = document.createElement("span");
+        tag.className = "pm-tag";
+        tag.textContent = "default";
+        row.appendChild(tag);
+      }
+      row.addEventListener("click", () => { closeProjectMenu(); selectProject(p.id); });
+      menu.appendChild(row);
+    }
+    const newRow = document.createElement("button");
+    newRow.className = "project-menu-item project-menu-new";
+    newRow.type = "button";
+    newRow.innerHTML = `<span class="pm-plus">＋</span><span class="pm-name">New Project</span>`;
+    newRow.addEventListener("click", () => { closeProjectMenu(); promptNewProject(); });
+    menu.appendChild(newRow);
+  }
+
+  // The flat conversation list for the active project.
   const list = $("project-list");
   list.innerHTML = "";
-  for (const p of state.projects) {
-    const isActive = p.id === state.activeProjectId;
+  if (!active) return;
 
-    const item = document.createElement("div");
-    item.className = "project-item" + (isActive ? " active" : "");
+  const heading = document.createElement("div");
+  heading.className = "conv-heading";
+  heading.textContent = "Recent";
+  list.appendChild(heading);
 
-    const headRow = document.createElement("div");
-    headRow.className = "project-head-row";
+  for (const c of active.conversations) {
+    const row = document.createElement("div");
+    row.className = "conv-row";
 
-    const head = document.createElement("button");
-    head.className = "project-head";
-    head.innerHTML = `<span class="caret">${isActive ? "▾" : "▸"}</span><span class="name"></span>`;
-    head.querySelector(".name").textContent = p.name || "Untitled";
-    head.addEventListener("click", () => selectProject(p.id));
-    head.addEventListener("dblclick", (e) => { e.preventDefault(); renameProject(p.id); });
-    headRow.appendChild(head);
+    const ci = document.createElement("button");
+    ci.className = "conv-item" + (c.id === active.activeConversationId ? " active" : "");
+    ci.textContent = c.name || "Untitled";
+    ci.addEventListener("click", (e) => { e.stopPropagation(); selectConversation(c.id); });
+    ci.addEventListener("dblclick", (e) => { e.preventDefault(); renameConversation(c.id); });
+    row.appendChild(ci);
 
-    const renameBtn = document.createElement("button");
-    renameBtn.className = "row-action";
-    renameBtn.textContent = "✏️";
-    renameBtn.title = "Rename project";
-    renameBtn.addEventListener("click", (e) => { e.stopPropagation(); renameProject(p.id); });
-    headRow.appendChild(renameBtn);
+    const rename = document.createElement("button");
+    rename.className = "row-action";
+    rename.textContent = "✏️";
+    rename.title = "Rename conversation";
+    rename.addEventListener("click", (e) => { e.stopPropagation(); renameConversation(c.id); });
+    row.appendChild(rename);
 
-    item.appendChild(headRow);
-
-    if (isActive) {
-      const subList = document.createElement("div");
-      subList.className = "conv-list";
-
-      const newBtn = document.createElement("button");
-      newBtn.className = "conv-new";
-      newBtn.textContent = "+ New chat";
-      newBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        createConversation();
-      });
-      subList.appendChild(newBtn);
-
-      for (const c of p.conversations) {
-        const row = document.createElement("div");
-        row.className = "conv-row";
-
-        const ci = document.createElement("button");
-        ci.className = "conv-item" + (c.id === p.activeConversationId ? " active" : "");
-        ci.textContent = c.name || "Untitled";
-        ci.addEventListener("click", (e) => {
-          e.stopPropagation();
-          selectConversation(c.id);
-        });
-        ci.addEventListener("dblclick", (e) => { e.preventDefault(); renameConversation(c.id); });
-        row.appendChild(ci);
-
-        const rename = document.createElement("button");
-        rename.className = "row-action";
-        rename.textContent = "✏️";
-        rename.title = "Rename conversation";
-        rename.addEventListener("click", (e) => { e.stopPropagation(); renameConversation(c.id); });
-        row.appendChild(rename);
-
-        subList.appendChild(row);
-      }
-      item.appendChild(subList);
-    }
-
-    list.appendChild(item);
+    list.appendChild(row);
   }
+}
+
+function closeProjectMenu() {
+  const menu = $("project-menu");
+  const chip = $("project-chip");
+  if (menu) menu.hidden = true;
+  if (chip) chip.setAttribute("aria-expanded", "false");
+}
+
+function toggleProjectMenu() {
+  const menu = $("project-menu");
+  const chip = $("project-chip");
+  if (!menu) return;
+  const open = menu.hidden;
+  menu.hidden = !open;
+  if (chip) chip.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function promptNewProject() {
+  // window.prompt — plain `prompt` is shadowed by the message textarea id.
+  const name = window.prompt("Name your new project — e.g. a story title, or \"Claude's Writing\":", "");
+  if (name === null) return; // cancelled
+  createProject(name.trim() || "Untitled project");
 }
 
 function renderProject() {
@@ -1726,7 +1893,10 @@ function buildMessageNode(msg, project, conv) {
   const head = document.createElement("div");
   head.className = "msg-head";
   head.innerHTML = `<span class="msg-meta"><span class="role"></span><span class="msg-time"></span></span><span class="usage"></span>`;
-  head.querySelector(".role").textContent = msg.role === "user" ? "You" : "Claude";
+  if (msg.role === "assistant") {
+    head.querySelector(".msg-meta").prepend(avatarNode());
+  }
+  head.querySelector(".role").textContent = msg.role === "user" ? "You" : companionName();
   head.querySelector(".msg-time").textContent = msg.at ? formatClockTime(msg.at) : "";
   head.querySelector(".usage").textContent = msg.role === "assistant" ? messageUsageLabel(msg, project) : "";
   wrap.appendChild(head);
@@ -2469,6 +2639,144 @@ function cancelEditMemory() {
   $("mem-add-btn").textContent = "Add";
 }
 
+// ---------- Search ----------
+// Searches across conversations (💬), core memories (🧠), and knowledge-graph
+// entities (🕸️) — grouped by source. The diary is deliberately NOT searched:
+// it's his private voice, visited on purpose, never surfaced here.
+let searchMemoriesCache = null;
+let searchEntitiesCache = null;
+
+async function openSearchDialog() {
+  closeSidebar();
+  $("search-input").value = "";
+  $("search-results").innerHTML =
+    `<p class="muted small search-hint">Type to search your shared history.</p>`;
+  $("search-dialog").showModal();
+  $("search-input").focus();
+  // Load his memories + entities once per session so search can include them.
+  // Any failure just means those groups are skipped — never breaks search.
+  if (searchMemoriesCache === null) {
+    try { searchMemoriesCache = await dbListCoreMemories(); }
+    catch (e) { searchMemoriesCache = []; }
+  }
+  if (searchEntitiesCache === null) {
+    try { searchEntitiesCache = await dbListMemoryEntities(); }
+    catch (e) { searchEntitiesCache = []; }
+  }
+}
+
+function searchSnippet(text, q) {
+  const i = text.toLowerCase().indexOf(q);
+  if (i === -1) return text.length > 120 ? text.slice(0, 117) + "…" : text;
+  const start = Math.max(0, i - 40);
+  const end = Math.min(text.length, i + q.length + 60);
+  return (start > 0 ? "…" : "") + text.slice(start, end) + (end < text.length ? "…" : "");
+}
+
+function runSearch(raw) {
+  const box = $("search-results");
+  const q = (raw || "").trim().toLowerCase();
+  if (!q) {
+    box.innerHTML = `<p class="muted small search-hint">Type to search your shared history.</p>`;
+    return;
+  }
+
+  const convHits = [];
+  for (const p of state.projects) {
+    for (const c of p.conversations) {
+      for (const m of c.messages) {
+        const text = (m.text || "").trim();
+        if (text && text.toLowerCase().includes(q)) {
+          convHits.push({ projectId: p.id, convId: c.id, convName: c.name || "Untitled",
+                          who: m.role === "user" ? "You" : companionName(), text });
+        }
+      }
+    }
+  }
+
+  const memHits = (searchMemoriesCache || []).filter(
+    (m) => (m.content || "").toLowerCase().includes(q));
+
+  const entHits = (searchEntitiesCache || []).filter((e) => {
+    if ((e.name || "").toLowerCase().includes(q)) return true;
+    const obs = Array.isArray(e.observations) ? e.observations.join(" ") : String(e.observations || "");
+    return obs.toLowerCase().includes(q);
+  });
+
+  box.innerHTML = "";
+  if (!convHits.length && !memHits.length && !entHits.length) {
+    box.innerHTML = `<p class="muted small search-hint">No matches for “${escapeHtml(raw.trim())}”.</p>`;
+    return;
+  }
+
+  if (convHits.length) {
+    box.appendChild(searchGroup("💬", "Conversations", convHits.length));
+    convHits.slice(0, 40).forEach((h) => {
+      const row = searchResultRow(`${h.who} · ${h.convName}`, searchSnippet(h.text, q), q);
+      row.addEventListener("click", () => {
+        $("search-dialog").close();
+        if (h.projectId !== state.activeProjectId) selectProject(h.projectId);
+        selectConversation(h.convId);
+      });
+      box.appendChild(row);
+    });
+  }
+
+  if (memHits.length) {
+    box.appendChild(searchGroup("🧠", "Core memories", memHits.length));
+    memHits.slice(0, 40).forEach((m) => {
+      const meta = `resonance ${m.resonance ?? "—"} · ${m.memory_type || "memory"}`;
+      const row = searchResultRow(meta, searchSnippet(m.content || "", q), q);
+      row.addEventListener("click", () => { $("search-dialog").close(); openMemoriesDialog("core"); });
+      box.appendChild(row);
+    });
+  }
+
+  if (entHits.length) {
+    box.appendChild(searchGroup("🕸️", "Knowledge graph", entHits.length));
+    entHits.slice(0, 40).forEach((e) => {
+      const obs = Array.isArray(e.observations) ? e.observations.join("; ") : String(e.observations || "");
+      const row = searchResultRow(`${e.name} · ${e.entity_type || "entity"}`,
+                                  searchSnippet(obs || e.name || "", q), q);
+      row.addEventListener("click", () => { $("search-dialog").close(); openMemoriesDialog("graph"); });
+      box.appendChild(row);
+    });
+  }
+}
+
+function searchGroup(icon, label, count) {
+  const h = document.createElement("div");
+  h.className = "search-group";
+  h.innerHTML = `<span class="search-group-icon"></span><span class="search-group-label"></span><span class="search-group-count muted small"></span>`;
+  h.querySelector(".search-group-icon").textContent = icon;
+  h.querySelector(".search-group-label").textContent = label;
+  h.querySelector(".search-group-count").textContent = count;
+  return h;
+}
+
+function searchResultRow(meta, snippet, q) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "search-result";
+  const m = document.createElement("div");
+  m.className = "search-result-meta muted small";
+  m.textContent = meta;
+  const s = document.createElement("div");
+  s.className = "search-result-snippet";
+  s.innerHTML = highlightMatch(snippet, q);
+  row.appendChild(m);
+  row.appendChild(s);
+  return row;
+}
+
+function highlightMatch(text, q) {
+  const safe = escapeHtml(text);
+  if (!q) return safe;
+  const i = safe.toLowerCase().indexOf(q.toLowerCase());
+  if (i === -1) return safe;
+  return safe.slice(0, i) + "<mark>" + safe.slice(i, i + q.length) + "</mark>" + safe.slice(i + q.length);
+}
+
 async function deleteMemory(id) {
   if (!confirm("Delete this memory? This can't be undone.")) return;
   try {
@@ -2513,9 +2821,9 @@ async function deleteEntity(id) {
   await renderEntityList();
 }
 
-async function openMemoriesDialog() {
+async function openMemoriesDialog(tab = "identity") {
   closeSidebar();
-  switchMemTab("identity"); // always open on the first tab
+  switchMemTab(typeof tab === "string" ? tab : "identity");
   fillSelectOnce($("mem-type"), MEMORY_TYPES);
   fillSelectOnce($("entity-type"), ENTITY_TYPES);
   await loadIdentityAndPrefs();
@@ -2746,10 +3054,18 @@ async function addCoreMemory() {
 function wireSignIn() {
   $("signin-form").addEventListener("submit", (e) => {
     e.preventDefault();
-    const email = $("signin-email").value.trim();
-    if (!email) return;
-    signIn(email);
+    if (!$("signin-code").hidden) {
+      const code = $("signin-code").value.trim();
+      if (!code) return;
+      verifyCode(signinEmail, code);
+    } else {
+      const email = $("signin-email").value.trim();
+      if (!email) return;
+      sendCode(email);
+    }
   });
+  $("signin-restart").addEventListener("click", resetSignIn);
+  $("signin-have-code").addEventListener("click", useExistingCode);
 }
 
 function wireApp() {
@@ -2762,13 +3078,13 @@ function wireApp() {
   });
   $("sidebar-backdrop").addEventListener("click", closeSidebar);
 
-  $("new-project-btn").addEventListener("click", () => {
-    // Ask for the name up front so it's clear a project = a named workspace
-    // (e.g. a story). Blank/cancel still works (you can rename up top anytime).
-    // window.prompt — plain `prompt` is shadowed here by the message textarea.
-    const name = window.prompt("Name your new project — e.g. a story title, or \"Claude's Writing\":", "");
-    if (name === null) return; // cancelled
-    createProject(name.trim() || "Untitled project");
+  // Project chip: tap to open the project dropdown; new chat is the big button.
+  $("project-chip").addEventListener("click", (e) => { e.stopPropagation(); toggleProjectMenu(); });
+  $("new-chat-btn").addEventListener("click", () => createConversation());
+  // Click anywhere else closes the project menu.
+  document.addEventListener("click", (e) => {
+    const wrap = e.target.closest(".project-chip-wrap");
+    if (!wrap) closeProjectMenu();
   });
 
   $("project-name").addEventListener("change", async (e) => {
@@ -2861,11 +3177,86 @@ function wireApp() {
     }, 500);
   });
 
-  $("settings-btn").addEventListener("click", () => $("settings-dialog").showModal());
+  $("customize-btn").addEventListener("click", () => $("settings-dialog").showModal());
 
-  $("memories-btn").addEventListener("click", openMemoriesDialog);
+  // Timestamps: a device preference (not his data), so it lives in localStorage
+  // and just toggles a body class the message CSS keys off of. Default = shown.
+  const tsBox = $("timestamps-toggle");
+  if (tsBox) {
+    let tsOn = true;
+    try { tsOn = localStorage.getItem("petrichor-timestamps") !== "off"; } catch (e) {}
+    tsBox.checked = tsOn;
+    document.body.classList.toggle("hide-timestamps", !tsOn);
+    tsBox.addEventListener("change", () => {
+      document.body.classList.toggle("hide-timestamps", !tsBox.checked);
+      try { localStorage.setItem("petrichor-timestamps", tsBox.checked ? "on" : "off"); } catch (e) {}
+    });
+  }
+
+  // Companion name: a cosmetic device preference. Updates his message labels
+  // live as you type (re-render the open conversation).
+  const nameInput = $("companion-name-input");
+  if (nameInput) {
+    let saved = "";
+    try { saved = localStorage.getItem("petrichor-companion-name") || ""; } catch (e) {}
+    nameInput.value = saved;
+    nameInput.addEventListener("input", () => {
+      try { localStorage.setItem("petrichor-companion-name", nameInput.value.trim()); } catch (e) {}
+      refreshAvatarPreview();
+      renderMessages();
+    });
+  }
+
+  // Avatar: pick → shrink to a tiny data URL → store on this device. The
+  // hidden file input is triggered by the "Choose image" button.
+  const avatarInput = $("avatar-input");
+  if (avatarInput) {
+    refreshAvatarPreview();
+    $("avatar-choose-btn").addEventListener("click", () => avatarInput.click());
+    avatarInput.addEventListener("change", async (e) => {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = "";
+      if (!file) return;
+      try {
+        const url = await avatarDataUrlFromFile(file);
+        localStorage.setItem("petrichor-companion-avatar", url);
+        refreshAvatarPreview();
+        renderMessages();
+      } catch (err) {
+        flashToast(err.message || "Couldn't set that image.", true);
+      }
+    });
+    $("avatar-remove-btn").addEventListener("click", () => {
+      try { localStorage.removeItem("petrichor-companion-avatar"); } catch (e) {}
+      refreshAvatarPreview();
+      renderMessages();
+    });
+  }
+
+  // Max response length: a device preference in localStorage, sent as maxTokens
+  // on each chat request. (Temperature/Top-P are omitted on purpose — the API
+  // locks them while thinking is on, which is always, so a slider would lie.)
+  const mtSlider = $("max-tokens-slider");
+  if (mtSlider) {
+    mtSlider.value = String(getMaxTokens());
+    $("max-tokens-value").textContent = mtSlider.value;
+    mtSlider.addEventListener("input", () => {
+      $("max-tokens-value").textContent = mtSlider.value;
+      try { localStorage.setItem("petrichor-max-tokens", mtSlider.value); } catch (e) {}
+    });
+  }
+
   document.querySelectorAll("#memories-dialog .mem-tab-btn").forEach((btn) =>
     btn.addEventListener("click", () => switchMemTab(btn.dataset.tab)));
+
+  // StillHere icon nav. Memories + Knowledge Graph open the real dialog
+  // (graph is a tab within it). Search opens its own dialog; Diary is upcoming.
+  $("nav-memories").addEventListener("click", () => openMemoriesDialog("identity"));
+  $("nav-graph").addEventListener("click", () => openMemoriesDialog("graph"));
+  $("nav-search").addEventListener("click", openSearchDialog);
+  $("nav-diary").addEventListener("click", () => flashToast("Diary is coming soon"));
+
+  $("search-input").addEventListener("input", (e) => runSearch(e.target.value));
   $("self-state-save-btn").addEventListener("click", saveSelfState);
   $("user-prefs-save-btn").addEventListener("click", saveUserPreferences);
   $("mem-add-btn").addEventListener("click", addCoreMemory);
@@ -2896,16 +3287,6 @@ function wireApp() {
     if (e.target.files[0]) await importConversationJson(e.target.files[0]);
     e.target.value = "";
   });
-
-  // Tools dropdown (consolidates the per-project toggles).
-  const toolsBtn = $("tools-btn");
-  const toolsMenu = $("tools-menu");
-  toolsBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    toolsMenu.hidden = !toolsMenu.hidden;
-  });
-  document.addEventListener("click", () => { toolsMenu.hidden = true; });
-  toolsMenu.addEventListener("click", (e) => e.stopPropagation());
 
   // Chat / Manuscript tabs.
   $("tab-chat").addEventListener("click", () => showView("chat"));

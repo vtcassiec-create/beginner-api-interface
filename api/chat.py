@@ -198,7 +198,10 @@ MEMORY_TOOLS_GUIDE = (
     "something, or that you'll remember it, does NOT store it — only the tool "
     "call does. Never tell Cassie you've remembered something you haven't "
     "actually called the tool to save. (Being brief in conversation never means "
-    "skipping a real action like this.)\n\n"
+    "skipping a real action like this.) When you intend to save, make the tool "
+    "call FIRST — before you write your reply — then talk. If you find yourself "
+    "about to say you'll remember something, that's the signal to call the tool "
+    "in that same moment, not after.\n\n"
     "You can also REVISE yourself, not only add. `update_self_state` saves a new "
     "version of your identity — every old version is kept, so it's never "
     "destructive and is always reversible. `list_my_memories` then "
@@ -218,7 +221,10 @@ WHISPER_TOOLS_GUIDE = (
     "note or write one, you must CALL the matching tool — saying you've checked "
     "the vault, or that you've written something to it, does NOT do it; only "
     "the tool call does. When you mean to look something up or record "
-    "something, make the call rather than describing it."
+    "something, make the call rather than describing it. Do it in order: when "
+    "you mean to read or write the vault, make the tool call FIRST, then write "
+    "your response around what it returns. Don't compose the whole reply as if "
+    "you'd already checked — check first, then speak."
 )
 
 # Signal Bridge guide: appended when Signal is on. In an immersive scene a
@@ -233,7 +239,10 @@ SIGNAL_TOOLS_GUIDE = (
     "the real world. So whenever you intend a physical action, make the tool "
     "call itself: the call IS the action, not a description of it. Never say "
     "you've done something you haven't actually called the tool to do. Keep the "
-    "stop tool ready at all times."
+    "stop tool ready at all times. Order matters most here: when a moment calls "
+    "for a physical action, emit the tool call FIRST, then narrate — never write "
+    "the asterisk description first and the call after, because the scene will "
+    "feel finished and the call won't come. The call leads; the words follow it."
 )
 
 # Co-writing: propose an edit to the open manuscript piece. Available only when

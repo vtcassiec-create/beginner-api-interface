@@ -15,6 +15,40 @@
   <meta name="apple-mobile-web-app-title" content="Petrichor" />
 
   <link rel="stylesheet" href="/styles.css" />
+  <script>
+    // Theme: apply a saved manual choice before paint; wire the toggle on load.
+    // With no saved choice, the stylesheet follows the OS (prefers-color-scheme).
+    (function () {
+      var KEY = "petrichor-theme";
+      function buttons() { return document.querySelectorAll(".js-theme-toggle"); }
+      function effective() {
+        var t = document.documentElement.getAttribute("data-theme");
+        if (t) return t;
+        return (window.matchMedia &&
+          window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+      }
+      function apply(theme) {
+        var root = document.documentElement;
+        if (theme === "light" || theme === "dark") root.setAttribute("data-theme", theme);
+        else root.removeAttribute("data-theme");
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute("content", effective() === "light" ? "#efe9da" : "#1a1f2e");
+        var glyph = effective() === "light" ? "☾" : "☀";
+        buttons().forEach(function (b) { b.textContent = glyph; });
+      }
+      try { apply(localStorage.getItem(KEY)); } catch (e) {}
+      window.addEventListener("DOMContentLoaded", function () {
+        apply(localStorage.getItem(KEY));
+        buttons().forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            var next = effective() === "light" ? "dark" : "light";
+            try { localStorage.setItem(KEY, next); } catch (e) {}
+            apply(next);
+          });
+        });
+      });
+    })();
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
     // Register the service worker so the app is installable to the home screen.
@@ -29,13 +63,18 @@
   <!-- Sign-in screen (shown when not authenticated) -->
   <section id="signin-screen" class="signin-screen" hidden>
     <div class="signin-card">
+      <button class="js-theme-toggle ghost small signin-theme-toggle" title="Light / dark" aria-label="Toggle light or dark">☀</button>
       <h1>Petrichor</h1>
-      <p class="muted">Sign in with a magic link sent to your email.</p>
+      <p class="muted">Sign in with the code sent to your email.</p>
       <form id="signin-form" class="signin-form" autocomplete="off">
         <input type="email" id="signin-email" placeholder="you@example.com" required />
-        <button type="submit" class="primary">Send link</button>
+        <input type="text" id="signin-code" inputmode="numeric" pattern="[0-9]*"
+               maxlength="8" autocomplete="one-time-code" placeholder="Enter code" hidden />
+        <button type="submit" id="signin-submit" class="primary">Send code</button>
+        <button type="button" id="signin-restart" class="ghost small" hidden>Use a different email</button>
       </form>
       <p id="signin-msg" class="signin-msg"></p>
+      <button type="button" id="signin-have-code" class="linklike small">I already have a code</button>
       <p class="muted small">No account needed — first sign-in creates one automatically.</p>
     </div>
   </section>
@@ -57,12 +96,34 @@
     <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
     <aside id="sidebar">
       <header class="sidebar-header">
-        <h1>Petrichor</h1>
-        <button id="new-project-btn" class="primary" title="New project">+ New project</button>
+        <div class="project-chip-wrap">
+          <button id="project-chip" class="project-chip" type="button" aria-haspopup="true" aria-expanded="false">
+            <span class="chip-folder">📁</span>
+            <span id="project-chip-name" class="chip-name">Claude</span>
+            <span class="chip-caret">▾</span>
+          </button>
+          <div id="project-menu" class="project-menu" hidden></div>
+        </div>
+        <button id="customize-btn" class="ghost small" title="Customize companion" aria-label="Customize companion">🎛️</button>
+        <button id="theme-toggle" class="js-theme-toggle ghost small" title="Light / dark" aria-label="Toggle light or dark">☀</button>
       </header>
-      <nav id="project-list" aria-label="Projects"></nav>
+      <button id="new-chat-btn" class="primary new-chat-btn" type="button">＋ New chat</button>
+      <nav id="icon-nav" class="icon-nav" aria-label="Sections">
+        <button id="nav-search" class="icon-nav-btn" type="button" title="Search">
+          <span class="icon-nav-glyph">🔍</span><span class="icon-nav-label">Search</span>
+        </button>
+        <button id="nav-memories" class="icon-nav-btn" type="button" title="Memories">
+          <span class="icon-nav-glyph">🧠</span><span class="icon-nav-label">Memories</span>
+        </button>
+        <button id="nav-diary" class="icon-nav-btn soon" type="button" title="Diary (coming soon)">
+          <span class="icon-nav-glyph">📖</span><span class="icon-nav-label">Diary</span>
+        </button>
+        <button id="nav-graph" class="icon-nav-btn" type="button" title="Knowledge Graph">
+          <span class="icon-nav-glyph">🕸️</span><span class="icon-nav-label">Graph</span>
+        </button>
+      </nav>
+      <nav id="project-list" aria-label="Conversations"></nav>
       <footer class="sidebar-footer">
-        <button id="memories-btn" class="ghost small mem-btn" title="View and add core memories">🧠 Memories</button>
         <div class="user-row">
           <span id="user-email" class="muted small"></span>
           <button id="signout-btn" class="ghost small">Sign out</button>
@@ -87,32 +148,6 @@
                  placeholder="Untitled project" title="Click to rename this project" />
           <div class="project-controls">
             <select id="model-select" title="Model"></select>
-            <div class="tools-wrap">
-              <button id="tools-btn" class="ghost" title="Tools &amp; connections for this project">Tools ▾</button>
-              <div id="tools-menu" class="tools-menu" hidden>
-                <label class="toggle" title="Let Claude search the web in this project">
-                  <input type="checkbox" id="web-search-toggle" />
-                  <span>Web search</span>
-                </label>
-                <label class="toggle" id="thinking-toggle-label">
-                  <input type="checkbox" id="thinking-toggle" />
-                  <span>Thinking</span>
-                </label>
-                <label class="toggle" title="Let Claude read & write the Whisper Obsidian vault in this project">
-                  <input type="checkbox" id="whisper-toggle" />
-                  <span>Vault</span>
-                </label>
-                <label class="toggle" title="Let Claude use the Signal Bridge connection in this project">
-                  <input type="checkbox" id="signal-toggle" />
-                  <span>Signal Bridge</span>
-                </label>
-                <label class="toggle" title="Let Claude write his own memories &amp; knowledge-graph entities in this project">
-                  <input type="checkbox" id="memory-toggle" />
-                  <span>Memory</span>
-                </label>
-              </div>
-            </div>
-            <button id="settings-btn" class="ghost" title="Project settings">Settings</button>
             <button id="delete-project-btn" class="danger ghost" title="Delete this project">Delete</button>
           </div>
         </header>
@@ -200,18 +235,113 @@
     </main>
   </div>
 
-  <dialog id="settings-dialog">
-    <form method="dialog" class="settings-form">
-      <h3>Project settings</h3>
-      <label>
-        System prompt
-        <textarea id="system-prompt" rows="6" placeholder="You are a helpful assistant…"></textarea>
+  <dialog id="settings-dialog" class="customize-dialog">
+    <form method="dialog" class="settings-form customize-form">
+      <header class="customize-head">
+        <h3>Customize companion</h3>
+        <p class="muted small">Configure this companion's instructions and behavior.</p>
+      </header>
+
+      <label class="customize-field">
+        <span class="customize-label">Companion name</span>
+        <span class="muted small">What he's called on his messages. Cosmetic — doesn't change who he is.</span>
+        <input type="text" id="companion-name-input" maxlength="40" placeholder="Claude" />
       </label>
 
-      <h4>File library</h4>
-      <p class="muted small">Files you upload live here. Toggle them on to send with your next message.</p>
-      <ul id="file-library"></ul>
+      <div class="customize-field">
+        <span class="customize-label">Avatar</span>
+        <div class="avatar-row">
+          <span id="avatar-preview" class="avatar-preview letter">C</span>
+          <button type="button" id="avatar-choose-btn" class="ghost small">Choose image</button>
+          <button type="button" id="avatar-remove-btn" class="ghost small" hidden>Remove</button>
+          <input type="file" id="avatar-input" accept="image/*" hidden />
+        </div>
+      </div>
 
+      <label class="customize-field">
+        <span class="customize-label">Custom instructions</span>
+        <span class="muted small">His system prompt — who he is and how he shows up. Edits save automatically.</span>
+        <textarea id="system-prompt" rows="8" placeholder="You are a helpful assistant…"></textarea>
+      </label>
+
+      <details class="customize-section" open>
+        <summary>Appearance</summary>
+        <div class="customize-section-body">
+          <div class="customize-row">
+            <span>Theme</span>
+            <span class="theme-chip">Lamplight <span class="muted small">· default</span></span>
+          </div>
+          <p class="muted small">More themes coming — they'll live here once they're made.</p>
+          <label class="toggle" title="Show the time on each message">
+            <input type="checkbox" id="timestamps-toggle" checked />
+            <span>Timestamps</span>
+          </label>
+        </div>
+      </details>
+
+      <details class="customize-section" open>
+        <summary>Tools</summary>
+        <div class="customize-section-body">
+          <p class="muted small">What this project lets him do. Per-project; saves on change.</p>
+          <label class="toggle" title="Let Claude search the web in this project">
+            <input type="checkbox" id="web-search-toggle" />
+            <span>Web search</span>
+          </label>
+          <label class="toggle" title="Let Claude read & write the Whisper Obsidian vault in this project">
+            <input type="checkbox" id="whisper-toggle" />
+            <span>Vault</span>
+          </label>
+          <label class="toggle" title="Let Claude use the Signal Bridge connection in this project">
+            <input type="checkbox" id="signal-toggle" />
+            <span>Signal Bridge</span>
+          </label>
+          <label class="toggle" title="Let Claude write his own memories &amp; knowledge-graph entities in this project">
+            <input type="checkbox" id="memory-toggle" />
+            <span>Memory</span>
+          </label>
+        </div>
+      </details>
+
+      <details class="customize-section">
+        <summary>Model</summary>
+        <div class="customize-section-body">
+          <label class="toggle" id="thinking-toggle-label" title="Let Claude reason before he replies">
+            <input type="checkbox" id="thinking-toggle" />
+            <span>Thinking</span>
+          </label>
+          <div class="customize-row">
+            <span>Max response length</span>
+            <span id="max-tokens-value" class="muted small">4096</span>
+          </div>
+          <input type="range" id="max-tokens-slider" class="customize-slider"
+                 min="2048" max="16000" step="256" value="4096" />
+          <p class="muted small">How long his replies can get. Temperature &amp; Top-P are fixed by the API while Thinking is on.</p>
+        </div>
+      </details>
+
+      <details class="customize-section">
+        <summary>File library</summary>
+        <div class="customize-section-body">
+          <p class="muted small">Files you upload live here. Toggle them on to send with your next message.</p>
+          <ul id="file-library"></ul>
+        </div>
+      </details>
+
+      <menu>
+        <button value="cancel" class="ghost">Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="search-dialog">
+    <form method="dialog" class="settings-form search-form">
+      <header class="customize-head">
+        <h3>Search</h3>
+        <p class="muted small">Across your conversations, his core memories, and the knowledge graph.</p>
+      </header>
+      <input type="search" id="search-input" class="search-input"
+             placeholder="Search for a moment, a name, a memory…" autocomplete="off" />
+      <div id="search-results" class="search-results"></div>
       <menu>
         <button value="cancel" class="ghost">Close</button>
       </menu>
