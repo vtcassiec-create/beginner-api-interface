@@ -73,6 +73,14 @@ function getMaxTokens() {
   return Math.max(2048, Math.min(16000, v));
 }
 
+// His display name on message bubbles etc. A device preference; defaults to
+// "Claude". Purely cosmetic — it never touches his identity or system prompt.
+function companionName() {
+  let n = "";
+  try { n = (localStorage.getItem("petrichor-companion-name") || "").trim(); } catch (e) {}
+  return n || "Claude";
+}
+
 // ---------- Mappers (DB row ↔ in-memory shape) ----------
 
 function rowToProject(row) {
@@ -1533,7 +1541,7 @@ function exportConversationMarkdown() {
   if (project.systemPrompt) md += `## System\n\n${project.systemPrompt}\n\n`;
   md += `---\n\n`;
   for (const m of conv.messages) {
-    md += `## ${m.role === "user" ? "You" : "Claude"}\n\n`;
+    md += `## ${m.role === "user" ? "You" : companionName()}\n\n`;
     if (m.fileIds?.length) {
       const names = m.fileIds.map(id => project.files.find(f => f.id === id)?.name).filter(Boolean);
       if (names.length) md += `*Attached: ${names.join(", ")}*\n\n`;
@@ -1824,7 +1832,7 @@ function buildMessageNode(msg, project, conv) {
   const head = document.createElement("div");
   head.className = "msg-head";
   head.innerHTML = `<span class="msg-meta"><span class="role"></span><span class="msg-time"></span></span><span class="usage"></span>`;
-  head.querySelector(".role").textContent = msg.role === "user" ? "You" : "Claude";
+  head.querySelector(".role").textContent = msg.role === "user" ? "You" : companionName();
   head.querySelector(".msg-time").textContent = msg.at ? formatClockTime(msg.at) : "";
   head.querySelector(".usage").textContent = msg.role === "assistant" ? messageUsageLabel(msg, project) : "";
   wrap.appendChild(head);
@@ -2616,7 +2624,7 @@ function runSearch(raw) {
         const text = (m.text || "").trim();
         if (text && text.toLowerCase().includes(q)) {
           convHits.push({ projectId: p.id, convId: c.id, convName: c.name || "Untitled",
-                          who: m.role === "user" ? "You" : "Claude", text });
+                          who: m.role === "user" ? "You" : companionName(), text });
         }
       }
     }
@@ -3118,6 +3126,19 @@ function wireApp() {
     tsBox.addEventListener("change", () => {
       document.body.classList.toggle("hide-timestamps", !tsBox.checked);
       try { localStorage.setItem("petrichor-timestamps", tsBox.checked ? "on" : "off"); } catch (e) {}
+    });
+  }
+
+  // Companion name: a cosmetic device preference. Updates his message labels
+  // live as you type (re-render the open conversation).
+  const nameInput = $("companion-name-input");
+  if (nameInput) {
+    let saved = "";
+    try { saved = localStorage.getItem("petrichor-companion-name") || ""; } catch (e) {}
+    nameInput.value = saved;
+    nameInput.addEventListener("input", () => {
+      try { localStorage.setItem("petrichor-companion-name", nameInput.value.trim()); } catch (e) {}
+      renderMessages();
     });
   }
 
