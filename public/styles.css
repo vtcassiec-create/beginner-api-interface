@@ -784,6 +784,9 @@ button.ghost.small {
   font-variant-numeric: tabular-nums;
 }
 
+/* Timestamps toggle (Customize → Appearance) hides the per-message time. */
+body.hide-timestamps .msg-head .msg-time { display: none; }
+
 .day-divider {
   display: flex;
   align-items: center;
@@ -1108,6 +1111,23 @@ select {
   gap: 10px;
   padding: 8px 0 4px 1.2em;
 }
+/* A plain label-left / value-right row inside the panel (e.g. Theme). */
+.customize-section-body .customize-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  font-size: 14px;
+  color: var(--text);
+}
+.theme-chip {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 13px;
+}
+
 /* Toggles inside the customize panel: label on the left, switch on the right,
    on one line. (row-reverse keeps the HTML order but flips it visually so the
    <span> label sits left and the checkbox sits at the far right.) */

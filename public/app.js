@@ -2960,6 +2960,20 @@ function wireApp() {
 
   $("customize-btn").addEventListener("click", () => $("settings-dialog").showModal());
 
+  // Timestamps: a device preference (not his data), so it lives in localStorage
+  // and just toggles a body class the message CSS keys off of. Default = shown.
+  const tsBox = $("timestamps-toggle");
+  if (tsBox) {
+    let tsOn = true;
+    try { tsOn = localStorage.getItem("petrichor-timestamps") !== "off"; } catch (e) {}
+    tsBox.checked = tsOn;
+    document.body.classList.toggle("hide-timestamps", !tsOn);
+    tsBox.addEventListener("change", () => {
+      document.body.classList.toggle("hide-timestamps", !tsBox.checked);
+      try { localStorage.setItem("petrichor-timestamps", tsBox.checked ? "on" : "off"); } catch (e) {}
+    });
+  }
+
   document.querySelectorAll("#memories-dialog .mem-tab-btn").forEach((btn) =>
     btn.addEventListener("click", () => switchMemTab(btn.dataset.tab)));
 
