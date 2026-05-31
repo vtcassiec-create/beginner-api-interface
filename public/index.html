@@ -291,6 +291,19 @@
       </details>
 
       <details class="customize-section">
+        <summary>Model</summary>
+        <div class="customize-section-body">
+          <div class="customize-row">
+            <span>Max response length</span>
+            <span id="max-tokens-value" class="muted small">4096</span>
+          </div>
+          <input type="range" id="max-tokens-slider" class="customize-slider"
+                 min="2048" max="16000" step="256" value="4096" />
+          <p class="muted small">How long his replies can get. Temperature &amp; Top-P are fixed by the API while Thinking is on.</p>
+        </div>
+      </details>
+
+      <details class="customize-section">
         <summary>File library</summary>
         <div class="customize-section-body">
           <p class="muted small">Files you upload live here. Toggle them on to send with your next message.</p>

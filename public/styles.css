@@ -1128,6 +1128,13 @@ select {
   font-size: 13px;
 }
 
+/* Slider in the customize panel — accent-colored track and knob. */
+.customize-slider {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 /* Toggles inside the customize panel: label on the left, switch on the right,
    on one line. (row-reverse keeps the HTML order but flips it visually so the
    <span> label sits left and the checkbox sits at the far right.) */

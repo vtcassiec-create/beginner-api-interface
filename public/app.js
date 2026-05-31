@@ -65,6 +65,14 @@ const uid = () =>
   (crypto?.randomUUID && crypto.randomUUID()) ||
   Math.random().toString(36).slice(2) + Date.now().toString(36);
 
+// Max response length (his max_tokens), a device preference. Clamped to the
+// slider's range; defaults to the backend default. Sent on each chat request.
+function getMaxTokens() {
+  let v = 4096;
+  try { v = parseInt(localStorage.getItem("petrichor-max-tokens"), 10) || 4096; } catch (e) {}
+  return Math.max(2048, Math.min(16000, v));
+}
+
 // ---------- Mappers (DB row ↔ in-memory shape) ----------
 
 function rowToProject(row) {
@@ -1284,6 +1292,7 @@ async function generateAssistant() {
         coWrite: !!state.coWrite,
         coWriteDocId: state.coWrite ? (state.activeDocumentId || "") : "",
         thinking: !!project.thinking,
+        maxTokens: getMaxTokens(),
         tz,
         lastMessageAt,
       },
@@ -3109,6 +3118,19 @@ function wireApp() {
     tsBox.addEventListener("change", () => {
       document.body.classList.toggle("hide-timestamps", !tsBox.checked);
       try { localStorage.setItem("petrichor-timestamps", tsBox.checked ? "on" : "off"); } catch (e) {}
+    });
+  }
+
+  // Max response length: a device preference in localStorage, sent as maxTokens
+  // on each chat request. (Temperature/Top-P are omitted on purpose — the API
+  // locks them while thinking is on, which is always, so a slider would lie.)
+  const mtSlider = $("max-tokens-slider");
+  if (mtSlider) {
+    mtSlider.value = String(getMaxTokens());
+    $("max-tokens-value").textContent = mtSlider.value;
+    mtSlider.addEventListener("input", () => {
+      $("max-tokens-value").textContent = mtSlider.value;
+      try { localStorage.setItem("petrichor-max-tokens", mtSlider.value); } catch (e) {}
     });
   }
 
