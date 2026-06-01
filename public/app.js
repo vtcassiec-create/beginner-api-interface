@@ -2010,6 +2010,8 @@ function toolEventChip(ev) {
       list_my_memories: ["🪶 Looked over his memories", false],
       revise_core_memory: ["🪶 Revised a memory", false],
       set_aside_core_memory: ["🪶 Set a memory aside", false],
+      write_diary_entry: ["📖 Wrote in his diary", false],
+      read_my_diary: ["📖 Looked back at his diary", false],
     };
     const [label, showSum] = map[ev.name] || ["🪶 Memory", true];
     if (ev.ok) {
@@ -2693,10 +2695,11 @@ let editingDiaryId = null;
 async function openDiaryDialog() {
   closeSidebar();
   diaryTab = "active";
-  switchDiaryTab("active");
   cancelEditDiary();
-  await renderDiaryList();
+  // Open the dialog FIRST, then load — so a slow/hanging DB call can never
+  // leave the button doing nothing. switchDiaryTab() kicks off the render.
   $("diary-dialog").showModal();
+  switchDiaryTab("active");
 }
 
 function switchDiaryTab(which) {
@@ -3010,13 +3013,15 @@ async function deleteEntity(id) {
 
 async function openMemoriesDialog(tab = "identity") {
   closeSidebar();
+  // Open the dialog FIRST, before any awaited DB loads — so a slow or hanging
+  // call can never leave the button silently doing nothing (needing a refresh).
   switchMemTab(typeof tab === "string" ? tab : "identity");
   fillSelectOnce($("mem-type"), MEMORY_TYPES);
   fillSelectOnce($("entity-type"), ENTITY_TYPES);
+  $("memories-dialog").showModal();
   await loadIdentityAndPrefs();
   await renderMemoryList();
   await renderEntityList();
-  $("memories-dialog").showModal();
 }
 
 // Show one memory tab (About Him / About You / Core Memories / Knowledge
