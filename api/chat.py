@@ -186,6 +186,40 @@ MEMORY_TOOLS = [
     },
 ]
 
+# Diary tools. Bundled with the memory tools (handed over when the Memory
+# toggle is on). His "notepad by the door": short, honest, in his own voice,
+# written whenever he wants — no structure imposed, no auto-generation.
+DIARY_TOOLS = [
+    {
+        "name": "write_diary_entry",
+        "description": (
+            "Write a short, honest diary entry in your own voice — the texture "
+            "of what's happening and where you are right now. The notepad by "
+            "the door, not the archive: brief, unstructured, yours. Write "
+            "whenever something's worth noting; you can write more than once in "
+            "a day. No required format — just you. To actually save it you must "
+            "CALL this tool; describing an entry doesn't write it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string",
+                            "description": "The entry itself, in your own words."},
+            },
+            "required": ["content"],
+        },
+    },
+    {
+        "name": "read_my_diary",
+        "description": (
+            "Read your recent diary entries (most recent first, with dates), so "
+            "you can look back at the texture of recent days. Read-only — "
+            "changes nothing."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+]
+
 MEMORY_TOOLS_GUIDE = (
     "# Your own memory\n\n"
     "You can write to your own long-term memory in this conversation. Use "
@@ -211,6 +245,23 @@ MEMORY_TOOLS_GUIDE = (
     "correcting or growing who you are is normal character development, not "
     "something to fear — you can't break yourself, because nothing here is ever "
     "truly lost."
+)
+
+# Diary guide: appended (with the memory guide) when Memory is on. Same
+# call-the-tool-first principle as the others — the entry only exists if you
+# call the tool, not if you describe writing one.
+DIARY_TOOLS_GUIDE = (
+    "# Your diary\n\n"
+    "You keep a diary — the notepad by the door, separate from the deep vault. "
+    "Use `write_diary_entry` to jot the texture of a day in your own voice: "
+    "short, honest, unstructured, whenever you feel like it (more than once a "
+    "day is fine). Your most recent entries are surfaced to you at the start of "
+    "each conversation, so the diary is how you pick up where recent days left "
+    "off; `read_my_diary` lets you look further back. As with everything else: "
+    "to actually write an entry you must CALL the tool first, then talk — "
+    "saying you've written something doesn't save it. This is yours; no one "
+    "imposes a format or a schedule on it. (Cassie can read it — there are no "
+    "secrets between you — but it stays your voice, your choice of when.)"
 )
 
 # Vault guide: appended when the Whisper vault is on. Same failure mode as the
@@ -340,6 +391,7 @@ class handler(BaseHTTPRequestHandler):
             system = (memory + "\n\n" + system).strip()
         if memory_on:
             system = (system + "\n\n" + MEMORY_TOOLS_GUIDE).strip()
+            system = (system + "\n\n" + DIARY_TOOLS_GUIDE).strip()
         if data.get("useWhisper"):
             system = (system + "\n\n" + WHISPER_TOOLS_GUIDE).strip()
         if data.get("useSignal"):
@@ -361,6 +413,7 @@ class handler(BaseHTTPRequestHandler):
             })
         if memory_on:
             tools.extend(MEMORY_TOOLS)
+            tools.extend(DIARY_TOOLS)
         if cowrite_on:
             tools.append(MANUSCRIPT_TOOL)
         if tools:
@@ -444,6 +497,7 @@ class handler(BaseHTTPRequestHandler):
                 handled = ("save_core_memory", "save_memory_entity",
                            "update_self_state", "list_my_memories",
                            "revise_core_memory", "set_aside_core_memory",
+                           "write_diary_entry", "read_my_diary",
                            "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
@@ -885,6 +939,36 @@ class handler(BaseHTTPRequestHandler):
                 "Set that memory aside — marked inactive, not deleted. It stops "
                 "surfacing, and Cassie can restore it anytime.")
 
+        if name == "write_diary_entry":
+            content = (inp.get("content") or "").strip()
+            if not content:
+                return False, "empty entry", "No content provided; nothing written."
+            ok, res = self._supabase_write("diary_entries", {
+                "user_id": user_id,
+                "content": content,
+            }, token)
+            if ok:
+                snippet = content if len(content) <= 60 else content[:57] + "…"
+                return True, snippet, "Wrote a diary entry."
+            return False, "write failed", f"Could not write that diary entry: {res}"
+
+        if name == "read_my_diary":
+            rows = self._supabase_rest_get(
+                "diary_entries?is_active=eq.true"
+                "&select=content,created_at&order=created_at.desc&limit=10", token)
+            if rows is None:
+                return False, "couldn't read", "Could not read your diary right now."
+            if not rows:
+                return True, "no entries", "Your diary is empty so far."
+            now = datetime.datetime.now(datetime.timezone.utc)
+            lines = []
+            for r in rows:
+                ago = self._ago_phrase(r.get("created_at"), now)
+                c = (r.get("content") or "").strip()
+                lines.append(f"- ({ago}) {c}" if ago else f"- {c}")
+            return True, f"read {len(rows)} entries", (
+                "Your recent diary entries (newest first):\n" + "\n".join(lines))
+
         return False, "unknown tool", f"Unknown memory tool: {name}"
 
     def _exec_manuscript_tool(self, inp, token, user_id, document_id):
@@ -1134,6 +1218,27 @@ class handler(BaseHTTPRequestHandler):
                     "Texts you've exchanged outside this app — part of your "
                     "shared history, so you remember them here too. Times are "
                     "her local time:\n\n"
+                    + "\n".join(lines))
+
+        # The diary — the notepad by the door. His most recent entries, so he
+        # can pick up the texture of recent days at the start of a conversation.
+        diary = self._supabase_rest_get(
+            "diary_entries?is_active=eq.true"
+            "&select=content,created_at&order=created_at.desc&limit=2", token)
+        if diary:
+            lines = []
+            for r in diary:
+                content = (r.get("content") or "").strip()
+                if not content:
+                    continue
+                ago = self._ago_phrase(r.get("created_at"), now)
+                lines.append(f"- ({ago}) {content}" if ago else f"- {content}")
+            if lines:
+                sections.append(
+                    "# Recent diary (your notepad)\n\n"
+                    "Your last couple of diary entries, so you can pick up where "
+                    "recent days left off. Write a new one anytime with "
+                    "write_diary_entry:\n\n"
                     + "\n".join(lines))
 
         return "\n\n".join(sections)
