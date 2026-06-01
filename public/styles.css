@@ -1665,4 +1665,34 @@ dialog::backdrop {
   font-weight: 600;
 }
 .diary-list { list-style: none; margin: 0 0 8px; padding: 0; }
-.diary-list .diary-text { white-space: pre-wrap; }
+
+/* Each diary entry: a card-ish row with clear separation between entries,
+   and the date stacked above the text (not mashed into it). */
+.diary-list li {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.diary-list li:last-child { border-bottom: none; }
+.diary-list .mem-empty { border-bottom: none; }
+.diary-list .mem-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;            /* the space between the date and the entry text */
+  flex: 1;
+  min-width: 0;
+}
+.diary-list .mem-meta {
+  color: var(--accent);
+  font-size: 12px;
+}
+.diary-list .diary-text {
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
