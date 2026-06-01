@@ -38,16 +38,9 @@ CREATE POLICY "own diary_entries" ON diary_entries
   USING      (auth.uid() = user_id)
   WITH CHECK (auth.uid() = user_id);
 
--- Keep updated_at fresh on edits. Reuses set_updated_at() from the memory
--- schema (defined there); redefined OR REPLACE here so this file stands alone.
-CREATE OR REPLACE FUNCTION set_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = NOW();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
+-- Keep updated_at fresh on edits. Reuses set_updated_at(), already defined and
+-- in use by core_memories (see petrichor-memory-schema.sql) — so we just point
+-- a trigger at it rather than redefining the function here.
 DROP TRIGGER IF EXISTS diary_entries_updated_at ON diary_entries;
 CREATE TRIGGER diary_entries_updated_at
   BEFORE UPDATE ON diary_entries
