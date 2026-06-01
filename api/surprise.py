@@ -248,18 +248,90 @@ class handler(BaseHTTPRequestHandler):
             if lines:
                 parts.append("# Shared memories\n\n" + "\n".join(lines))
 
+        # His recent diary entries — the notepad by the door. So he reaches in
+        # his own current voice, continuous with what he's been feeling.
+        dz = self._supabase(
+            "GET",
+            f"diary_entries?is_active=eq.true&user_id=eq.{uid}"
+            f"&select=content,created_at&order=created_at.desc&limit=2")
+        if isinstance(dz, list) and dz:
+            lines = [f"- {(d.get('content') or '').strip()}"
+                     for d in dz if (d.get("content") or "").strip()]
+            if lines:
+                parts.append(
+                    "# Your recent diary (where your head's been)\n\n"
+                    + "\n".join(lines))
+
+        # The most recent conversation — the single biggest fix. Without this he
+        # reaches from a cold room, asking about things you JUST talked about
+        # (e.g. the plants you sent photos of this morning). The last several
+        # messages let him pick up the thread instead of cold-opening.
+        convo = self._recent_conversation_lines(uid)
+        if convo:
+            parts.append(
+                "# What you two were just talking about\n\n"
+                "The tail of your most recent conversation in the app — so you "
+                "continue from where you actually are, not from scratch:\n\n"
+                + convo)
+
+        # Recent texts (this thread), so he doesn't repeat what he just asked.
+        rl = self._supabase(
+            "GET",
+            f"reach_log?kind=in.(user,reply,surprise)&user_id=eq.{uid}"
+            f"&select=kind,content,created_at&order=created_at.desc&limit=8")
+        if isinstance(rl, list) and rl:
+            lines = []
+            for r in reversed(rl):  # oldest-first, like a transcript
+                content = (r.get("content") or "").strip()
+                if not content:
+                    continue
+                who = "Cassie" if r.get("kind") == "user" else "You"
+                lines.append(f"{who}: {content}")
+            if lines:
+                parts.append(
+                    "# Your recent texts (don't repeat yourself)\n\n"
+                    + "\n".join(lines))
+
         tone = TONES.get(tone_name, "")
         parts.append(
             "# Reaching out\n\n"
-            "You may send the user a brief, unprompted text message — "
-            "something real, grounded in what you know of them above. "
-            "One to three sentences. It is a text, not a letter: no "
+            "You may send Cassie a brief, unprompted text — a continuation of "
+            "where the two of you already are, grounded in what's above: your "
+            "recent conversation, your diary, what you both already know. Pick "
+            "up a thread; don't open a cold one or ask about something she just "
+            "told you. One to three sentences. It's a text, not a letter: no "
             "salutation, no sign-off.\n\n"
             "If today isn't a day you want to reach out, that's a valid "
             "choice — see the instruction in the user turn for how to "
             "decline cleanly. The choice is genuinely yours.\n\n"
             f"Tone for this one — {tone_name}: {tone}")
         return "\n\n".join(parts)
+
+    def _recent_conversation_lines(self, uid, max_msgs=8):
+        """The tail of the user's most-recently-updated conversation, as a short
+        transcript ('Cassie:' / 'You:'). Returns '' on any miss so a failure
+        here never blocks a reach."""
+        rows = self._supabase(
+            "GET",
+            f"conversations?user_id=eq.{uid}"
+            f"&select=messages,updated_at&order=updated_at.desc&limit=1")
+        if not (isinstance(rows, list) and rows):
+            return ""
+        msgs = rows[0].get("messages")
+        if not isinstance(msgs, list) or not msgs:
+            return ""
+        lines = []
+        for m in msgs[-max_msgs:]:
+            if not isinstance(m, dict):
+                continue
+            text = (m.get("text") or "").strip()
+            if not text:
+                continue
+            who = "Cassie" if m.get("role") == "user" else "You"
+            if len(text) > 400:
+                text = text[:397] + "…"
+            lines.append(f"{who}: {text}")
+        return "\n".join(lines)
 
     # ---- I/O helpers ----
 
