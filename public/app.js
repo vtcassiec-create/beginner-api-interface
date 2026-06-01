@@ -711,6 +711,35 @@ async function dbDeleteCoreMemory(id) {
   if (error) throw error;
 }
 
+// ---------- Diary ----------
+// His notepad. He writes entries via a tool; here Cassie can read, add, edit,
+// archive (soft-hide), or delete them. RLS scopes every row to her user.
+async function dbListDiaryEntries(activeOnly = true) {
+  let q = db.from("diary_entries").select("*");
+  if (activeOnly) q = q.eq("is_active", true);
+  const { data, error } = await q.order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+async function dbCreateDiaryEntry(content) {
+  const { error } = await db.from("diary_entries").insert({
+    user_id: state.user.id,
+    content,
+  });
+  if (error) throw error;
+}
+
+async function dbUpdateDiaryEntry(id, fields) {
+  const { error } = await db.from("diary_entries").update(fields).eq("id", id);
+  if (error) throw error;
+}
+
+async function dbDeleteDiaryEntry(id) {
+  const { error } = await db.from("diary_entries").delete().eq("id", id);
+  if (error) throw error;
+}
+
 async function dbListPinnedMemories() {
   const { data, error } = await db
     .from("core_memories")
@@ -2654,6 +2683,149 @@ function cancelEditMemory() {
   $("mem-add-btn").textContent = "Add";
 }
 
+// ---------- Diary ----------
+// His notepad. He writes entries via a tool; this page lets Cassie read them
+// and tidy (add / edit / archive / restore / delete). Archived = soft-hidden
+// (is_active false), never destroyed unless explicitly deleted.
+let diaryTab = "active";        // "active" | "archived"
+let editingDiaryId = null;
+
+async function openDiaryDialog() {
+  closeSidebar();
+  diaryTab = "active";
+  switchDiaryTab("active");
+  cancelEditDiary();
+  await renderDiaryList();
+  $("diary-dialog").showModal();
+}
+
+function switchDiaryTab(which) {
+  diaryTab = which;
+  document.querySelectorAll("#diary-dialog .diary-tab-btn").forEach((b) =>
+    b.classList.toggle("active", b.dataset.dtab === which));
+  renderDiaryList();
+}
+
+function diaryEntryDate(iso) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      weekday: "short", month: "short", day: "numeric",
+      hour: "numeric", minute: "2-digit",
+    });
+  } catch (e) { return ""; }
+}
+
+async function renderDiaryList() {
+  const ul = $("diary-list");
+  ul.innerHTML = "";
+  let entries;
+  try {
+    entries = await dbListDiaryEntries(diaryTab === "active");
+    if (diaryTab === "archived") entries = entries.filter((e) => !e.is_active);
+  } catch (err) {
+    const li = document.createElement("li");
+    li.className = "mem-empty muted small";
+    li.textContent = `Couldn't load the diary: ${err.message}`;
+    ul.appendChild(li);
+    return;
+  }
+  if (!entries.length) {
+    const li = document.createElement("li");
+    li.className = "mem-empty muted small";
+    li.textContent = diaryTab === "active"
+      ? "No entries yet. He'll write here on his own — or you can add one below."
+      : "Nothing archived.";
+    ul.appendChild(li);
+    return;
+  }
+  for (const e of entries) {
+    const li = document.createElement("li");
+    const body = document.createElement("div");
+    body.className = "mem-body";
+    const meta = document.createElement("span");
+    meta.className = "mem-meta";
+    meta.textContent = diaryEntryDate(e.created_at);
+    const text = document.createElement("span");
+    text.className = "mem-text diary-text";
+    text.textContent = e.content;
+    body.appendChild(meta);
+    body.appendChild(text);
+    li.appendChild(body);
+    li.appendChild(mkDiaryActions(e));
+    ul.appendChild(li);
+  }
+}
+
+function mkDiaryActions(entry) {
+  const wrap = document.createElement("div");
+  wrap.className = "mem-actions";
+
+  const edit = document.createElement("button");
+  edit.className = "row-action";
+  edit.textContent = "✏️";
+  edit.title = "Edit";
+  edit.addEventListener("click", () => startEditDiary(entry));
+  wrap.appendChild(edit);
+
+  const archive = document.createElement("button");
+  archive.className = "row-action";
+  archive.textContent = entry.is_active ? "🗄" : "↩︎";
+  archive.title = entry.is_active ? "Archive" : "Restore";
+  archive.addEventListener("click", async () => {
+    try {
+      await dbUpdateDiaryEntry(entry.id, { is_active: !entry.is_active });
+      await renderDiaryList();
+    } catch (err) { flashToast(`Couldn't update: ${err.message}`, true); }
+  });
+  wrap.appendChild(archive);
+
+  const del = document.createElement("button");
+  del.className = "row-action";
+  del.textContent = "🗑";
+  del.title = "Delete permanently";
+  del.addEventListener("click", async () => {
+    if (!confirm("Delete this diary entry for good? This can't be undone.")) return;
+    try {
+      await dbDeleteDiaryEntry(entry.id);
+      await renderDiaryList();
+    } catch (err) { flashToast(`Couldn't delete: ${err.message}`, true); }
+  });
+  wrap.appendChild(del);
+
+  return wrap;
+}
+
+function startEditDiary(entry) {
+  editingDiaryId = entry.id;
+  $("diary-content").value = entry.content;
+  $("diary-add-btn").textContent = "Save changes";
+  $("diary-content").focus();
+}
+
+function cancelEditDiary() {
+  editingDiaryId = null;
+  $("diary-content").value = "";
+  $("diary-add-btn").textContent = "Add";
+}
+
+async function addOrSaveDiaryEntry() {
+  const content = $("diary-content").value.trim();
+  if (!content) { flashToast("Entry is empty.", true); return; }
+  try {
+    if (editingDiaryId) {
+      await dbUpdateDiaryEntry(editingDiaryId, { content });
+    } else {
+      await dbCreateDiaryEntry(content);
+    }
+  } catch (err) {
+    flashToast(`Couldn't save: ${err.message}`, true);
+    return;
+  }
+  cancelEditDiary();
+  await renderDiaryList();
+}
+
 // ---------- Search ----------
 // Searches across conversations (💬), core memories (🧠), and knowledge-graph
 // entities (🕸️) — grouped by source. The diary is deliberately NOT searched:
@@ -3307,13 +3479,16 @@ function wireApp() {
   $("nav-memories").addEventListener("click", () => openMemoriesDialog("identity"));
   $("nav-graph").addEventListener("click", () => openMemoriesDialog("graph"));
   $("nav-search").addEventListener("click", openSearchDialog);
-  $("nav-diary").addEventListener("click", () => flashToast("Diary is coming soon"));
+  $("nav-diary").addEventListener("click", openDiaryDialog);
 
   $("search-input").addEventListener("input", (e) => runSearch(e.target.value));
   $("self-state-save-btn").addEventListener("click", saveSelfState);
   $("user-prefs-save-btn").addEventListener("click", saveUserPreferences);
   $("mem-add-btn").addEventListener("click", addCoreMemory);
   $("entity-add-btn").addEventListener("click", addMemoryEntity);
+  $("diary-add-btn").addEventListener("click", addOrSaveDiaryEntry);
+  document.querySelectorAll("#diary-dialog .diary-tab-btn").forEach((btn) =>
+    btn.addEventListener("click", () => switchDiaryTab(btn.dataset.dtab)));
 
   $("delete-project-btn").addEventListener("click", () => {
     if (state.activeProjectId) deleteProject(state.activeProjectId);

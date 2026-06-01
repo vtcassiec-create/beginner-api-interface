@@ -115,7 +115,7 @@
         <button id="nav-memories" class="icon-nav-btn" type="button" title="Memories">
           <span class="icon-nav-glyph">🧠</span><span class="icon-nav-label">Memories</span>
         </button>
-        <button id="nav-diary" class="icon-nav-btn soon" type="button" title="Diary (coming soon)">
+        <button id="nav-diary" class="icon-nav-btn" type="button" title="Diary">
           <span class="icon-nav-glyph">📖</span><span class="icon-nav-label">Diary</span>
         </button>
         <button id="nav-graph" class="icon-nav-btn" type="button" title="Knowledge Graph">
@@ -450,6 +450,35 @@
         <div class="mem-add-row">
           <button type="button" id="entity-add-btn" class="primary">Add entity</button>
         </div>
+      </div>
+
+      <menu>
+        <button value="cancel" class="ghost">Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="diary-dialog">
+    <form method="dialog" class="settings-form">
+      <header class="customize-head">
+        <h3>📖 Diary</h3>
+        <p class="muted small">His notepad, in his own voice. He writes it himself; you can read, add, or tidy here.</p>
+      </header>
+
+      <div class="diary-tabs" role="tablist">
+        <button type="button" class="diary-tab-btn active" data-dtab="active">Active</button>
+        <button type="button" class="diary-tab-btn" data-dtab="archived">Archived</button>
+      </div>
+
+      <ul id="diary-list" class="diary-list"></ul>
+
+      <h4>Add an entry</h4>
+      <label>
+        Entry
+        <textarea id="diary-content" rows="3" placeholder="A line about the day…"></textarea>
+      </label>
+      <div class="mem-add-row">
+        <button type="button" id="diary-add-btn" class="primary">Add</button>
       </div>
 
       <menu>
