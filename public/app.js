@@ -3241,6 +3241,108 @@ async function addCoreMemory() {
   await renderPinnedStrip(); // an edit may have changed a pinned memory's text
 }
 
+// ---------- Web Push (notifications when he reaches out) ----------
+
+function pushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+// Authed fetch to /api/push, using the lock-free local token (same pattern as
+// the chat path, so the photo-picker auth-lock can't wedge it).
+async function pushApi(method, body) {
+  const session = localSession();
+  if (!session || !session.access_token) throw new Error("Signed out.");
+  const resp = await fetch("/api/push", {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${session.access_token}`,
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!resp.ok) throw new Error(`push ${method} failed (${resp.status})`);
+  return resp.json();
+}
+
+// base64url VAPID key -> Uint8Array, as PushManager.subscribe needs.
+function urlBase64ToUint8Array(base64) {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+
+// Ask permission, subscribe this device, save it server-side. Returns true on
+// success. Each step surfaces a clear toast so it's obvious what happened.
+async function enableNotifications() {
+  if (!pushSupported()) {
+    flashToast("This device can't do notifications.", true);
+    return false;
+  }
+  let perm = Notification.permission;
+  if (perm === "default") perm = await Notification.requestPermission();
+  if (perm !== "granted") {
+    flashToast("Notifications are blocked — allow them in your browser settings.", true);
+    return false;
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const { publicKey } = await pushApi("GET");
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+    }
+    await pushApi("POST", { action: "subscribe", subscription: sub.toJSON() });
+    flashToast("Notifications on — he can reach you here now. 🤍");
+    refreshPushControls();
+    return true;
+  } catch (e) {
+    flashToast(`Couldn't enable notifications: ${e.message}`, true);
+    return false;
+  }
+}
+
+async function sendTestNotification() {
+  try {
+    const res = await pushApi("POST", { action: "test" });
+    if (res.ok) flashToast("Test sent — watch for it. 🔔");
+    else flashToast(res.reason === "no devices subscribed"
+      ? "No device subscribed yet — turn notifications on first."
+      : "Test didn't go through.", true);
+  } catch (e) {
+    flashToast(`Test failed: ${e.message}`, true);
+  }
+}
+
+// Reflect current permission state in the customize panel controls.
+async function refreshPushControls() {
+  const enableBtn = $("notif-enable-btn");
+  const testBtn = $("notif-test-btn");
+  const status = $("notif-status");
+  if (!enableBtn) return;
+  if (!pushSupported()) {
+    status.textContent = "Not supported on this device.";
+    enableBtn.hidden = true;
+    testBtn.hidden = true;
+    return;
+  }
+  let subscribed = false;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    subscribed = !!(await reg.pushManager.getSubscription());
+  } catch (e) {}
+  const granted = Notification.permission === "granted" && subscribed;
+  status.textContent = granted ? "On — he can reach you here." : "Off.";
+  enableBtn.textContent = granted ? "Re-sync this device" : "Turn on notifications";
+  enableBtn.hidden = false;
+  testBtn.hidden = !granted;
+}
+
 // ---------- Wire it up ----------
 
 function wireSignIn() {
@@ -3369,7 +3471,12 @@ function wireApp() {
     }, 500);
   });
 
-  $("customize-btn").addEventListener("click", () => $("settings-dialog").showModal());
+  $("customize-btn").addEventListener("click", () => {
+    $("settings-dialog").showModal();
+    refreshPushControls();
+  });
+  $("notif-enable-btn").addEventListener("click", enableNotifications);
+  $("notif-test-btn").addEventListener("click", sendTestNotification);
 
   // Timestamps: a device preference (not his data), so it lives in localStorage
   // and just toggles a body class the message CSS keys off of. Default = shown.

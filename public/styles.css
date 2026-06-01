@@ -440,6 +440,18 @@ button.ghost.small {
   font-size: 12px;
 }
 
+button.primary.small {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.notif-btn-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 /* Main pane */
 #main {
   display: flex;
