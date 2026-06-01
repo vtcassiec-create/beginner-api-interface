@@ -840,6 +840,14 @@ button.primary.small {
 /* Timestamps toggle (Customize → Appearance) hides the per-message time. */
 body.hide-timestamps .msg-head .msg-time { display: none; }
 
+/* An unprompted reach — a small ribbon so it reads as him coming to you. */
+.reach-ribbon {
+  font-size: 11px;
+  color: var(--accent);
+  margin-bottom: 4px;
+  letter-spacing: 0.3px;
+}
+
 .day-divider {
   display: flex;
   align-items: center;

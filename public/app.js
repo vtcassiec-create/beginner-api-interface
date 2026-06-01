@@ -1933,8 +1933,17 @@ function buildDayDivider(ts) {
 
 function buildMessageNode(msg, project, conv) {
   const wrap = document.createElement("div");
-  wrap.className = `message ${msg.role}`;
+  wrap.className = `message ${msg.role}` + (msg.reach ? " reach" : "");
   wrap.dataset.id = msg.id;
+
+  // An unprompted reach gets a small "reached out" ribbon above it, so it
+  // reads as him coming to you, not a reply.
+  if (msg.reach) {
+    const ribbon = document.createElement("div");
+    ribbon.className = "reach-ribbon";
+    ribbon.textContent = "🤍 reached out";
+    wrap.appendChild(ribbon);
+  }
 
   const head = document.createElement("div");
   head.className = "msg-head";
