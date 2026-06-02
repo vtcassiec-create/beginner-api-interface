@@ -827,14 +827,22 @@ button.primary.small {
   cursor: pointer;
 }
 
+/* The "← Pieces" back button only matters on mobile (single-pane). */
+.ms-back-btn { display: none; }
+
 @media (max-width: 720px) {
-  .ms-list-col { width: 130px; }
-  .ms-editor-col { min-width: 0; }
-  /* Let the footer controls wrap onto their own line instead of overflowing,
-     and don't shove co-write to the far edge — flow them left to right. */
+  /* Single pane: show the piece list OR the open editor, never both squished
+     side by side. Selecting a piece flips to the editor; "← Pieces" flips back. */
+  .ms-list-col { width: 100%; flex-shrink: 1; border-right: none; }
+  .ms-editor-col { min-width: 0; display: none; }
+  .ms-layout.ms-show-editor .ms-list-col { display: none; }
+  .ms-layout.ms-show-editor .ms-editor-col { display: flex; flex-direction: column; }
+  .ms-back-btn { display: inline-flex; align-self: flex-start; margin-bottom: 10px; }
+
+  /* Footer controls wrap instead of running off the edge. */
   .ms-editor-foot { gap: 10px; }
   .ms-editor-foot .ms-cowrite { margin-left: 0; }
-  .ms-history-dialog { width: 94vw; padding: 14px; }
+  .ms-history-dialog, .ms-story-dialog { width: 94vw; padding: 14px; }
 }
 
 .project-controls {

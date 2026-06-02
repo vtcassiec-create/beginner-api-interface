@@ -200,7 +200,7 @@
         </div><!-- /#chat-pane -->
 
         <div id="manuscript-pane" hidden>
-          <div class="ms-layout">
+          <div class="ms-layout" id="ms-layout">
             <aside class="ms-list-col">
               <div class="ms-list-head">
                 <span id="ms-total" class="muted small"></span>
@@ -214,6 +214,7 @@
                 Pick a piece from the left, or start a new one.
               </div>
               <div id="ms-editor" hidden>
+                <button id="ms-back-btn" class="ms-back-btn ghost small" type="button">← Pieces</button>
                 <div id="ms-suggestions" class="ms-suggestions" hidden></div>
                 <input id="ms-title" class="ms-title" type="text" maxlength="200"
                        placeholder="Untitled" />
