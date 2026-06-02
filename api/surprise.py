@@ -227,7 +227,10 @@ class handler(BaseHTTPRequestHandler):
 
         if mode == "time":
             target = int(s.get("target_hour", 14) or 14)
-            if now.hour != target:
+            # Reach on the first wake at/past the target hour each day. Using
+            # ">=" (not "==") keeps it robust when the heartbeat is sparse or a
+            # little late — a daily backup wake or a delayed cron still lands.
+            if now.hour < target:
                 return False
             # Once per day: skip if the last reach was already today (local).
             if last is not None:
