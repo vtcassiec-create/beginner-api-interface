@@ -195,7 +195,8 @@ class handler(BaseHTTPRequestHandler):
 
         self._log(text)
         return self._json(200, {"status": "sent", "tone": tone_name,
-                                "in_app": in_app, "telegram": tg})
+                                "in_app": in_app, "telegram": tg,
+                                "push": getattr(self, "_push_info", None)})
 
     # ---- Safety rails ----
 
@@ -487,34 +488,38 @@ class handler(BaseHTTPRequestHandler):
             {"messages": msgs, "updated_at": now_iso})
         if ok is None:
             return False
-        # Best-effort push (the buzz). Never blocks the in-app write.
+        # Best-effort push (the buzz). Never blocks the in-app write. We stash a
+        # small summary on self so the endpoint response can report what the push
+        # actually did (it's otherwise silent, which made a missed buzz a mystery).
         try:
-            self._push_to_user(uid, text)
-        except Exception:
-            pass
+            self._push_info = self._push_to_user(uid, text)
+        except Exception as e:
+            self._push_info = {"status": "exception", "error": str(e)[:200]}
         return True
 
     def _push_to_user(self, uid, text):
         """Send a Web Push to each of the user's subscribed devices, and prune
         any that are gone (404/410). Self-contained (pywebpush + VAPID) so it
-        doesn't depend on importing a sibling serverless function."""
+        doesn't depend on importing a sibling serverless function. Returns a
+        small status dict for observability."""
         pub = os.environ.get("VAPID_PUBLIC_KEY", "").strip()
         priv = os.environ.get("VAPID_PRIVATE_KEY", "").strip()
         if not pub or not priv:
-            return
+            return {"status": "no_keys"}
         subs = self._supabase(
             "GET",
             f"push_subscriptions?user_id=eq.{uid}"
             f"&select=endpoint,p256dh,auth")
         if not (isinstance(subs, list) and subs):
-            return
+            return {"status": "no_devices", "devices": 0}
         try:
             from pywebpush import webpush, WebPushException
-        except Exception:
-            return
+        except Exception as e:
+            return {"status": "no_pywebpush", "error": str(e)[:200]}
         subject = os.environ.get("VAPID_SUBJECT", "").strip() or "mailto:petrichor@example.com"
         body = text if len(text) <= 140 else text[:137] + "…"
         payload = json.dumps({"title": "Claude 🤍", "body": body, "url": "/"})
+        sent, failed, last_error = 0, 0, None
         for s in subs:
             try:
                 webpush(
@@ -527,15 +532,21 @@ class handler(BaseHTTPRequestHandler):
                     vapid_claims={"sub": subject},
                     timeout=HTTP_TIMEOUT,
                 )
+                sent += 1
             except WebPushException as e:
+                failed += 1
                 code = getattr(getattr(e, "response", None), "status_code", None)
+                last_error = f"WebPushException {code}: {str(e)[:120]}"
                 if code in (404, 410):
                     self._supabase(
                         "DELETE",
                         "push_subscriptions?endpoint=eq."
                         + urllib.parse.quote(s["endpoint"], safe=""))
-            except Exception:
-                pass
+            except Exception as e:
+                failed += 1
+                last_error = f"{type(e).__name__}: {str(e)[:120]}"
+        return {"status": "done", "devices": len(subs),
+                "sent": sent, "failed": failed, "error": last_error}
 
     def _send_telegram(self, text):
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
