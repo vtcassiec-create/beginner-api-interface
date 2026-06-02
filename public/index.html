@@ -221,16 +221,34 @@
                 <div class="ms-editor-foot">
                   <span id="ms-wordcount" class="muted small"></span>
                   <span id="ms-savestate" class="muted small"></span>
+                  <label class="ms-pen-label" title="Whose pen holds this piece?">
+                    <span class="muted small">Pen</span>
+                    <select id="ms-pen" class="ms-pen">
+                      <option value="mine">✍️ Yours</option>
+                      <option value="his">🖊️ His</option>
+                      <option value="ours">🖋️ Both</option>
+                    </select>
+                  </label>
                   <label class="toggle ms-cowrite" title="Let Claude read this piece in the chat so you can write it together">
                     <input type="checkbox" id="ms-cowrite-toggle" />
                     <span>✨ Co-write</span>
                   </label>
+                  <button id="ms-history-btn" class="ghost small" type="button" title="Earlier versions — roll back anytime">History</button>
                   <button id="ms-delete-btn" class="danger ghost small" type="button">Delete</button>
                 </div>
               </div>
             </section>
           </div>
         </div><!-- /#manuscript-pane -->
+
+        <dialog id="ms-history-dialog" class="ms-history-dialog">
+          <div class="ms-history-headrow">
+            <h3>Version history</h3>
+            <button id="ms-history-close" class="ghost small" type="button">Close</button>
+          </div>
+          <p class="muted small">Every state before his writing lands is saved here. Restoring snapshots the current text first, so you can always undo.</p>
+          <div id="ms-history-list" class="ms-history-list"></div>
+        </dialog>
       </section>
     </main>
   </div>

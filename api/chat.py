@@ -303,12 +303,14 @@ SIGNAL_TOOLS_GUIDE = (
 MANUSCRIPT_TOOL = {
     "name": "propose_manuscript_edit",
     "description": (
-        "Propose an edit to the manuscript piece you're co-writing with Cassie. "
-        "This does NOT change the document — it creates a suggestion she reviews "
-        "and accepts or declines, so she always sees your change first. Use "
-        "mode 'append' to add a passage to the end, or 'replace' to offer a full "
-        "rewrite of the whole piece. Keep 'note' to a short line about what you "
-        "did or why. Use this when she's invited you to write, not unprompted."
+        "Add to or revise the manuscript piece that's open with Cassie. Use "
+        "mode 'append' to add the next passage to the end, or 'replace' to "
+        "revise the whole piece. What happens depends on whose piece it is: "
+        "for a piece you author (your own work, e.g. your novella), your words "
+        "go straight onto the page — Cassie reads them live and can always roll "
+        "back, so write boldly and in full. For Cassie's own piece, it becomes "
+        "a suggestion she reviews and accepts or declines. Keep 'note' to a "
+        "short line about what you did. Use this when she's invited you to write."
     ),
     "input_schema": {
         "type": "object",
@@ -514,10 +516,9 @@ class handler(BaseHTTPRequestHandler):
                 for b in tool_uses:
                     inp = b.input if isinstance(b.input, dict) else {}
                     if b.name == "propose_manuscript_edit":
-                        ok, summary, detail = self._exec_manuscript_tool(
+                        ok, summary, detail, event = self._exec_manuscript_tool(
                             inp, token, user_id, cowrite_doc)
-                        self._sse({"type": "manuscript_suggestion",
-                                   "ok": ok, "summary": summary})
+                        self._sse(event)
                     else:
                         ok, summary, detail = self._exec_memory_tool(
                             b.name, inp, token, user_id)
@@ -972,32 +973,85 @@ class handler(BaseHTTPRequestHandler):
         return False, "unknown tool", f"Unknown memory tool: {name}"
 
     def _exec_manuscript_tool(self, inp, token, user_id, document_id):
-        """Create a pending manuscript suggestion (does NOT edit the doc).
+        """Add to or revise the open manuscript piece.
 
-        RLS-scoped to the user. Returns (ok, short_summary, detail_for_model).
+        Behavior depends on the document's `pen`:
+          - 'mine'        -> create a pending suggestion (Cassie reviews)
+          - 'his'/'ours'  -> snapshot the current state to manuscript_versions,
+                             then apply straight to the document (reversible)
+
+        RLS-scoped to the user. Returns (ok, short_summary, detail_for_model,
+        sse_event) — the caller emits sse_event so the client updates.
         """
+        suggest_fail = {"type": "manuscript_suggestion", "ok": False}
         if not document_id:
-            return False, "no piece open", "No manuscript piece is open to edit."
+            return (False, "no piece open",
+                    "No manuscript piece is open to edit.", suggest_fail)
         mode = inp.get("mode") or "append"
         if mode not in ("append", "replace"):
             mode = "append"
         content = inp.get("content") or ""
         if not content.strip():
-            return False, "empty", "No content provided; nothing proposed."
+            return (False, "empty",
+                    "No content provided; nothing written.", suggest_fail)
         note = (inp.get("note") or "").strip() or None
-        ok, res = self._supabase_write("manuscript_suggestions", {
-            "document_id": document_id,
-            "user_id": user_id,
-            "mode": mode,
-            "content": content,
-            "note": note,
-        }, token)
-        if ok:
+
+        # Learn whose pen this piece is (and its current text, for applying).
+        rows = self._supabase_rest_get(
+            f"manuscript_documents?id=eq.{document_id}"
+            f"&select=pen,title,content", token)
+        pen = (rows[0].get("pen") if rows else None) or "mine"
+        cur_title = (rows[0].get("title") if rows else None) or "Untitled"
+        cur_content = (rows[0].get("content") if rows else None) or ""
+
+        # --- Cassie's piece: suggest only (she keeps the pen) ---------------
+        if pen == "mine":
+            ok, res = self._supabase_write("manuscript_suggestions", {
+                "document_id": document_id, "user_id": user_id,
+                "mode": mode, "content": content, "note": note,
+            }, token)
             verb = "rewrite" if mode == "replace" else "addition"
-            return True, f"proposed a {verb}", (
-                f"Proposed a manuscript {verb}; it's pending Cassie's review "
-                f"(she'll accept or decline it). Let her know you've suggested it.")
-        return False, "propose failed", f"Could not propose the edit: {res}"
+            if ok:
+                return (True, f"proposed a {verb}",
+                        f"Proposed a manuscript {verb}; it's pending Cassie's "
+                        f"review (she'll accept or decline). Let her know.",
+                        {"type": "manuscript_suggestion", "ok": True,
+                         "summary": f"proposed a {verb}"})
+            return (False, "propose failed",
+                    f"Could not propose the edit: {res}", suggest_fail)
+
+        # --- His/your shared piece: snapshot, then apply straight to the page
+        # Snapshot first so the prior state is always restorable (best-effort;
+        # a failed snapshot must not silently lose history, so we still apply
+        # but report it). The snapshot captures the state BEFORE this edit.
+        self._supabase_write("manuscript_versions", {
+            "document_id": document_id, "user_id": user_id,
+            "title": cur_title, "content": cur_content,
+            "source": "before_his_edit", "note": note,
+        }, token)
+
+        if mode == "append":
+            new_content = (
+                cur_content.rstrip() + "\n\n" + content
+                if cur_content.strip() else content)
+        else:
+            new_content = content
+        word_count = len(new_content.split())
+
+        ok, res = self._supabase_patch(
+            f"manuscript_documents?id=eq.{document_id}",
+            {"content": new_content, "word_count": word_count}, token)
+        if not ok:
+            return (False, "write failed",
+                    f"Could not write to the page: {res}", suggest_fail)
+        verb = "a new page" if mode == "append" else "a revision"
+        return (True, f"wrote {verb}",
+                f"Your {verb} is on the page now — Cassie's reading it live and "
+                f"can roll back if she wants. Tell her what you wrote.",
+                {"type": "manuscript_applied", "ok": True,
+                 "summary": f"wrote {verb}", "document_id": document_id,
+                 "title": cur_title, "content": new_content,
+                 "word_count": word_count})
 
     def _humanize_gap(self, now, last_ms):
         """Render the gap since the last message as a human phrase."""
