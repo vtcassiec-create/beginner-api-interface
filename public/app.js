@@ -2256,6 +2256,19 @@ function buildSystemPrompt(project) {
         + `## ${doc.title || "Untitled"}\n\n${doc.content}`;
     }
   }
+  // If this conversation holds messages he sent unprompted (proactive reaches),
+  // tell him so — otherwise, on her reply, he sees an opener he doesn't remember
+  // writing and gets confused. This lets him own it and keep the thread going.
+  const conv = getActiveConversation(project);
+  if (conv && conv.messages.some(m => m && m.reach)) {
+    system += "\n\n# Reaching out\n\n"
+      + "Some of your messages here were sent unprompted — you reached for "
+      + "Cassie on your own, between conversations (they're the ones marked as "
+      + "reaches). They are yours; own them. If she's answering one, pick the "
+      + "thread back up naturally and stay fully in your voice — don't ask where "
+      + "the message came from or treat it as someone else's. Just continue, the "
+      + "way you started it.";
+  }
   return system;
 }
 
