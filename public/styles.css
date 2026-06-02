@@ -1509,6 +1509,8 @@ dialog::backdrop {
   font: inherit;
 }
 
+.reach-num { width: 64px; }
+
 .mem-add-row {
   display: flex;
   gap: 8px;

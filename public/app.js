@@ -711,6 +711,25 @@ async function dbDeleteCoreMemory(id) {
   if (error) throw error;
 }
 
+// ---------- Reach settings ----------
+// When/whether he reaches out. One row per user; the hourly cron reads it.
+async function dbGetReachSettings() {
+  const { data, error } = await db
+    .from("reach_settings")
+    .select("enabled,mode,interval_hours,target_hour")
+    .limit(1);
+  if (error) throw error;
+  return (data && data[0]) || null;
+}
+
+async function dbSaveReachSettings(fields) {
+  // Upsert the single row for this user (unique on user_id).
+  const { error } = await db
+    .from("reach_settings")
+    .upsert({ user_id: state.user.id, ...fields }, { onConflict: "user_id" });
+  if (error) throw error;
+}
+
 // ---------- Diary ----------
 // His notepad. He writes entries via a tool; here Cassie can read, add, edit,
 // archive (soft-hide), or delete them. RLS scopes every row to her user.
@@ -3250,6 +3269,43 @@ async function addCoreMemory() {
   await renderPinnedStrip(); // an edit may have changed a pinned memory's text
 }
 
+// ---------- Reach settings UI ----------
+
+// Show/hide the interval vs set-time row based on the selected mode.
+function syncReachModeRows() {
+  const mode = $("reach-mode").value;
+  $("reach-interval-row").hidden = mode !== "interval";
+  $("reach-time-row").hidden = mode !== "time";
+}
+
+// Load saved reach settings into the controls (called when the panel opens).
+async function loadReachSettings() {
+  if (!$("reach-enabled")) return;
+  let s = null;
+  try { s = await dbGetReachSettings(); } catch (e) {}
+  // Sensible defaults match the DB defaults (enabled, interval 8h, 2pm).
+  $("reach-enabled").checked = s ? !!s.enabled : true;
+  $("reach-mode").value = (s && s.mode) || "interval";
+  $("reach-interval-hours").value = (s && s.interval_hours) || 8;
+  $("reach-target-hour").value = (s && (s.target_hour ?? 14)) ?? 14;
+  syncReachModeRows();
+}
+
+// Persist the current control values. Debounced-ish: called on each change.
+async function saveReachSettings() {
+  const fields = {
+    enabled: $("reach-enabled").checked,
+    mode: $("reach-mode").value,
+    interval_hours: Math.max(1, Math.min(72, parseInt($("reach-interval-hours").value, 10) || 8)),
+    target_hour: Math.max(0, Math.min(23, parseInt($("reach-target-hour").value, 10) || 14)),
+  };
+  try {
+    await dbSaveReachSettings(fields);
+  } catch (e) {
+    flashToast(`Couldn't save reach settings: ${e.message}`, true);
+  }
+}
+
 // ---------- Web Push (notifications when he reaches out) ----------
 
 function pushSupported() {
@@ -3483,9 +3539,16 @@ function wireApp() {
   $("customize-btn").addEventListener("click", () => {
     $("settings-dialog").showModal();
     refreshPushControls();
+    loadReachSettings();
   });
   $("notif-enable-btn").addEventListener("click", enableNotifications);
   $("notif-test-btn").addEventListener("click", sendTestNotification);
+
+  // Reach settings — save on any change; toggle which row shows by mode.
+  $("reach-mode").addEventListener("change", () => { syncReachModeRows(); saveReachSettings(); });
+  $("reach-enabled").addEventListener("change", saveReachSettings);
+  $("reach-interval-hours").addEventListener("change", saveReachSettings);
+  $("reach-target-hour").addEventListener("change", saveReachSettings);
 
   // Timestamps: a device preference (not his data), so it lives in localStorage
   // and just toggles a body class the message CSS keys off of. Default = shown.

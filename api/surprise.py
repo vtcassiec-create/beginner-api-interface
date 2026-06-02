@@ -102,8 +102,14 @@ class handler(BaseHTTPRequestHandler):
         # Evaluate the rails. A real run obeys them; a dry-run ignores
         # them (it sends/logs nothing) but still reports what a real run
         # *would* do, so you can preview and tune at any hour.
+        #
+        # The cron now wakes hourly; the user's reach_settings decide whether
+        # this particular wake is actually a moment to reach (master switch +
+        # cadence). Env quiet-hours and the daily cap still apply on top.
         would_skip = None
-        if self._in_quiet_hours(now):
+        if not self._cadence_says_go(now, tz):
+            would_skip = "not time yet (per your reach settings)"
+        elif self._in_quiet_hours(now):
             would_skip = "quiet hours"
         else:
             sent_today = self._count_today(now, tz)
@@ -195,6 +201,67 @@ class handler(BaseHTTPRequestHandler):
             return ZoneInfo(os.environ.get("REACH_TZ", "UTC") or "UTC")
         except Exception:
             return ZoneInfo("UTC")
+
+    def _cadence_says_go(self, now, tz):
+        """Read the user's reach_settings and decide whether this hourly wake
+        is a moment to reach. Defaults to 'go' if there's no settings row yet
+        (so behaviour is unchanged until she sets preferences). Modes:
+          - interval: at least interval_hours since the last reach
+          - time:     we're in target_hour and haven't reached yet today
+        """
+        uid = os.environ.get("REACH_USER_ID", "").strip()
+        if not uid:
+            return True
+        rows = self._supabase(
+            "GET",
+            f"reach_settings?user_id=eq.{uid}"
+            f"&select=enabled,mode,interval_hours,target_hour&limit=1")
+        if not (isinstance(rows, list) and rows):
+            return True  # no settings yet → behave as before
+        s = rows[0]
+        if not s.get("enabled", True):
+            return False
+
+        last = self._last_reach_at()  # aware UTC datetime, or None
+        mode = s.get("mode") or "interval"
+
+        if mode == "time":
+            target = int(s.get("target_hour", 14) or 14)
+            if now.hour != target:
+                return False
+            # Once per day: skip if the last reach was already today (local).
+            if last is not None:
+                last_local = last.astimezone(tz)
+                if last_local.date() == now.date():
+                    return False
+            return True
+
+        # interval mode
+        hours = int(s.get("interval_hours", 8) or 8)
+        if last is None:
+            return True
+        elapsed = (now - last.astimezone(now.tzinfo)).total_seconds() / 3600.0
+        return elapsed >= hours
+
+    def _last_reach_at(self):
+        """Timestamp of the most recent actually-sent reach (kind='surprise'),
+        as an aware UTC datetime, or None."""
+        uid = os.environ.get("REACH_USER_ID", "").strip()
+        if not uid:
+            return None
+        rows = self._supabase(
+            "GET",
+            f"reach_log?user_id=eq.{uid}&kind=eq.surprise"
+            f"&select=created_at&order=created_at.desc&limit=1")
+        if not (isinstance(rows, list) and rows):
+            return None
+        ts = rows[0].get("created_at")
+        if not ts:
+            return None
+        try:
+            return datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except Exception:
+            return None
 
     def _in_quiet_hours(self, now):
         start = int(os.environ.get("REACH_QUIET_START", "22") or "22")
