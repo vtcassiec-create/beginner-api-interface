@@ -24,6 +24,9 @@ Optional:
   REACH_QUIET_START (default 22)    — quiet-hours start hour, local
   REACH_QUIET_END   (default 8)     — quiet-hours end hour, local
   REACH_DAILY_CAP   (default 5)     — max messages per local day
+  REACH_PROJECT_ID  (default unset) — pin reaches to one project's chat;
+                                      unset = most-recently-updated conversation
+                                      across all projects
   REACH_MODEL       (default claude-sonnet-4-6)
 """
 
@@ -385,13 +388,21 @@ class handler(BaseHTTPRequestHandler):
             f"Tone for this one — {tone_name}: {tone}")
         return "\n\n".join(parts)
 
+    def _project_clause(self):
+        """Optional `&project_id=eq.<id>` so reaches land in (and read from) one
+        chosen project — her real 'home' chat — instead of whichever project was
+        touched most recently across the whole account. Empty string when
+        REACH_PROJECT_ID is unset (falls back to most-recent-overall)."""
+        pid = os.environ.get("REACH_PROJECT_ID", "").strip()
+        return f"&project_id=eq.{pid}" if pid else ""
+
     def _recent_conversation_lines(self, uid, max_msgs=8):
         """The tail of the user's most-recently-updated conversation, as a short
         transcript ('Cassie:' / 'You:'). Returns '' on any miss so a failure
         here never blocks a reach."""
         rows = self._supabase(
             "GET",
-            f"conversations?user_id=eq.{uid}"
+            f"conversations?user_id=eq.{uid}{self._project_clause()}"
             f"&select=messages,updated_at&order=updated_at.desc&limit=1")
         if not (isinstance(rows, list) and rows):
             return ""
@@ -451,7 +462,7 @@ class handler(BaseHTTPRequestHandler):
             return False
         rows = self._supabase(
             "GET",
-            f"conversations?user_id=eq.{uid}"
+            f"conversations?user_id=eq.{uid}{self._project_clause()}"
             f"&select=id,messages&order=updated_at.desc&limit=1")
         if not (isinstance(rows, list) and rows):
             return False
