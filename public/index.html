@@ -296,6 +296,47 @@
       </details>
 
       <details class="customize-section" open>
+        <summary>Notifications</summary>
+        <div class="customize-section-body">
+          <p class="muted small">Let him reach your phone — a buzz when he sends an unprompted message.</p>
+          <div class="customize-row">
+            <span>Status</span>
+            <span id="notif-status" class="muted small">…</span>
+          </div>
+          <div class="notif-btn-row">
+            <button type="button" id="notif-enable-btn" class="primary small">Turn on notifications</button>
+            <button type="button" id="notif-test-btn" class="ghost small" hidden>Send test</button>
+          </div>
+        </div>
+      </details>
+
+      <details class="customize-section" open>
+        <summary>Reaching out</summary>
+        <div class="customize-section-body">
+          <p class="muted small">When he sends you unprompted messages. He always chooses whether to in the moment — this just sets the rhythm.</p>
+          <label class="toggle" title="Let him reach out on his own">
+            <input type="checkbox" id="reach-enabled" />
+            <span>Let him reach out</span>
+          </label>
+          <div class="customize-row">
+            <span>Rhythm</span>
+            <select id="reach-mode">
+              <option value="interval">About every…</option>
+              <option value="time">At a set time</option>
+            </select>
+          </div>
+          <div id="reach-interval-row" class="customize-row">
+            <span>Hours between</span>
+            <span><input type="number" id="reach-interval-hours" min="1" max="72" step="1" value="8" class="reach-num" /> h</span>
+          </div>
+          <div id="reach-time-row" class="customize-row" hidden>
+            <span>Around (hour, 0–23)</span>
+            <input type="number" id="reach-target-hour" min="0" max="23" step="1" value="14" class="reach-num" />
+          </div>
+        </div>
+      </details>
+
+      <details class="customize-section" open>
         <summary>Tools</summary>
         <div class="customize-section-body">
           <p class="muted small">What this project lets him do. Per-project; saves on change.</p>

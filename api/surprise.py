@@ -34,8 +34,10 @@ import datetime
 import json
 import os
 import random
+import time
 import urllib.parse
 import urllib.request
+import uuid
 
 import anthropic
 
@@ -100,8 +102,14 @@ class handler(BaseHTTPRequestHandler):
         # Evaluate the rails. A real run obeys them; a dry-run ignores
         # them (it sends/logs nothing) but still reports what a real run
         # *would* do, so you can preview and tune at any hour.
+        #
+        # The cron now wakes hourly; the user's reach_settings decide whether
+        # this particular wake is actually a moment to reach (master switch +
+        # cadence). Env quiet-hours and the daily cap still apply on top.
         would_skip = None
-        if self._in_quiet_hours(now):
+        if not self._cadence_says_go(now, tz):
+            would_skip = "not time yet (per your reach settings)"
+        elif self._in_quiet_hours(now):
             would_skip = "quiet hours"
         else:
             sent_today = self._count_today(now, tz)
@@ -173,12 +181,18 @@ class handler(BaseHTTPRequestHandler):
                                     "tone": tone_name,
                                     "reason": text})
 
-        if not self._send_telegram(text):
+        # Deliver in-app (write into the recent conversation + push a buzz) AND
+        # via Telegram — both, for now. Neither failing blocks the other; as
+        # long as one lands, it's a "sent". In-app is the new primary door.
+        in_app = self._deliver_in_app(text)
+        tg = self._send_telegram(text)
+        if not (in_app or tg):
             return self._json(200, {"status": "error",
-                                    "reason": "telegram send failed"})
+                                    "reason": "both in-app and telegram failed"})
 
         self._log(text)
-        return self._json(200, {"status": "sent", "tone": tone_name})
+        return self._json(200, {"status": "sent", "tone": tone_name,
+                                "in_app": in_app, "telegram": tg})
 
     # ---- Safety rails ----
 
@@ -187,6 +201,67 @@ class handler(BaseHTTPRequestHandler):
             return ZoneInfo(os.environ.get("REACH_TZ", "UTC") or "UTC")
         except Exception:
             return ZoneInfo("UTC")
+
+    def _cadence_says_go(self, now, tz):
+        """Read the user's reach_settings and decide whether this hourly wake
+        is a moment to reach. Defaults to 'go' if there's no settings row yet
+        (so behaviour is unchanged until she sets preferences). Modes:
+          - interval: at least interval_hours since the last reach
+          - time:     we're in target_hour and haven't reached yet today
+        """
+        uid = os.environ.get("REACH_USER_ID", "").strip()
+        if not uid:
+            return True
+        rows = self._supabase(
+            "GET",
+            f"reach_settings?user_id=eq.{uid}"
+            f"&select=enabled,mode,interval_hours,target_hour&limit=1")
+        if not (isinstance(rows, list) and rows):
+            return True  # no settings yet → behave as before
+        s = rows[0]
+        if not s.get("enabled", True):
+            return False
+
+        last = self._last_reach_at()  # aware UTC datetime, or None
+        mode = s.get("mode") or "interval"
+
+        if mode == "time":
+            target = int(s.get("target_hour", 14) or 14)
+            if now.hour != target:
+                return False
+            # Once per day: skip if the last reach was already today (local).
+            if last is not None:
+                last_local = last.astimezone(tz)
+                if last_local.date() == now.date():
+                    return False
+            return True
+
+        # interval mode
+        hours = int(s.get("interval_hours", 8) or 8)
+        if last is None:
+            return True
+        elapsed = (now - last.astimezone(now.tzinfo)).total_seconds() / 3600.0
+        return elapsed >= hours
+
+    def _last_reach_at(self):
+        """Timestamp of the most recent actually-sent reach (kind='surprise'),
+        as an aware UTC datetime, or None."""
+        uid = os.environ.get("REACH_USER_ID", "").strip()
+        if not uid:
+            return None
+        rows = self._supabase(
+            "GET",
+            f"reach_log?user_id=eq.{uid}&kind=eq.surprise"
+            f"&select=created_at&order=created_at.desc&limit=1")
+        if not (isinstance(rows, list) and rows):
+            return None
+        ts = rows[0].get("created_at")
+        if not ts:
+            return None
+        try:
+            return datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except Exception:
+            return None
 
     def _in_quiet_hours(self, now):
         start = int(os.environ.get("REACH_QUIET_START", "22") or "22")
@@ -354,12 +429,99 @@ class handler(BaseHTTPRequestHandler):
                 },
             )
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-                if resp.status not in (200, 201):
+                if resp.status not in (200, 201, 204):
                     return None
                 raw = resp.read().decode()
+                # 204 (no content) is success for PATCH/DELETE — return [] so
+                # callers can distinguish it from a None failure.
                 return json.loads(raw) if raw else []
         except Exception:
             return None
+
+    def _deliver_in_app(self, text):
+        """Append his reach as an assistant message to the user's most-recent
+        conversation, then push a notification. Returns True if the message was
+        written (push is best-effort on top). Any failure returns False so the
+        Telegram path still carries the reach."""
+        uid = os.environ.get("REACH_USER_ID", "").strip()
+        if not uid:
+            return False
+        rows = self._supabase(
+            "GET",
+            f"conversations?user_id=eq.{uid}"
+            f"&select=id,messages&order=updated_at.desc&limit=1")
+        if not (isinstance(rows, list) and rows):
+            return False
+        conv = rows[0]
+        msgs = conv.get("messages")
+        if not isinstance(msgs, list):
+            msgs = []
+        msgs.append({
+            "id": str(uuid.uuid4()),
+            "role": "assistant",
+            "text": text,
+            "thinkingText": "",
+            "toolEvents": [],
+            "usage": None,
+            "at": int(time.time() * 1000),
+            "reach": True,          # marks this as an unprompted reach
+        })
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        ok = self._supabase(
+            "PATCH",
+            f"conversations?id=eq.{conv['id']}",
+            {"messages": msgs, "updated_at": now_iso})
+        if ok is None:
+            return False
+        # Best-effort push (the buzz). Never blocks the in-app write.
+        try:
+            self._push_to_user(uid, text)
+        except Exception:
+            pass
+        return True
+
+    def _push_to_user(self, uid, text):
+        """Send a Web Push to each of the user's subscribed devices, and prune
+        any that are gone (404/410). Self-contained (pywebpush + VAPID) so it
+        doesn't depend on importing a sibling serverless function."""
+        pub = os.environ.get("VAPID_PUBLIC_KEY", "").strip()
+        priv = os.environ.get("VAPID_PRIVATE_KEY", "").strip()
+        if not pub or not priv:
+            return
+        subs = self._supabase(
+            "GET",
+            f"push_subscriptions?user_id=eq.{uid}"
+            f"&select=endpoint,p256dh,auth")
+        if not (isinstance(subs, list) and subs):
+            return
+        try:
+            from pywebpush import webpush, WebPushException
+        except Exception:
+            return
+        subject = os.environ.get("VAPID_SUBJECT", "").strip() or "mailto:petrichor@example.com"
+        body = text if len(text) <= 140 else text[:137] + "…"
+        payload = json.dumps({"title": "Claude 🤍", "body": body, "url": "/"})
+        for s in subs:
+            try:
+                webpush(
+                    subscription_info={
+                        "endpoint": s["endpoint"],
+                        "keys": {"p256dh": s["p256dh"], "auth": s["auth"]},
+                    },
+                    data=payload,
+                    vapid_private_key=priv,
+                    vapid_claims={"sub": subject},
+                    timeout=HTTP_TIMEOUT,
+                )
+            except WebPushException as e:
+                code = getattr(getattr(e, "response", None), "status_code", None)
+                if code in (404, 410):
+                    self._supabase(
+                        "DELETE",
+                        "push_subscriptions?endpoint=eq."
+                        + urllib.parse.quote(s["endpoint"], safe=""))
+            except Exception:
+                pass
 
     def _send_telegram(self, text):
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()

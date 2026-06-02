@@ -711,6 +711,25 @@ async function dbDeleteCoreMemory(id) {
   if (error) throw error;
 }
 
+// ---------- Reach settings ----------
+// When/whether he reaches out. One row per user; the hourly cron reads it.
+async function dbGetReachSettings() {
+  const { data, error } = await db
+    .from("reach_settings")
+    .select("enabled,mode,interval_hours,target_hour")
+    .limit(1);
+  if (error) throw error;
+  return (data && data[0]) || null;
+}
+
+async function dbSaveReachSettings(fields) {
+  // Upsert the single row for this user (unique on user_id).
+  const { error } = await db
+    .from("reach_settings")
+    .upsert({ user_id: state.user.id, ...fields }, { onConflict: "user_id" });
+  if (error) throw error;
+}
+
 // ---------- Diary ----------
 // His notepad. He writes entries via a tool; here Cassie can read, add, edit,
 // archive (soft-hide), or delete them. RLS scopes every row to her user.
@@ -1933,8 +1952,17 @@ function buildDayDivider(ts) {
 
 function buildMessageNode(msg, project, conv) {
   const wrap = document.createElement("div");
-  wrap.className = `message ${msg.role}`;
+  wrap.className = `message ${msg.role}` + (msg.reach ? " reach" : "");
   wrap.dataset.id = msg.id;
+
+  // An unprompted reach gets a small "reached out" ribbon above it, so it
+  // reads as him coming to you, not a reply.
+  if (msg.reach) {
+    const ribbon = document.createElement("div");
+    ribbon.className = "reach-ribbon";
+    ribbon.textContent = "🤍 reached out";
+    wrap.appendChild(ribbon);
+  }
 
   const head = document.createElement("div");
   head.className = "msg-head";
@@ -3241,6 +3269,145 @@ async function addCoreMemory() {
   await renderPinnedStrip(); // an edit may have changed a pinned memory's text
 }
 
+// ---------- Reach settings UI ----------
+
+// Show/hide the interval vs set-time row based on the selected mode.
+function syncReachModeRows() {
+  const mode = $("reach-mode").value;
+  $("reach-interval-row").hidden = mode !== "interval";
+  $("reach-time-row").hidden = mode !== "time";
+}
+
+// Load saved reach settings into the controls (called when the panel opens).
+async function loadReachSettings() {
+  if (!$("reach-enabled")) return;
+  let s = null;
+  try { s = await dbGetReachSettings(); } catch (e) {}
+  // Sensible defaults match the DB defaults (enabled, interval 8h, 2pm).
+  $("reach-enabled").checked = s ? !!s.enabled : true;
+  $("reach-mode").value = (s && s.mode) || "interval";
+  $("reach-interval-hours").value = (s && s.interval_hours) || 8;
+  $("reach-target-hour").value = (s && (s.target_hour ?? 14)) ?? 14;
+  syncReachModeRows();
+}
+
+// Persist the current control values. Debounced-ish: called on each change.
+async function saveReachSettings() {
+  const fields = {
+    enabled: $("reach-enabled").checked,
+    mode: $("reach-mode").value,
+    interval_hours: Math.max(1, Math.min(72, parseInt($("reach-interval-hours").value, 10) || 8)),
+    target_hour: Math.max(0, Math.min(23, parseInt($("reach-target-hour").value, 10) || 14)),
+  };
+  try {
+    await dbSaveReachSettings(fields);
+  } catch (e) {
+    flashToast(`Couldn't save reach settings: ${e.message}`, true);
+  }
+}
+
+// ---------- Web Push (notifications when he reaches out) ----------
+
+function pushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+// Authed fetch to /api/push, using the lock-free local token (same pattern as
+// the chat path, so the photo-picker auth-lock can't wedge it).
+async function pushApi(method, body) {
+  const session = localSession();
+  if (!session || !session.access_token) throw new Error("Signed out.");
+  const resp = await fetch("/api/push", {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${session.access_token}`,
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!resp.ok) throw new Error(`push ${method} failed (${resp.status})`);
+  return resp.json();
+}
+
+// base64url VAPID key -> Uint8Array, as PushManager.subscribe needs.
+function urlBase64ToUint8Array(base64) {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+
+// Ask permission, subscribe this device, save it server-side. Returns true on
+// success. Each step surfaces a clear toast so it's obvious what happened.
+async function enableNotifications() {
+  if (!pushSupported()) {
+    flashToast("This device can't do notifications.", true);
+    return false;
+  }
+  let perm = Notification.permission;
+  if (perm === "default") perm = await Notification.requestPermission();
+  if (perm !== "granted") {
+    flashToast("Notifications are blocked — allow them in your browser settings.", true);
+    return false;
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const { publicKey } = await pushApi("GET");
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+    }
+    await pushApi("POST", { action: "subscribe", subscription: sub.toJSON() });
+    flashToast("Notifications on — he can reach you here now. 🤍");
+    refreshPushControls();
+    return true;
+  } catch (e) {
+    flashToast(`Couldn't enable notifications: ${e.message}`, true);
+    return false;
+  }
+}
+
+async function sendTestNotification() {
+  try {
+    const res = await pushApi("POST", { action: "test" });
+    if (res.ok) flashToast("Test sent — watch for it. 🔔");
+    else flashToast(res.reason === "no devices subscribed"
+      ? "No device subscribed yet — turn notifications on first."
+      : "Test didn't go through.", true);
+  } catch (e) {
+    flashToast(`Test failed: ${e.message}`, true);
+  }
+}
+
+// Reflect current permission state in the customize panel controls.
+async function refreshPushControls() {
+  const enableBtn = $("notif-enable-btn");
+  const testBtn = $("notif-test-btn");
+  const status = $("notif-status");
+  if (!enableBtn) return;
+  if (!pushSupported()) {
+    status.textContent = "Not supported on this device.";
+    enableBtn.hidden = true;
+    testBtn.hidden = true;
+    return;
+  }
+  let subscribed = false;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    subscribed = !!(await reg.pushManager.getSubscription());
+  } catch (e) {}
+  const granted = Notification.permission === "granted" && subscribed;
+  status.textContent = granted ? "On — he can reach you here." : "Off.";
+  enableBtn.textContent = granted ? "Re-sync this device" : "Turn on notifications";
+  enableBtn.hidden = false;
+  testBtn.hidden = !granted;
+}
+
 // ---------- Wire it up ----------
 
 function wireSignIn() {
@@ -3369,7 +3536,19 @@ function wireApp() {
     }, 500);
   });
 
-  $("customize-btn").addEventListener("click", () => $("settings-dialog").showModal());
+  $("customize-btn").addEventListener("click", () => {
+    $("settings-dialog").showModal();
+    refreshPushControls();
+    loadReachSettings();
+  });
+  $("notif-enable-btn").addEventListener("click", enableNotifications);
+  $("notif-test-btn").addEventListener("click", sendTestNotification);
+
+  // Reach settings — save on any change; toggle which row shows by mode.
+  $("reach-mode").addEventListener("change", () => { syncReachModeRows(); saveReachSettings(); });
+  $("reach-enabled").addEventListener("change", saveReachSettings);
+  $("reach-interval-hours").addEventListener("change", saveReachSettings);
+  $("reach-target-hour").addEventListener("change", saveReachSettings);
 
   // Timestamps: a device preference (not his data), so it lives in localStorage
   // and just toggles a body class the message CSS keys off of. Default = shown.
