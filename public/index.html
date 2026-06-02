@@ -204,7 +204,8 @@
             <aside class="ms-list-col">
               <div class="ms-list-head">
                 <span id="ms-total" class="muted small"></span>
-                <button id="ms-new-btn" class="ghost small" type="button">+ New</button>
+                <button id="ms-new-story-btn" class="ghost small" type="button" title="A work made of chapters">+ Story</button>
+                <button id="ms-new-btn" class="ghost small" type="button" title="A standalone piece">+ Piece</button>
               </div>
               <ul id="ms-list" class="ms-list"></ul>
             </aside>
@@ -248,6 +249,38 @@
           </div>
           <p class="muted small">Every state before his writing lands is saved here. Restoring snapshots the current text first, so you can always undo.</p>
           <div id="ms-history-list" class="ms-history-list"></div>
+        </dialog>
+
+        <dialog id="ms-story-dialog" class="ms-story-dialog">
+          <div class="ms-history-headrow">
+            <input id="ms-story-title" class="ms-story-titleinput" type="text" maxlength="200" placeholder="Story title" />
+            <button id="ms-story-close" class="ghost small" type="button">Close</button>
+          </div>
+          <label class="ms-story-field">
+            <span class="muted small">Story bible — what he should always know (plot so far, characters, voice). It travels with him in every co-write, so he keeps the whole book in mind.</span>
+            <textarea id="ms-story-synopsis" class="ms-story-synopsis" placeholder="The story so far…"></textarea>
+          </label>
+          <div id="ms-story-chapters" class="ms-story-chapters"></div>
+          <details class="ms-import">
+            <summary>Import chapters from a paste</summary>
+            <p class="muted small">Paste your story (from AO3, a doc…). Pick how chapters are separated — the preview shows how many it'll make.</p>
+            <textarea id="ms-import-text" class="ms-import-text" placeholder="Paste your text here…"></textarea>
+            <div class="ms-import-row">
+              <label class="muted small">Split on
+                <select id="ms-import-split">
+                  <option value="chapter">Lines starting "Chapter"</option>
+                  <option value="md">Markdown headings (#)</option>
+                  <option value="hr">Divider lines (--- or ***)</option>
+                  <option value="single">Don't split (one chapter)</option>
+                </select>
+              </label>
+              <span id="ms-import-preview" class="muted small"></span>
+              <button id="ms-import-btn" class="primary small" type="button">Add chapters</button>
+            </div>
+          </details>
+          <div class="ms-story-foot">
+            <button id="ms-story-delete" class="danger ghost small" type="button">Delete story</button>
+          </div>
         </dialog>
       </section>
     </main>

@@ -623,6 +623,7 @@ function rowToDocument(row) {
     position: row.position || 0,
     wordCount: row.word_count || 0,
     pen: row.pen || "mine",   // 'mine' | 'his' | 'ours' — whose pen holds it
+    storyId: row.story_id || null,  // belongs to a story → it's a chapter
   };
 }
 
@@ -634,7 +635,7 @@ function countWords(text) {
 async function dbListDocuments(projectId) {
   const { data, error } = await db
     .from("manuscript_documents")
-    .select("id,title,content,position,word_count,pen")
+    .select("id,title,content,position,word_count,pen,story_id")
     .eq("project_id", projectId)
     .order("position", { ascending: true })
     .order("created_at", { ascending: true });
@@ -642,17 +643,55 @@ async function dbListDocuments(projectId) {
   return (data || []).map(rowToDocument);
 }
 
-async function dbCreateDocument(projectId, title, position) {
+async function dbCreateDocument(projectId, title, position, opts = {}) {
   const { data, error } = await db.from("manuscript_documents").insert({
     project_id: projectId,
     user_id: state.user.id,
     title: title || "Untitled",
-    content: "",
+    content: opts.content || "",
     position: position || 0,
-    word_count: 0,
-  }).select("id,title,content,position,word_count,pen").single();
+    word_count: countWords(opts.content || ""),
+    pen: opts.pen || "mine",
+    story_id: opts.storyId || null,
+  }).select("id,title,content,position,word_count,pen,story_id").single();
   if (error) throw error;
   return rowToDocument(data);
+}
+
+// ---------- Stories (a work made of chapters) ----------
+async function dbListStories(projectId) {
+  const { data, error } = await db
+    .from("manuscript_stories")
+    .select("id,title,synopsis,position")
+    .eq("project_id", projectId)
+    .order("position", { ascending: true })
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return (data || []).map(r => ({
+    id: r.id, title: r.title || "Untitled story",
+    synopsis: r.synopsis || "", position: r.position || 0,
+  }));
+}
+
+async function dbCreateStory(projectId, title, position) {
+  const { data, error } = await db.from("manuscript_stories").insert({
+    project_id: projectId,
+    user_id: state.user.id,
+    title: title || "Untitled story",
+    position: position || 0,
+  }).select("id,title,synopsis,position").single();
+  if (error) throw error;
+  return { id: data.id, title: data.title, synopsis: data.synopsis || "", position: data.position || 0 };
+}
+
+async function dbUpdateStory(id, fields) {
+  const { error } = await db.from("manuscript_stories").update(fields).eq("id", id);
+  if (error) throw error;
+}
+
+async function dbDeleteStory(id) {
+  const { error } = await db.from("manuscript_stories").delete().eq("id", id);
+  if (error) throw error;
 }
 
 // ---------- Manuscript version history ----------
@@ -2161,11 +2200,17 @@ async function renderManuscript() {
   if (!project.documentsLoaded) {
     $("ms-total").textContent = "loading…";
     try {
-      project.documents = await dbListDocuments(project.id);
+      const [docs, stories] = await Promise.all([
+        dbListDocuments(project.id),
+        dbListStories(project.id),
+      ]);
+      project.documents = docs;
+      project.stories = stories;
       project.documentsLoaded = true;
     } catch (e) {
       flashToast(`Couldn't load the manuscript: ${e.message}`, true);
-      project.documents = [];
+      project.documents = project.documents || [];
+      project.stories = project.stories || [];
     }
     if (state.activeView !== "manuscript") return; // user switched away meanwhile
   }
@@ -2174,34 +2219,79 @@ async function renderManuscript() {
   if (doc) openMsEditor(doc); else clearMsEditor();
 }
 
+// The story a document belongs to (or null), within the active project.
+function storyOf(doc) {
+  if (!doc || !doc.storyId) return null;
+  const project = getActiveProject();
+  return (project?.stories || []).find(s => s.id === doc.storyId) || null;
+}
+
+function makeMsItem(d, isChapter) {
+  const li = document.createElement("li");
+  li.className = "ms-item" + (isChapter ? " ms-chapter" : "")
+    + (d.id === state.activeDocumentId ? " active" : "");
+  const title = document.createElement("span");
+  title.className = "ms-item-title";
+  title.textContent = d.title || "Untitled";
+  const count = document.createElement("span");
+  count.className = "ms-item-count muted small";
+  count.textContent = `${(d.wordCount || 0).toLocaleString()}w`;
+  li.appendChild(title);
+  li.appendChild(count);
+  li.addEventListener("click", () => selectDocument(d.id));
+  return li;
+}
+
 function renderMsList(project) {
   const ul = $("ms-list");
   ul.innerHTML = "";
   const docs = project.documents || [];
+  const stories = project.stories || [];
   let total = 0;
-  for (const d of docs) {
-    total += d.wordCount || 0;
-    const li = document.createElement("li");
-    li.className = "ms-item" + (d.id === state.activeDocumentId ? " active" : "");
-    const title = document.createElement("span");
-    title.className = "ms-item-title";
-    title.textContent = d.title || "Untitled";
-    const count = document.createElement("span");
-    count.className = "ms-item-count muted small";
-    count.textContent = `${(d.wordCount || 0).toLocaleString()}w`;
-    li.appendChild(title);
-    li.appendChild(count);
-    li.addEventListener("click", () => selectDocument(d.id));
-    ul.appendChild(li);
+
+  // Stories, each with its chapters beneath.
+  for (const story of stories) {
+    const chapters = docs
+      .filter(d => d.storyId === story.id)
+      .sort((a, b) => (a.position || 0) - (b.position || 0));
+    const storyWords = chapters.reduce((n, d) => n + (d.wordCount || 0), 0);
+    total += storyWords;
+
+    const head = document.createElement("li");
+    head.className = "ms-story-head";
+    head.innerHTML = `<span class="ms-story-title">📖 ${escapeHtml(story.title || "Untitled story")}</span>`
+      + `<span class="muted small">${chapters.length} ch · ${storyWords.toLocaleString()}w</span>`;
+    head.title = "Open the story bible, chapters & import";
+    head.addEventListener("click", () => openStoryDialog(story.id));
+    ul.appendChild(head);
+
+    for (const d of chapters) ul.appendChild(makeMsItem(d, true));
+
+    const add = document.createElement("li");
+    add.className = "ms-chapter-add muted small";
+    add.textContent = "+ Chapter";
+    add.addEventListener("click", () => newChapter(story.id));
+    ul.appendChild(add);
   }
-  if (!docs.length) {
+
+  // Loose pieces (not part of any story) — e.g. a short novella stacked in one.
+  const loose = docs.filter(d => !d.storyId);
+  if (loose.length && stories.length) {
+    const lbl = document.createElement("li");
+    lbl.className = "ms-group-label muted small";
+    lbl.textContent = "Loose pieces";
+    ul.appendChild(lbl);
+  }
+  for (const d of loose) { total += d.wordCount || 0; ul.appendChild(makeMsItem(d, false)); }
+
+  if (!docs.length && !stories.length) {
     const li = document.createElement("li");
     li.className = "ms-empty muted small";
-    li.textContent = "No pieces yet.";
+    li.textContent = "Nothing yet. Start a piece, or a story with chapters.";
     ul.appendChild(li);
   }
-  $("ms-total").textContent = docs.length
-    ? `${docs.length} piece${docs.length !== 1 ? "s" : ""} · ${total.toLocaleString()} words`
+  $("ms-total").textContent = (docs.length || stories.length)
+    ? `${total.toLocaleString()} words`
     : "";
 }
 
@@ -2306,6 +2396,25 @@ function buildSystemPrompt(project) {
       const draft = hasText
         ? `The current draft:\n\n## ${title}\n\n${doc.content}`
         : `The page is blank so far — it's titled "${title}". Begin it when she's ready.`;
+
+      // If this piece is a chapter of a story, give him the whole-story bible so
+      // he keeps continuity even though only this chapter's text is in front of him.
+      const story = storyOf(doc);
+      if (story) {
+        const chapters = (getActiveProject()?.documents || [])
+          .filter(d => d.storyId === story.id)
+          .sort((a, b) => (a.position || 0) - (b.position || 0));
+        const idx = chapters.findIndex(d => d.id === doc.id);
+        const chNum = idx >= 0 ? idx + 1 : null;
+        system += `\n\n# ${story.title} — the story so far (your bible)\n\n`
+          + ((story.synopsis || "").trim()
+              ? story.synopsis.trim()
+              : "(No bible written yet — ask Cassie for the gist if you need it.)")
+          + (chNum ? `\n\nYou're working on Chapter ${chNum} of ${chapters.length}`
+              + (title ? ` — "${title}"` : "")
+              + ". Keep it consistent with the bible above; only this chapter's "
+              + "text is shown below, but the whole book should stay coherent." : "");
+      }
 
       if (pen === "his") {
         // His own work. He authors; his words flow straight onto the page.
@@ -2568,6 +2677,223 @@ async function restoreVersion(v) {
   const dlg = $("ms-history-dialog");
   if (dlg && dlg.open) dlg.close();
   flashToast("Restored ✓");
+}
+
+// ---------- Stories & chapters ----------
+async function newStory() {
+  const project = getActiveProject();
+  if (!project) return;
+  try {
+    const story = await dbCreateStory(project.id, "Untitled story", (project.stories || []).length);
+    project.stories = project.stories || [];
+    project.stories.push(story);
+    renderMsList(project);
+    openStoryDialog(story.id);
+    setTimeout(() => { $("ms-story-title").focus(); $("ms-story-title").select(); }, 60);
+  } catch (e) {
+    flashToast(`Couldn't create the story: ${e.message}`, true);
+  }
+}
+
+async function newChapter(storyId) {
+  const project = getActiveProject();
+  if (!project) return;
+  const existing = (project.documents || []).filter(d => d.storyId === storyId).length;
+  try {
+    const doc = await dbCreateDocument(project.id, `Chapter ${existing + 1}`, existing, { storyId });
+    project.documents = project.documents || [];
+    project.documents.push(doc);
+    state.activeDocumentId = doc.id;
+    const dlg = $("ms-story-dialog");
+    if (dlg && dlg.open) dlg.close();
+    renderManuscript();
+    $("ms-title").focus();
+    $("ms-title").select();
+  } catch (e) {
+    flashToast(`Couldn't add a chapter: ${e.message}`, true);
+  }
+}
+
+function openStoryDialog(storyId) {
+  const project = getActiveProject();
+  const story = (project?.stories || []).find(s => s.id === storyId);
+  if (!story) return;
+  state.storyDialogId = storyId;
+  $("ms-story-title").value = story.title || "";
+  $("ms-story-synopsis").value = story.synopsis || "";
+  if ($("ms-import-text")) $("ms-import-text").value = "";
+  if ($("ms-import-preview")) $("ms-import-preview").textContent = "";
+  renderStoryChapters(story);
+  const dlg = $("ms-story-dialog");
+  if (dlg && !dlg.open) dlg.showModal();
+}
+
+function renderStoryChapters(story) {
+  const box = $("ms-story-chapters");
+  if (!box) return;
+  const project = getActiveProject();
+  const chapters = (project?.documents || [])
+    .filter(d => d.storyId === story.id)
+    .sort((a, b) => (a.position || 0) - (b.position || 0));
+  box.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "ms-story-chapters-head";
+  head.innerHTML = `<strong>Chapters (${chapters.length})</strong>`;
+  const addBtn = document.createElement("button");
+  addBtn.className = "ghost small"; addBtn.type = "button"; addBtn.textContent = "+ Chapter";
+  addBtn.addEventListener("click", () => newChapter(story.id));
+  head.appendChild(addBtn);
+  box.appendChild(head);
+
+  if (!chapters.length) {
+    const p = document.createElement("p");
+    p.className = "muted small";
+    p.textContent = "No chapters yet. Add one, or import below.";
+    box.appendChild(p);
+    return;
+  }
+  for (const d of chapters) {
+    const row = document.createElement("div");
+    row.className = "ms-chapter-row";
+    const t = document.createElement("span");
+    t.className = "ms-chapter-rowtitle";
+    t.textContent = d.title || "Untitled";
+    const wc = document.createElement("span");
+    wc.className = "muted small";
+    wc.textContent = `${(d.wordCount || 0).toLocaleString()}w`;
+    const open = document.createElement("button");
+    open.className = "ghost small"; open.type = "button"; open.textContent = "Open";
+    open.addEventListener("click", () => {
+      const dlg = $("ms-story-dialog"); if (dlg && dlg.open) dlg.close();
+      selectDocument(d.id);
+    });
+    const del = document.createElement("button");
+    del.className = "danger ghost small"; del.type = "button"; del.textContent = "Delete";
+    del.addEventListener("click", () => deleteChapter(d.id, story));
+    row.append(t, wc, open, del);
+    box.appendChild(row);
+  }
+}
+
+async function deleteChapter(docId, story) {
+  if (!confirm("Delete this chapter? This can't be undone.")) return;
+  try {
+    await dbDeleteDocument(docId);
+  } catch (e) {
+    flashToast(`Delete failed: ${e.message}`, true);
+    return;
+  }
+  const project = getActiveProject();
+  project.documents = (project.documents || []).filter(d => d.id !== docId);
+  if (state.activeDocumentId === docId) state.activeDocumentId = null;
+  renderStoryChapters(story);
+  renderMsList(project);
+  flashToast("Chapter deleted");
+}
+
+let _storySaveTimer = null;
+function scheduleStorySave() {
+  clearTimeout(_storySaveTimer);
+  _storySaveTimer = setTimeout(saveStoryNow, 600);
+}
+async function saveStoryNow() {
+  const id = state.storyDialogId;
+  if (!id) return;
+  const project = getActiveProject();
+  const story = (project?.stories || []).find(s => s.id === id);
+  if (!story) return;
+  const title = $("ms-story-title").value.trim() || "Untitled story";
+  const synopsis = $("ms-story-synopsis").value;
+  try {
+    await dbUpdateStory(id, { title, synopsis });
+    story.title = title; story.synopsis = synopsis;
+    renderMsList(project);
+  } catch (e) {
+    flashToast(`Couldn't save the story: ${e.message}`, true);
+  }
+}
+
+async function deleteCurrentStory() {
+  const project = getActiveProject();
+  const id = state.storyDialogId;
+  const story = (project?.stories || []).find(s => s.id === id);
+  if (!story) return;
+  if (!confirm(`Delete the story "${story.title}"? Its chapters are kept as loose pieces — no writing is lost.`)) return;
+  try {
+    await dbDeleteStory(id);
+  } catch (e) {
+    flashToast(`Delete failed: ${e.message}`, true);
+    return;
+  }
+  for (const d of project.documents || []) if (d.storyId === id) d.storyId = null;
+  project.stories = (project.stories || []).filter(s => s.id !== id);
+  const dlg = $("ms-story-dialog");
+  if (dlg && dlg.open) dlg.close();
+  renderMsList(project);
+  flashToast("Story deleted — chapters kept as loose pieces");
+}
+
+// Split a big paste into chapters. The boundary line (a heading) becomes the
+// chapter title and is stripped from the body.
+function splitIntoChapters(text, mode) {
+  const src = (text || "").replace(/\r\n/g, "\n").trim();
+  if (!src) return [];
+  if (mode === "single") return [{ title: "", content: src }];
+  let isBoundary;
+  if (mode === "md") isBoundary = (l) => /^#{1,6}\s+\S/.test(l);
+  else if (mode === "chapter") isBoundary = (l) => /^\s*(chapter|ch\.?)\s*[0-9ivxlcdm]+\b/i.test(l) || /^\s*chapter\b/i.test(l);
+  else if (mode === "hr") isBoundary = (l) => /^\s*([-*=_])\1{2,}\s*$/.test(l);
+  else isBoundary = () => false;
+
+  const chunks = [];
+  let cur = null;
+  for (const line of src.split("\n")) {
+    if (isBoundary(line)) {
+      if (cur) chunks.push(cur);
+      const title = line.replace(/^#{1,6}\s+/, "").replace(/^\s*([-*=_])\1{2,}\s*$/, "").trim();
+      cur = { title, content: "" };
+    } else {
+      if (!cur) cur = { title: "", content: "" };
+      cur.content += (cur.content ? "\n" : "") + line;
+    }
+  }
+  if (cur) chunks.push(cur);
+  return chunks
+    .map(c => ({ title: c.title, content: c.content.trim() }))
+    .filter(c => c.content || c.title);
+}
+
+function updateImportPreview() {
+  const el = $("ms-import-preview");
+  if (!el) return;
+  const parts = splitIntoChapters($("ms-import-text").value, $("ms-import-split").value);
+  el.textContent = parts.length ? `→ will add ${parts.length} chapter${parts.length !== 1 ? "s" : ""}` : "";
+}
+
+async function importChapters() {
+  const project = getActiveProject();
+  const story = (project?.stories || []).find(s => s.id === state.storyDialogId);
+  if (!story) return;
+  const parts = splitIntoChapters($("ms-import-text").value, $("ms-import-split").value);
+  if (!parts.length) { flashToast("Nothing to import", true); return; }
+  if (!confirm(`Add ${parts.length} chapter(s) to "${story.title}"?`)) return;
+  const existing = (project.documents || []).filter(d => d.storyId === story.id).length;
+  let added = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    const title = p.title || `Chapter ${existing + i + 1}`;
+    try {
+      const doc = await dbCreateDocument(project.id, title, existing + i,
+        { storyId: story.id, content: p.content, pen: "mine" });
+      project.documents.push(doc);
+      added++;
+    } catch (_) { /* keep going; report the total at the end */ }
+  }
+  $("ms-import-text").value = "";
+  $("ms-import-preview").textContent = "";
+  renderStoryChapters(story);
+  renderMsList(project);
+  flashToast(`Imported ${added} chapter${added !== 1 ? "s" : ""} ✓`);
 }
 
 let _msSaveTimer = null;
@@ -3906,6 +4232,16 @@ function wireApp() {
   if ($("ms-pen")) $("ms-pen").addEventListener("change", (e) => setDocumentPen(e.target.value));
   if ($("ms-history-btn")) $("ms-history-btn").addEventListener("click", openMsHistory);
   if ($("ms-history-close")) $("ms-history-close").addEventListener("click", () => $("ms-history-dialog").close());
+
+  // Stories (chapters + bible + import)
+  if ($("ms-new-story-btn")) $("ms-new-story-btn").addEventListener("click", newStory);
+  if ($("ms-story-title")) $("ms-story-title").addEventListener("input", scheduleStorySave);
+  if ($("ms-story-synopsis")) $("ms-story-synopsis").addEventListener("input", scheduleStorySave);
+  if ($("ms-story-close")) $("ms-story-close").addEventListener("click", () => $("ms-story-dialog").close());
+  if ($("ms-story-delete")) $("ms-story-delete").addEventListener("click", deleteCurrentStory);
+  if ($("ms-import-text")) $("ms-import-text").addEventListener("input", updateImportPreview);
+  if ($("ms-import-split")) $("ms-import-split").addEventListener("change", updateImportPreview);
+  if ($("ms-import-btn")) $("ms-import-btn").addEventListener("click", importChapters);
 
   // The 📎 is a <label for="file-input">, so it opens the picker natively on
   // every device (mobile won't open a hidden input from a programmatic
