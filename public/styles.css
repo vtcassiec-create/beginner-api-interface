@@ -677,7 +677,9 @@ button.primary.small {
 .ms-editor-foot {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;        /* never run buttons off the edge on narrow screens */
   gap: 12px;
+  row-gap: 8px;
   border-top: 1px solid var(--border);
   padding-top: 8px;
 }
@@ -768,6 +770,11 @@ button.primary.small {
 @media (max-width: 720px) {
   .ms-list-col { width: 130px; }
   .ms-editor-col { min-width: 0; }
+  /* Let the footer controls wrap onto their own line instead of overflowing,
+     and don't shove co-write to the far edge — flow them left to right. */
+  .ms-editor-foot { gap: 10px; }
+  .ms-editor-foot .ms-cowrite { margin-left: 0; }
+  .ms-history-dialog { width: 94vw; padding: 14px; }
 }
 
 .project-controls {
