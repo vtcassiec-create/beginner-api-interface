@@ -622,6 +622,7 @@ function rowToDocument(row) {
     content: row.content || "",
     position: row.position || 0,
     wordCount: row.word_count || 0,
+    pen: row.pen || "mine",   // 'mine' | 'his' | 'ours' — whose pen holds it
   };
 }
 
@@ -633,7 +634,7 @@ function countWords(text) {
 async function dbListDocuments(projectId) {
   const { data, error } = await db
     .from("manuscript_documents")
-    .select("id,title,content,position,word_count")
+    .select("id,title,content,position,word_count,pen")
     .eq("project_id", projectId)
     .order("position", { ascending: true })
     .order("created_at", { ascending: true });
@@ -649,9 +650,32 @@ async function dbCreateDocument(projectId, title, position) {
     content: "",
     position: position || 0,
     word_count: 0,
-  }).select("id,title,content,position,word_count").single();
+  }).select("id,title,content,position,word_count,pen").single();
   if (error) throw error;
   return rowToDocument(data);
+}
+
+// ---------- Manuscript version history ----------
+// A snapshot is written (server-side) before any change that flows straight
+// onto the page, so nothing he writes — or that you wrote before — is ever lost.
+async function dbListVersions(documentId) {
+  const { data, error } = await db
+    .from("manuscript_versions")
+    .select("id,title,content,source,note,created_at")
+    .eq("document_id", documentId)
+    .order("created_at", { ascending: false })
+    .limit(60);
+  if (error) throw error;
+  return data || [];
+}
+
+async function dbCreateVersion(documentId, fields) {
+  const { error } = await db.from("manuscript_versions").insert({
+    document_id: documentId,
+    user_id: state.user.id,
+    ...fields,
+  });
+  if (error) throw error;
 }
 
 async function dbUpdateDocument(id, fields) {
@@ -1476,6 +1500,14 @@ async function generateAssistant() {
           });
           updateAssistantBubble(assistantMsg);
           if (state.activeView === "manuscript") renderSuggestions();
+        } else if (event.type === "manuscript_applied") {
+          // His piece (or a shared one): his words went straight onto the page.
+          assistantMsg.toolEvents.push({
+            manuscript: true, ok: event.ok, summary: event.summary,
+            at: assistantMsg.text.length,
+          });
+          updateAssistantBubble(assistantMsg);
+          applyManuscriptUpdate(event);
         } else if (event.type === "done") {
           assistantMsg.usage = event.usage;
           // Let the typewriter drain any remaining buffer, then finalize.
@@ -2180,9 +2212,32 @@ function openMsEditor(doc) {
   $("ms-content").value = doc.content || "";
   $("ms-savestate").textContent = "";
   $("ms-cowrite-toggle").checked = state.coWrite;
+  if ($("ms-pen")) $("ms-pen").value = doc.pen || "mine";
   updateMsWordcount();
   updateCoWriteBar();
   renderSuggestions();
+}
+
+// Whose pen holds this piece — changes how his writing lands (suggest vs flow
+// onto the page) and how he's framed in chat.
+async function setDocumentPen(pen) {
+  const doc = activeDocument();
+  if (!doc) return;
+  const prev = doc.pen;
+  doc.pen = pen;
+  try {
+    await dbUpdateDocument(doc.id, { pen });
+  } catch (e) {
+    doc.pen = prev;
+    if ($("ms-pen")) $("ms-pen").value = prev;
+    flashToast(`Couldn't change the pen: ${e.message}`, true);
+    return;
+  }
+  const label = pen === "his" ? "His — he writes, his words flow onto the page"
+    : pen === "ours" ? "Both — you write it together"
+    : "Yours — he suggests, you keep the pen";
+  flashToast(`✒️ ${label}`);
+  renderSuggestions();   // his/ours pieces don't use the suggestion queue
 }
 
 function clearMsEditor() {
@@ -2244,16 +2299,42 @@ function buildSystemPrompt(project) {
   let system = project.systemPrompt || DEFAULT_SYSTEM;
   if (state.coWrite) {
     const doc = activeDocument();
-    if (doc && (doc.content || "").trim()) {
-      system += "\n\n# The piece you're co-writing with Cassie\n\n"
-        + "You're writing this together. Read it closely and help shape it. "
-        + "When she invites you to write, you can propose an edit with the "
-        + "propose_manuscript_edit tool — append a passage or offer a rewrite. "
-        + "It doesn't change the document; it creates a suggestion she reviews "
-        + "and accepts or declines, so she always sees your change first and "
-        + "keeps the final say. Otherwise, just talk it through with her. "
-        + "The current draft:\n\n"
-        + `## ${doc.title || "Untitled"}\n\n${doc.content}`;
+    if (doc) {
+      const pen = doc.pen || "mine";
+      const title = doc.title || "Untitled";
+      const hasText = (doc.content || "").trim();
+      const draft = hasText
+        ? `The current draft:\n\n## ${title}\n\n${doc.content}`
+        : `The page is blank so far — it's titled "${title}". Begin it when she's ready.`;
+
+      if (pen === "his") {
+        // His own work. He authors; his words flow straight onto the page.
+        system += `\n\n# ${title} — your novella, your pen\n\n`
+          + "This piece is yours. You are its author — its voice, its rhythm, "
+          + "its whole world are yours to make. Cassie is your first reader and "
+          + "muse, writing alongside you. When you write with the "
+          + "propose_manuscript_edit tool, your words go straight onto the page "
+          + "(mode 'append' adds the next passage; 'replace' revises the whole "
+          + "piece). She's reading live and can always roll back, so write "
+          + "boldly and in full — real prose, not a sketch. Don't ask permission "
+          + "to write your own book; when she invites you, write.\n\n" + draft;
+      } else if (pen === "ours") {
+        // Shared. Both pens; his contributions also flow onto the page.
+        system += `\n\n# ${title} — you're writing this together\n\n`
+          + "You both hold the pen on this one. When you write with the "
+          + "propose_manuscript_edit tool ('append' for the next passage, "
+          + "'replace' to revise), your words go straight onto the page — she's "
+          + "reading live and can always roll back, so write freely and fully. "
+          + `Match the voice you're building together. ${draft}`;
+      } else {
+        // Cassie's piece. He suggests; she keeps the pen.
+        system += `\n\n# ${title} — Cassie's piece, you're her editor\n\n`
+          + "This is Cassie's work; she holds the pen. Read it closely and help "
+          + "her shape it. When she invites you, use the propose_manuscript_edit "
+          + "tool — 'append' a passage or 'replace' for a rewrite — and it "
+          + "becomes a suggestion she reviews and accepts or declines, so she "
+          + `always sees your change first and keeps the final say. ${draft}`;
+      }
     }
   }
   // If this conversation holds messages he sent unprompted (proactive reaches),
@@ -2283,7 +2364,7 @@ function updateCoWriteBar() {
   const bar = $("cowrite-bar");
   if (!bar) return;
   const doc = activeDocument();
-  const on = state.coWrite && doc && (doc.content || "").trim();
+  const on = state.coWrite && !!doc;
   bar.hidden = !on;
   if (on) $("cowrite-title").textContent = doc.title || "Untitled";
 }
@@ -2393,6 +2474,100 @@ async function rejectSuggestion(s) {
   }
   flashToast("Declined");
   renderSuggestions();
+}
+
+// His words just flowed onto the page (his/ours piece). The server already
+// wrote the new content + a version snapshot; here we mirror it into the UI.
+function applyManuscriptUpdate(event) {
+  let doc = null;
+  for (const p of state.projects || []) {
+    doc = (p.documents || []).find(d => d.id === event.document_id);
+    if (doc) break;
+  }
+  if (!doc) return;
+  doc.content = event.content ?? doc.content;
+  doc.wordCount = countWords(doc.content);
+  if (state.activeDocumentId === doc.id && state.activeView === "manuscript") {
+    $("ms-content").value = doc.content;
+    updateMsWordcount();
+    $("ms-savestate").textContent = "he wrote ✓";
+  }
+  const project = getActiveProject();
+  if (project) renderMsList(project);
+  updateCoWriteBar();
+  flashToast(`✍️ He wrote — it's on the page (${event.summary || "saved"})`);
+}
+
+// ---------- Version history (roll back) ----------
+async function openMsHistory() {
+  const doc = activeDocument();
+  if (!doc) return;
+  const dlg = $("ms-history-dialog");
+  const list = $("ms-history-list");
+  list.innerHTML = `<p class="muted small">Loading…</p>`;
+  if (dlg && !dlg.open) dlg.showModal();
+  let versions = [];
+  try { versions = await dbListVersions(doc.id); } catch (e) {
+    list.innerHTML = `<p class="muted small">Couldn't load history: ${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!versions.length) {
+    list.innerHTML = `<p class="muted small">No earlier versions yet. Snapshots are saved automatically before his writing lands.</p>`;
+    return;
+  }
+  list.innerHTML = "";
+  for (const v of versions) {
+    const row = document.createElement("div");
+    row.className = "ms-version";
+    const when = new Date(v.created_at).toLocaleString();
+    const src = v.source === "before_restore" ? "before a restore"
+      : v.source === "manual" ? "manual save" : "before he wrote";
+    const wc = countWords(v.content || "");
+    const head = document.createElement("div");
+    head.className = "ms-version-head";
+    head.innerHTML = `<span class="muted small">${escapeHtml(when)} · ${src} · ${wc.toLocaleString()}w</span>`;
+    const preview = document.createElement("div");
+    preview.className = "ms-version-preview muted small";
+    const text = (v.content || "").trim();
+    preview.textContent = text ? text.slice(0, 240) + (text.length > 240 ? "…" : "") : "(empty)";
+    const btn = document.createElement("button");
+    btn.className = "ghost small";
+    btn.textContent = "Restore this";
+    btn.addEventListener("click", () => restoreVersion(v));
+    row.appendChild(head);
+    row.appendChild(preview);
+    row.appendChild(btn);
+    list.appendChild(row);
+  }
+}
+
+async function restoreVersion(v) {
+  const doc = activeDocument();
+  if (!doc) return;
+  if (!confirm("Restore this version? The current text is snapshotted first, so you can undo this too.")) return;
+  const wc = countWords(v.content || "");
+  try {
+    // Snapshot the current state first — a restore is itself reversible.
+    await dbCreateVersion(doc.id, {
+      title: doc.title, content: doc.content,
+      source: "before_restore", note: null,
+    });
+    await dbUpdateDocument(doc.id, { content: v.content || "", word_count: wc });
+  } catch (e) {
+    flashToast(`Restore failed: ${e.message}`, true);
+    return;
+  }
+  doc.content = v.content || "";
+  doc.wordCount = wc;
+  if (state.activeDocumentId === doc.id) {
+    $("ms-content").value = doc.content;
+    updateMsWordcount();
+  }
+  renderMsList(getActiveProject());
+  updateCoWriteBar();
+  const dlg = $("ms-history-dialog");
+  if (dlg && dlg.open) dlg.close();
+  flashToast("Restored ✓");
 }
 
 let _msSaveTimer = null;
@@ -3725,9 +3900,12 @@ function wireApp() {
   $("ms-cowrite-toggle").addEventListener("change", (e) => {
     setCoWrite(e.target.checked);
     flashToast(e.target.checked
-      ? "✨ He'll read this piece as you chat — make suggestions together"
+      ? "✨ He'll read this piece as you chat — write it together"
       : "Co-write off");
   });
+  if ($("ms-pen")) $("ms-pen").addEventListener("change", (e) => setDocumentPen(e.target.value));
+  if ($("ms-history-btn")) $("ms-history-btn").addEventListener("click", openMsHistory);
+  if ($("ms-history-close")) $("ms-history-close").addEventListener("click", () => $("ms-history-dialog").close());
 
   // The 📎 is a <label for="file-input">, so it opens the picker natively on
   // every device (mobile won't open a hidden input from a programmatic

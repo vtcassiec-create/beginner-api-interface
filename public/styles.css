@@ -684,6 +684,43 @@ button.primary.small {
 .ms-editor-foot .ms-cowrite { margin-left: auto; }
 .ms-editor-foot #ms-delete-btn { margin-left: 0; }
 
+.ms-pen-label { display: inline-flex; align-items: center; gap: 6px; }
+.ms-pen {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+/* Version-history dialog */
+.ms-history-dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  width: min(620px, 92vw);
+  max-height: 80vh;
+  padding: 18px;
+}
+.ms-history-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+.ms-history-headrow {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 4px;
+}
+.ms-history-headrow h3 { margin: 0; }
+.ms-history-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.ms-version {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.ms-version-preview { white-space: pre-wrap; line-height: 1.4; }
+.ms-version button { align-self: flex-start; }
+
 /* Co-write banner above the composer */
 .cowrite-bar {
   padding: 6px 20px;
