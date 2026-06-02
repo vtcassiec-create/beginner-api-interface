@@ -23,7 +23,12 @@ name: Reach heartbeat
 on:
   schedule:
     - cron: "0 * * * *"   # top of every hour (UTC); the app decides if it's time
-  workflow_dispatch: {}    # lets you trigger a check by hand from the Actions tab
+  workflow_dispatch:        # lets you trigger a check by hand from the Actions tab
+    inputs:
+      strict:
+        description: "Test mode: fail the run (and surface the reason) if he did NOT send"
+        type: boolean
+        default: false
 
 permissions: {}            # no repo access needed; we only make an outbound call
 
@@ -39,6 +44,7 @@ jobs:
         env:
           REACH_ENDPOINT: ${{ secrets.REACH_ENDPOINT }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          STRICT: ${{ inputs.strict }}
         run: |
           if [ -z "$REACH_ENDPOINT" ] || [ -z "$CRON_SECRET" ]; then
             echo "REACH_ENDPOINT / CRON_SECRET not set yet — skipping (no-op)."
@@ -50,9 +56,19 @@ jobs:
           echo "HTTP $code"
           cat /tmp/reach.out || true
           echo
-          # App-level "skipped" responses are expected and fine. Only fail the
-          # run on a hard server error or an unreachable endpoint.
+          status=$(jq -r '.status // empty' /tmp/reach.out 2>/dev/null || true)
+          reason=$(jq -r '.reason // empty' /tmp/reach.out 2>/dev/null || true)
+          echo "parsed: status='${status}' reason='${reason}'"
+          # Hard failures (unreachable / server error) always fail the run.
           if [ "$code" = "000" ] || [ "$code" -ge 500 ]; then
             echo "Heartbeat failed (HTTP $code)."
             exit 1
           fi
+          # In strict (manual test) mode, also fail when he didn't actually send,
+          # so the skip/auth reason surfaces in the run. Scheduled runs never set
+          # this, so expected "skipped" responses stay green and quiet.
+          if [ "$STRICT" = "true" ] && [ "$status" != "sent" ]; then
+            echo "STRICT: he did not send — status='${status}' reason='${reason}'."
+            exit 1
+          fi
+
