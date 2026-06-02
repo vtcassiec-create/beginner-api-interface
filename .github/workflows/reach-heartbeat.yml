@@ -1,0 +1,58 @@
+# Reach heartbeat — wakes Petrichor's reach endpoint hourly.
+#
+# Why this exists: Vercel's Hobby plan only allows once-daily cron jobs, but
+# the "every N hours / set time" rhythm needs the app checked more often. The
+# /api/surprise endpoint is idempotent — it decides for itself whether it's
+# actually time to reach (your reach_settings + quiet hours + daily cap) — so
+# any caller can safely wake it. This free workflow is that caller.
+#
+# It does nothing until two repository secrets are set (it skips cleanly, so
+# you won't get failed-run noise in the meantime):
+#   REACH_ENDPOINT — full URL to the endpoint, e.g.
+#                    https://<your-app>.vercel.app/api/surprise
+#   CRON_SECRET    — the same value you set in Vercel's env (Bearer auth)
+#
+# Notes:
+#   - GitHub schedules run in UTC and can start a few minutes late under load;
+#     that's fine for an "about every N hours" rhythm.
+#   - Scheduled workflows only run from the default branch (main).
+#   - GitHub auto-disables schedules after 60 days of repo inactivity.
+
+name: Reach heartbeat
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # top of every hour (UTC); the app decides if it's time
+  workflow_dispatch: {}    # lets you trigger a check by hand from the Actions tab
+
+permissions: {}            # no repo access needed; we only make an outbound call
+
+concurrency:
+  group: reach-heartbeat
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake the reach endpoint
+        env:
+          REACH_ENDPOINT: ${{ secrets.REACH_ENDPOINT }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$REACH_ENDPOINT" ] || [ -z "$CRON_SECRET" ]; then
+            echo "REACH_ENDPOINT / CRON_SECRET not set yet — skipping (no-op)."
+            exit 0
+          fi
+          code=$(curl -sS -m 30 -o /tmp/reach.out -w '%{http_code}' \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$REACH_ENDPOINT" || echo "000")
+          echo "HTTP $code"
+          cat /tmp/reach.out || true
+          echo
+          # App-level "skipped" responses are expected and fine. Only fail the
+          # run on a hard server error or an unreachable endpoint.
+          if [ "$code" = "000" ] || [ "$code" -ge 500 ]; then
+            echo "Heartbeat failed (HTTP $code)."
+            exit 1
+          fi
