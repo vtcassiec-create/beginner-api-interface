@@ -723,6 +723,66 @@ button.primary.small {
 .ms-version-preview { white-space: pre-wrap; line-height: 1.4; }
 .ms-version button { align-self: flex-start; }
 
+/* Story groups in the piece list */
+.ms-story-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 8px 10px; margin-top: 6px;
+  border-radius: var(--radius-sm); cursor: pointer;
+  background: color-mix(in srgb, var(--surface) 70%, var(--border));
+}
+.ms-story-head:hover { background: var(--border); }
+.ms-story-title { font-weight: 600; }
+.ms-item.ms-chapter { margin-left: 12px; }
+.ms-chapter-add {
+  margin-left: 12px; padding: 4px 10px; cursor: pointer; opacity: 0.8;
+}
+.ms-chapter-add:hover { opacity: 1; color: var(--text); }
+.ms-group-label { padding: 6px 10px; margin-top: 8px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* Story dialog (bible + chapters + import) */
+.ms-story-dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  width: min(680px, 94vw);
+  max-height: 86vh;
+  padding: 18px;
+}
+.ms-story-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+.ms-story-titleinput {
+  flex: 1; font-size: 18px; font-weight: 600;
+  background: transparent; border: none; border-bottom: 1px solid var(--border);
+  color: var(--text); padding: 4px 2px;
+}
+.ms-story-field { display: block; margin: 14px 0; }
+.ms-story-field .muted { display: block; margin-bottom: 6px; }
+.ms-story-synopsis {
+  width: 100%; min-height: 120px; resize: vertical;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); padding: 10px; font: inherit;
+}
+.ms-story-chapters { margin: 10px 0; }
+.ms-story-chapters-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.ms-chapter-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.ms-chapter-rowtitle { flex: 1; }
+.ms-import { margin-top: 8px; }
+.ms-import summary { cursor: pointer; }
+.ms-import-text {
+  width: 100%; min-height: 110px; resize: vertical; margin-top: 8px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); padding: 10px; font: inherit;
+}
+.ms-import-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+.ms-import-row select {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); padding: 4px 8px; font: inherit; margin-left: 6px;
+}
+.ms-story-foot { margin-top: 14px; display: flex; justify-content: flex-end; }
+
 /* Co-write banner above the composer */
 .cowrite-bar {
   padding: 6px 20px;
