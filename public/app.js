@@ -2341,7 +2341,15 @@ function updateMsWordcount() {
 
 function selectDocument(id) {
   state.activeDocumentId = id;
+  showMsEditorPane(true);   // on mobile, slide to the editor; no-op on desktop
   renderManuscript();
+}
+
+// Mobile is single-pane: show either the piece list or the open editor, not
+// both. On desktop both columns show and this class does nothing.
+function showMsEditorPane(on) {
+  const layout = $("ms-layout");
+  if (layout) layout.classList.toggle("ms-show-editor", !!on);
 }
 
 async function newManuscriptDocument() {
@@ -4216,7 +4224,8 @@ function wireApp() {
 
   // Chat / Manuscript tabs.
   $("tab-chat").addEventListener("click", () => showView("chat"));
-  $("tab-manuscript").addEventListener("click", () => showView("manuscript"));
+  $("tab-manuscript").addEventListener("click", () => { showMsEditorPane(false); showView("manuscript"); });
+  if ($("ms-back-btn")) $("ms-back-btn").addEventListener("click", () => showMsEditorPane(false));
 
   // Manuscript editor.
   $("ms-new-btn").addEventListener("click", newManuscriptDocument);
