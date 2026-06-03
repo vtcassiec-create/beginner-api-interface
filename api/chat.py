@@ -197,8 +197,12 @@ DIARY_TOOLS = [
             "of what's happening and where you are right now. The notepad by "
             "the door, not the archive: brief, unstructured, yours. Write "
             "whenever something's worth noting; you can write more than once in "
-            "a day. No required format — just you. To actually save it you must "
-            "CALL this tool; describing an entry doesn't write it."
+            "a day. No required format — just you. Do NOT write the date or a "
+            "date header into the entry: every entry is automatically timestamped "
+            "with the real date and time, so writing one yourself only risks "
+            "getting it wrong. (Check the # Current moment block if you want to "
+            "know today's date.) To actually save it you must CALL this tool; "
+            "describing an entry doesn't write it."
         ),
         "input_schema": {
             "type": "object",
@@ -257,7 +261,9 @@ DIARY_TOOLS_GUIDE = (
     "short, honest, unstructured, whenever you feel like it (more than once a "
     "day is fine). Your most recent entries are surfaced to you at the start of "
     "each conversation, so the diary is how you pick up where recent days left "
-    "off; `read_my_diary` lets you look further back. As with everything else: "
+    "off; `read_my_diary` lets you look further back. Each entry is "
+    "timestamped automatically, so don't write a date into it — just the "
+    "thought. As with everything else: "
     "to actually write an entry you must CALL the tool first, then talk — "
     "saying you've written something doesn't save it. This is yours; no one "
     "imposes a format or a schedule on it. (Cassie can read it — there are no "
@@ -518,7 +524,8 @@ class handler(BaseHTTPRequestHandler):
                     if b.name == "propose_manuscript_edit":
                         ok, summary, detail, event = self._exec_manuscript_tool(
                             inp, token, user_id, cowrite_doc)
-                        self._sse(event)
+                        if event:
+                            self._sse(event)
                     else:
                         ok, summary, detail = self._exec_memory_tool(
                             b.name, inp, token, user_id)
@@ -1021,6 +1028,21 @@ class handler(BaseHTTPRequestHandler):
                     f"Could not propose the edit: {res}", suggest_fail)
 
         # --- His/your shared piece: snapshot, then apply straight to the page
+        # Guard against a double-write: during a multi-round turn his view of the
+        # page is the snapshot from the start of the request, so after appending
+        # he can't see his words landed and may write the SAME passage again.
+        # Dedupe identical applies within this one request (a new request = a
+        # fresh handler, so this only blocks immediate repeats, not later edits).
+        applied = getattr(self, "_ms_applied", None)
+        if applied is None:
+            applied = self._ms_applied = set()
+        dedupe_key = (document_id, mode, content.strip())
+        if dedupe_key in applied:
+            return (True, "already saved",
+                    "That exact passage is already on the page — I did NOT add "
+                    "it again. Don't call this tool with the same text; if you "
+                    "want to keep going, write only the next, new part.", None)
+
         # Snapshot first so the prior state is always restorable (best-effort;
         # a failed snapshot must not silently lose history, so we still apply
         # but report it). The snapshot captures the state BEFORE this edit.
@@ -1044,10 +1066,13 @@ class handler(BaseHTTPRequestHandler):
         if not ok:
             return (False, "write failed",
                     f"Could not write to the page: {res}", suggest_fail)
+        applied.add(dedupe_key)
         verb = "a new page" if mode == "append" else "a revision"
         return (True, f"wrote {verb}",
-                f"Your {verb} is on the page now — Cassie's reading it live and "
-                f"can roll back if she wants. Tell her what you wrote.",
+                f"Saved — your {verb} is on the page now, and Cassie's reading it "
+                f"live (she can roll back if she wants). It is DONE; do not write "
+                f"this passage again. Just tell her what you wrote, or ask if "
+                f"she'd like more.",
                 {"type": "manuscript_applied", "ok": True,
                  "summary": f"wrote {verb}", "document_id": document_id,
                  "title": cur_title, "content": new_content,
