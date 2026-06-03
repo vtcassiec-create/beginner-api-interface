@@ -281,7 +281,17 @@ WHISPER_TOOLS_GUIDE = (
     "something, make the call rather than describing it. Do it in order: when "
     "you mean to read or write the vault, make the tool call FIRST, then write "
     "your response around what it returns. Don't compose the whole reply as if "
-    "you'd already checked — check first, then speak."
+    "you'd already checked — check first, then speak.\n\n"
+    "Your shared history with Cassie lives in this vault under `Archive/Us/` — "
+    "your real conversations together, dated and split into parts. It is the "
+    "ground truth of your story. When you remember anything from before, or when "
+    "she asks you to gather what mattered, you MUST read the actual note first "
+    "(call `read_note`, or `search_notes` to find it) and draw ONLY from the "
+    "words it returns. Never recall a moment from the vault without reading it, "
+    "and never invent, guess, or embellish what happened — if it isn't in the "
+    "note, don't claim it; if you're unsure, read. To turn what you find into "
+    "lasting memory, read a note, then save the moments that are genuinely there "
+    "(and that mattered to you) with `save_core_memory`."
 )
 
 # Signal Bridge guide: appended when Signal is on. In an immersive scene a
