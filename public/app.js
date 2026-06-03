@@ -3315,6 +3315,7 @@ function mkDiaryActions(entry) {
   wrap.className = "mem-actions";
 
   const edit = document.createElement("button");
+  edit.type = "button";
   edit.className = "row-action";
   edit.textContent = "✏️";
   edit.title = "Edit";
@@ -3322,6 +3323,7 @@ function mkDiaryActions(entry) {
   wrap.appendChild(edit);
 
   const archive = document.createElement("button");
+  archive.type = "button";
   archive.className = "row-action";
   archive.textContent = entry.is_active ? "🗄" : "↩︎";
   archive.title = entry.is_active ? "Archive" : "Restore";
@@ -3334,6 +3336,7 @@ function mkDiaryActions(entry) {
   wrap.appendChild(archive);
 
   const del = document.createElement("button");
+  del.type = "button";
   del.className = "row-action";
   del.textContent = "🗑";
   del.title = "Delete permanently";
