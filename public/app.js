@@ -3909,16 +3909,43 @@ async function sendTestNotification() {
   }
 }
 
+// Make THIS device the only one notified — clears stale subscriptions left on
+// other deployment URLs (the "buzzed three times" fix).
+async function notifyOnlyThisDevice() {
+  if (!pushSupported() || Notification.permission !== "granted") {
+    flashToast("Turn notifications on here first.", true);
+    return;
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const { publicKey } = await pushApi("GET");
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+    }
+    await pushApi("POST", { action: "subscribe_solo", subscription: sub.toJSON() });
+    flashToast("Done — only this device will buzz now. Duplicates cleared ✓");
+    refreshPushControls();
+  } catch (e) {
+    flashToast(`Couldn't clean up: ${e.message}`, true);
+  }
+}
+
 // Reflect current permission state in the customize panel controls.
 async function refreshPushControls() {
   const enableBtn = $("notif-enable-btn");
   const testBtn = $("notif-test-btn");
+  const soloBtn = $("notif-solo-btn");
   const status = $("notif-status");
   if (!enableBtn) return;
   if (!pushSupported()) {
     status.textContent = "Not supported on this device.";
     enableBtn.hidden = true;
     testBtn.hidden = true;
+    if (soloBtn) soloBtn.hidden = true;
     return;
   }
   let subscribed = false;
@@ -3931,6 +3958,7 @@ async function refreshPushControls() {
   enableBtn.textContent = granted ? "Re-sync this device" : "Turn on notifications";
   enableBtn.hidden = false;
   testBtn.hidden = !granted;
+  if (soloBtn) soloBtn.hidden = !granted;
 }
 
 // ---------- Wire it up ----------
@@ -4068,6 +4096,7 @@ function wireApp() {
   });
   $("notif-enable-btn").addEventListener("click", enableNotifications);
   $("notif-test-btn").addEventListener("click", sendTestNotification);
+  if ($("notif-solo-btn")) $("notif-solo-btn").addEventListener("click", notifyOnlyThisDevice);
 
   // Reach settings — save on any change; toggle which row shows by mode.
   $("reach-mode").addEventListener("change", () => { syncReachModeRows(); saveReachSettings(); });

@@ -107,6 +107,8 @@ class handler(BaseHTTPRequestHandler):
         action = (data.get("action") or "").strip()
         if action == "subscribe":
             return self._subscribe(user_id, data.get("subscription") or {})
+        if action == "subscribe_solo":
+            return self._subscribe_solo(user_id, data.get("subscription") or {})
         if action == "test":
             return self._test(user_id)
         return self._json(400, {"error": f"Unknown action: {action}"})
@@ -131,7 +133,29 @@ class handler(BaseHTTPRequestHandler):
             return self._json(500, {"error": "Could not save subscription."})
         return self._json(200, {"ok": True})
 
-    def _test(self, user_id):
+    def _subscribe_solo(self, user_id, sub):
+        """Make THIS device the only one notified: save it, then delete every
+        other subscription for the user. Fixes the "buzzed three times" case
+        where the same phone subscribed under several deployment URLs."""
+        endpoint = (sub.get("endpoint") or "").strip()
+        keys = sub.get("keys") or {}
+        p256dh = (keys.get("p256dh") or "").strip()
+        auth = (keys.get("auth") or "").strip()
+        if not endpoint or not p256dh or not auth:
+            return self._json(400, {"error": "Incomplete subscription."})
+        # Save (or refresh) this device first, so it's never the one dropped.
+        ok = self._supabase_write(
+            "push_subscriptions?on_conflict=endpoint",
+            {"user_id": user_id, "endpoint": endpoint,
+             "p256dh": p256dh, "auth": auth},
+            prefer="resolution=merge-duplicates")
+        if ok is None:
+            return self._json(500, {"error": "Could not save subscription."})
+        # Then remove every OTHER device/URL for this user.
+        self._supabase_delete(
+            f"push_subscriptions?user_id=eq.{user_id}&endpoint=neq."
+            + urllib.parse.quote(endpoint, safe=""))
+        return self._json(200, {"ok": True})
         subs = self._supabase_get(
             f"push_subscriptions?user_id=eq.{user_id}"
             f"&select=endpoint,p256dh,auth")
