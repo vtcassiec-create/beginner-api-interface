@@ -582,8 +582,16 @@ class handler(BaseHTTPRequestHandler):
                 ]
 
         def _is_mcp_conn_error(err):
-            msg = (getattr(err, "message", "") or "").lower()
-            return getattr(err, "status_code", None) == 400 and "mcp" in msg
+            msg = str(getattr(err, "message", "") or "").lower()
+            code = getattr(err, "status_code", None)
+            # The connector reports an unreachable MCP server two ways: as a 400
+            # APIStatusError, or as a streamed error event (HTTP 200) whose
+            # message names the MCP server ("Connection error while
+            # communicating with MCP server"). Catch both so a sleeping vault or
+            # a flaky Signal bridge degrades gracefully instead of surfacing raw.
+            if "mcp server" in msg or "mcp_server" in msg:
+                return True
+            return code == 400 and "mcp" in msg
 
         def _is_model_gone(err):
             # A retired/unknown model id: 404, or an invalid-request that names
