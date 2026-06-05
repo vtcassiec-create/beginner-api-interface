@@ -26,6 +26,7 @@
  *     The original mechanism on Claude 4.x models.
  */
 const MODELS = [
+  { id: "claude-opus-4-8",            label: "Opus 4.8",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true, thinkingMode: "adaptive" },
   { id: "claude-opus-4-7",            label: "Opus 4.7",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true, thinkingMode: "adaptive" },
   { id: "claude-opus-4-6",            label: "Opus 4.6",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true },
   { id: "claude-opus-4-5-20251101",   label: "Opus 4.5",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true },
