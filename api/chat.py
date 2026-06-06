@@ -538,6 +538,21 @@ class handler(BaseHTTPRequestHandler):
                     and getattr(b, "name", None) in handled
                 ]
                 if not (tool_uses and rounds < MAX_TOOL_ROUNDS):
+                    # Safeguard against the silent "...": if the model produced
+                    # no visible text this turn — e.g. it called a Signal/Whisper
+                    # MCP tool that hung or came back empty and never narrated —
+                    # say so, instead of leaving the user staring at an empty
+                    # bubble with no idea anything went wrong.
+                    had_text = any(
+                        getattr(b, "type", None) == "text"
+                        and (getattr(b, "text", "") or "").strip()
+                        for b in final.content
+                    )
+                    if not had_text:
+                        self._sse({"type": "notice",
+                                   "text": "(He reached for the bridge but the turn "
+                                           "came back empty — the connection likely "
+                                           "blipped. Send again.)"})
                     self._sse({"type": "done",
                                "stop_reason": final.stop_reason, "usage": agg})
                     return
