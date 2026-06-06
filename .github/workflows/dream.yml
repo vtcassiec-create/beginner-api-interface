@@ -1,0 +1,50 @@
+# Dream (manual) — kick the dreamer by hand so we can eyeball card quality
+# before it runs nightly. Reuses the REACH_ENDPOINT + CRON_SECRET repo secrets;
+# the dream endpoint is derived by swapping /api/surprise → /api/dream.
+#
+# The run log shows only status + count + card TITLES — never the card bodies —
+# so intimate memory content stays in your own database, not in CI logs. Read
+# the full cards in Supabase → dream_cards.
+
+name: Dream (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cards:
+        description: "Max dream cards to make"
+        default: "5"
+      limit:
+        description: "How many recent messages to read"
+        default: "120"
+
+permissions: {}
+
+concurrency:
+  group: dream
+  cancel-in-progress: false
+
+jobs:
+  dream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger the dreamer
+        env:
+          REACH_ENDPOINT: ${{ secrets.REACH_ENDPOINT }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CARDS: ${{ inputs.cards }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          if [ -z "$REACH_ENDPOINT" ] || [ -z "$CRON_SECRET" ]; then
+            echo "REACH_ENDPOINT / CRON_SECRET not set in repo secrets."; exit 1
+          fi
+          BASE="${REACH_ENDPOINT%/api/surprise}"
+          URL="$BASE/api/dream?cards=${CARDS}&limit=${LIMIT}"
+          echo "Dreaming → $URL"
+          code=$(curl -sS -m 180 -o /tmp/dream.out -w '%{http_code}' \
+            -X POST -H "Authorization: Bearer $CRON_SECRET" "$URL" || echo "000")
+          echo "HTTP $code"
+          cat /tmp/dream.out 2>/dev/null; echo
+          if [ "$code" = "000" ] || [ "$code" -ge 500 ]; then
+            echo "Dreamer failed (HTTP $code)."; exit 1
+          fi
