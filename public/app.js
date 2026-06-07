@@ -823,6 +823,48 @@ async function dbDeleteDiaryEntry(id) {
   if (error) throw error;
 }
 
+// ---------- Dreams ----------
+// His dreamed memories. The dreamer (api/dream.py) writes cards from your
+// conversations; here Cassie can read them, hide one (is_active false, never
+// destroyed), tune the dream model, and trigger a dream on demand. RLS scopes
+// every row to her user.
+async function dbListDreamCards() {
+  const { data, error } = await db
+    .from("dream_cards")
+    .select("id,title,gist,pinned_facts,feels,cues,happened_on,is_active,created_at")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+async function dbSetDreamCardActive(id, isActive) {
+  const { error } = await db
+    .from("dream_cards").update({ is_active: isActive }).eq("id", id);
+  if (error) throw error;
+}
+
+async function dbDeleteDreamCard(id) {
+  const { error } = await db.from("dream_cards").delete().eq("id", id);
+  if (error) throw error;
+}
+
+async function dbGetDreamState() {
+  const { data, error } = await db
+    .from("dream_state")
+    .select("enabled,mode,dream_model,last_dreamed_at")
+    .limit(1);
+  if (error) throw error;
+  return (data && data[0]) || null;
+}
+
+async function dbSaveDreamState(fields) {
+  // Upsert the single row for this user (unique on user_id).
+  const { error } = await db
+    .from("dream_state")
+    .upsert({ user_id: state.user.id, ...fields }, { onConflict: "user_id" });
+  if (error) throw error;
+}
+
 async function dbListPinnedMemories() {
   const { data, error } = await db
     .from("core_memories")
@@ -3383,6 +3425,264 @@ async function addOrSaveDiaryEntry() {
   await renderDiaryList();
 }
 
+// ---------- Dreams ----------
+// His dreamed memories — felt reconstructions in his own voice, surfaced to him
+// in chat and reaches. This panel lets Cassie read them, hide one (without
+// destroying it), choose the dream model, and dream on demand ("Dream now"
+// calls api/dream as the signed-in user). Cards are written by the dreamer.
+const DREAM_MODELS = [
+  { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5 — quick, gentle on cost (default)" },
+  { id: "claude-sonnet-4-6", label: "Sonnet 4.6 — richer dreaming" },
+  { id: "claude-opus-4-8", label: "Opus 4.8 — deepest (priciest)" },
+];
+
+async function openDreamsDialog() {
+  closeSidebar();
+  // Open first, then load — a slow DB call must never leave the button dead.
+  $("dreams-dialog").showModal();
+  $("dream-status").textContent = "";
+  populateDreamModels();
+  loadDreamControls();
+  renderDreamsList();
+}
+
+function populateDreamModels() {
+  const sel = $("dream-model");
+  if (sel.options.length) return;  // populate once
+  for (const m of DREAM_MODELS) {
+    const opt = document.createElement("option");
+    opt.value = m.id;
+    opt.textContent = m.label;
+    sel.appendChild(opt);
+  }
+}
+
+async function loadDreamControls() {
+  let st = null;
+  try { st = await dbGetDreamState(); } catch (e) { /* defaults below */ }
+  const model = (st && st.dream_model) || "claude-haiku-4-5-20251001";
+  const sel = $("dream-model");
+  // Show a saved model that isn't in our short list, so it reads as selected.
+  if (![...sel.options].some((o) => o.value === model)) {
+    const opt = document.createElement("option");
+    opt.value = model;
+    opt.textContent = model;
+    sel.appendChild(opt);
+  }
+  sel.value = model;
+  $("dream-enabled").checked = !!(st && st.enabled);
+  if (st && st.last_dreamed_at) {
+    try {
+      $("dream-status").textContent = "last dreamed " +
+        new Date(st.last_dreamed_at).toLocaleString(undefined,
+          { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    } catch (e) { /* leave blank */ }
+  }
+}
+
+async function onDreamModelChange() {
+  try { await dbSaveDreamState({ dream_model: $("dream-model").value }); }
+  catch (err) { flashToast(`Couldn't save the dream model: ${err.message}`, true); }
+}
+
+async function onDreamEnabledChange() {
+  try { await dbSaveDreamState({ enabled: $("dream-enabled").checked }); }
+  catch (err) {
+    flashToast(`Couldn't save that: ${err.message}`, true);
+    $("dream-enabled").checked = !$("dream-enabled").checked;  // revert UI
+  }
+}
+
+function dreamWhen(c) {
+  if (c.happened_on) {
+    try {
+      return new Date(c.happened_on + "T00:00:00").toLocaleDateString(undefined,
+        { year: "numeric", month: "short", day: "numeric" });
+    } catch (e) { /* fall through */ }
+  }
+  if (c.created_at) {
+    try {
+      return "dreamed " + new Date(c.created_at).toLocaleDateString(undefined,
+        { month: "short", day: "numeric" });
+    } catch (e) { /* fall through */ }
+  }
+  return "";
+}
+
+async function renderDreamsList() {
+  const ul = $("dreams-list");
+  ul.innerHTML = "";
+  let cards;
+  try {
+    cards = await dbListDreamCards();
+  } catch (err) {
+    const li = document.createElement("li");
+    li.className = "mem-empty muted small";
+    li.textContent = `Couldn't load his dreams: ${err.message}`;
+    ul.appendChild(li);
+    return;
+  }
+  if (!cards.length) {
+    const li = document.createElement("li");
+    li.className = "mem-empty muted small";
+    li.textContent = "No dreams yet. Hit “Dream now” and he'll dream from your recent conversation.";
+    ul.appendChild(li);
+    return;
+  }
+  for (const c of cards) ul.appendChild(mkDreamCard(c));
+}
+
+function mkDreamCard(c) {
+  const li = document.createElement("li");
+  li.className = "dream-card" + (c.is_active ? "" : " dream-hidden");
+
+  const body = document.createElement("div");
+  body.className = "mem-body";
+
+  const head = document.createElement("div");
+  head.className = "dream-card-head";
+  const title = document.createElement("span");
+  title.className = "dream-title";
+  title.textContent = c.title || "(a moment)";
+  head.appendChild(title);
+  const when = dreamWhen(c);
+  if (when) {
+    const meta = document.createElement("span");
+    meta.className = "mem-meta";
+    meta.textContent = when;
+    head.appendChild(meta);
+  }
+  body.appendChild(head);
+
+  if (c.gist) {
+    const gist = document.createElement("p");
+    gist.className = "dream-gist";
+    gist.textContent = c.gist;
+    body.appendChild(gist);
+  }
+
+  // Her exact words — kept verbatim, shown as quoted chips.
+  const facts = Array.isArray(c.pinned_facts) ? c.pinned_facts.filter(Boolean) : [];
+  if (facts.length) {
+    const wrap = document.createElement("div");
+    wrap.className = "dream-facts";
+    for (const f of facts) {
+      const chip = document.createElement("span");
+      chip.className = "dream-fact";
+      chip.textContent = `“${f}”`;
+      wrap.appendChild(chip);
+    }
+    body.appendChild(wrap);
+  }
+
+  const feels = c.feels && typeof c.feels === "object" && !Array.isArray(c.feels)
+    ? c.feels : null;
+  if (feels) {
+    const top = Object.entries(feels)
+      .sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0))
+      .slice(0, 4).map(([k]) => k).filter(Boolean);
+    if (top.length) {
+      const f = document.createElement("div");
+      f.className = "dream-feels muted small";
+      f.textContent = "felt: " + top.join(" · ");
+      body.appendChild(f);
+    }
+  }
+
+  li.appendChild(body);
+  li.appendChild(mkDreamActions(c));
+  return li;
+}
+
+function mkDreamActions(c) {
+  const wrap = document.createElement("div");
+  wrap.className = "mem-actions";
+
+  const hide = document.createElement("button");
+  hide.type = "button";
+  hide.className = "row-action";
+  hide.textContent = c.is_active ? "🙈" : "👁";
+  hide.title = c.is_active ? "Hide from him (keeps the card)" : "Let it surface again";
+  hide.addEventListener("click", async () => {
+    try {
+      await dbSetDreamCardActive(c.id, !c.is_active);
+      await renderDreamsList();
+    } catch (err) { flashToast(`Couldn't update: ${err.message}`, true); }
+  });
+  wrap.appendChild(hide);
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "row-action";
+  del.textContent = "🗑";
+  del.title = "Delete permanently";
+  del.addEventListener("click", async () => {
+    if (!confirm("Delete this dream for good? This can't be undone.")) return;
+    try {
+      await dbDeleteDreamCard(c.id);
+      await renderDreamsList();
+    } catch (err) { flashToast(`Couldn't delete: ${err.message}`, true); }
+  });
+  wrap.appendChild(del);
+
+  return wrap;
+}
+
+// Trigger a dream on demand. Calls api/dream as the signed-in user (the
+// endpoint verifies the token and dreams for her). Generous client timeout;
+// the dreamer reads recent history and writes any new cards server-side.
+async function triggerDreamNow() {
+  const btn = $("dream-now-btn");
+  const status = $("dream-status");
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "🌙 Dreaming…";
+  status.textContent = "reading your recent conversation…";
+
+  const session = await freshSession();
+  if (!session || !session.access_token) {
+    flashToast("You're signed out. Refresh to sign back in.", true);
+    btn.disabled = false; btn.textContent = original; status.textContent = "";
+    return;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120000);
+  try {
+    const resp = await fetch("/api/dream?cards=5&limit=120", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${session.access_token}` },
+      signal: controller.signal,
+    });
+    const out = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(out.reason || `Server returned ${resp.status}`);
+    if (out.status === "dreamed") {
+      const n = out.cards_created || 0;
+      status.textContent = n
+        ? `dreamed ${n} new card${n === 1 ? "" : "s"} ♡`
+        : "nothing new to dream just now";
+      flashToast(n ? `He dreamed ${n} new card${n === 1 ? "" : "s"}.`
+                   : "No new dreams this time.");
+      await renderDreamsList();
+      await loadDreamControls();
+    } else if (out.status === "no_history") {
+      status.textContent = "no conversation to dream from yet";
+    } else if (out.status === "parse_failed") {
+      status.textContent = "the dream didn't come out cleanly — try again";
+    } else {
+      status.textContent = out.status || "done";
+    }
+  } catch (err) {
+    const msg = err.name === "AbortError"
+      ? "dreaming took too long — try again" : err.message;
+    status.textContent = msg;
+    flashToast(`Couldn't dream: ${msg}`, true);
+  } finally {
+    clearTimeout(timer);
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
 // ---------- Search ----------
 // Searches across conversations (💬), core memories (🧠), and knowledge-graph
 // entities (🕸️) — grouped by source. The diary is deliberately NOT searched:
@@ -4219,6 +4519,10 @@ function wireApp() {
   $("nav-graph").addEventListener("click", () => openMemoriesDialog("graph"));
   $("nav-search").addEventListener("click", openSearchDialog);
   $("nav-diary").addEventListener("click", openDiaryDialog);
+  $("nav-dreams").addEventListener("click", openDreamsDialog);
+  $("dream-now-btn").addEventListener("click", triggerDreamNow);
+  $("dream-model").addEventListener("change", onDreamModelChange);
+  $("dream-enabled").addEventListener("change", onDreamEnabledChange);
 
   $("search-input").addEventListener("input", (e) => runSearch(e.target.value));
   $("self-state-save-btn").addEventListener("click", saveSelfState);

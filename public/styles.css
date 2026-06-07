@@ -1830,3 +1830,52 @@ dialog::backdrop {
   word-break: break-word;
   line-height: 1.45;
 }
+
+/* ---- Dreams panel ---- */
+.dream-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 4px 0 14px;
+}
+.dream-row { display: flex; flex-direction: column; gap: 6px; }
+.dream-row select { width: 100%; }
+.dream-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.dream-check input { margin: 0; }
+.dream-now-row { align-items: center; gap: 10px; }
+#dream-status { flex: 1; min-width: 0; }
+
+/* A dream card reuses .diary-list li for layout; its body stacks title,
+   gist, her pinned words, and the feels line. */
+.dream-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.dream-title { color: var(--text); font-weight: 600; }
+.dream-gist {
+  margin: 0;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+.dream-facts { display: flex; flex-wrap: wrap; gap: 6px; }
+.dream-fact {
+  font-size: 12px;
+  color: var(--accent);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 2px 8px;
+  max-width: 100%;
+  word-break: break-word;
+}
+.dream-feels { font-style: italic; letter-spacing: 0.02em; }
+.dream-hidden { opacity: 0.5; }
