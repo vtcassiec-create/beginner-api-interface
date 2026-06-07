@@ -4698,10 +4698,28 @@ async function startAutoUpdate() {
   setInterval(checkForUpdate, 10 * 60 * 1000);   // also every 10 min while open
 }
 
+// Give every dialog a little × in the top-right corner, so the long windows
+// (diary, dreams, memories) can be closed without scrolling all the way down
+// to a bottom button. The dialog wraps a scrolling inner form, so a corner
+// button pinned to the dialog stays put while the content scrolls.
+function addDialogCloseButtons() {
+  document.querySelectorAll("dialog").forEach((d) => {
+    if (d.querySelector(":scope > .dialog-x")) return;  // only once
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "dialog-x";
+    x.setAttribute("aria-label", "Close");
+    x.textContent = "×";
+    x.addEventListener("click", () => d.close());
+    d.insertBefore(x, d.firstChild);
+  });
+}
+
 function init() {
   installErrorSurfacing();
   wireSignIn();
   wireApp();
+  addDialogCloseButtons();
   initSupabase();
   startAutoUpdate();
 }
