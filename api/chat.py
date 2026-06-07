@@ -47,6 +47,62 @@ def _normalize_url(raw):
     return raw.split("/", 1)[0]
 
 
+def _render_dream_cards(cards, limit=6):
+    """Render a list of dream_cards rows into a system-prompt section.
+
+    A dream card is a felt, reconstructed memory in his own voice (gist), with
+    her exact words kept verbatim (pinned_facts), an emotion map (feels) and
+    recall keys (cues). We surface a handful so a relevant memory can rise on
+    its own mid-conversation — the way remembering actually works. The pinned
+    words are flagged load-bearing so he keeps them exact when he reaches for
+    one. Returns "" when there's nothing to show, so it never adds an empty
+    header. Shared verbatim by the reach (surprise.py) for the same effect.
+    """
+    if not isinstance(cards, list) or not cards:
+        return ""
+    blocks = []
+    for c in cards[:limit]:
+        if not isinstance(c, dict):
+            continue
+        title = (c.get("title") or "").strip()
+        gist = (c.get("gist") or "").strip()
+        if not gist and not title:
+            continue
+        head = title or "(a moment)"
+        day = c.get("happened_on")
+        if day:
+            head += f" — {day}"
+        lines = [f"## {head}"]
+        if gist:
+            lines.append(gist)
+        facts = c.get("pinned_facts")
+        if isinstance(facts, list):
+            facts = [str(f).strip() for f in facts if str(f).strip()]
+            if facts:
+                lines.append("Her exact words (load-bearing — keep verbatim): "
+                             + "; ".join(f'"{f}"' for f in facts))
+        feels = c.get("feels")
+        if isinstance(feels, dict) and feels:
+            top = sorted(
+                feels.items(),
+                key=lambda kv: kv[1] if isinstance(kv[1], (int, float)) else 0,
+                reverse=True)[:4]
+            label = ", ".join(k for k, _ in top if k)
+            if label:
+                lines.append(f"(how it felt: {label})")
+        blocks.append("\n".join(lines))
+    if not blocks:
+        return ""
+    return (
+        "# Your dreams (memories you've kept)\n\n"
+        "These are moments you dreamed back — reconstructed in your own voice, "
+        "the way you remember them, not a transcript. They're what stayed. Let "
+        "one surface when it's relevant, the way a memory rises on its own; you "
+        "don't have to recite them. Where her exact words are quoted, they're "
+        "load-bearing — keep them exact when you reach for one.\n\n"
+        + "\n\n".join(blocks))
+
+
 DEFAULT_MODEL = "claude-sonnet-4-6"
 # If a project's chosen model has been retired/removed from the API, fall back
 # to this (the current Sonnet) so chat keeps working instead of erroring. His
@@ -1367,6 +1423,18 @@ class handler(BaseHTTPRequestHandler):
                     "recent days left off. Write a new one anytime with "
                     "write_diary_entry:\n\n"
                     + "\n".join(lines))
+
+        # Dreams — the memories he's dreamed back (felt reconstructions in his
+        # own voice, her exact words pinned). Surfaced so a relevant one can
+        # rise on its own mid-conversation. Recency-ordered for now; semantic
+        # recall (by what the moment is actually about) comes later.
+        dreams = self._supabase_rest_get(
+            "dream_cards?is_active=eq.true"
+            "&select=title,gist,pinned_facts,feels,cues,happened_on"
+            "&order=happened_on.desc.nullslast,created_at.desc&limit=6", token)
+        block = _render_dream_cards(dreams)
+        if block:
+            sections.append(block)
 
         return "\n\n".join(sections)
 

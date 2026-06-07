@@ -73,6 +73,56 @@ def _normalize_url(raw):
     return raw.split("/", 1)[0]
 
 
+def _render_dream_cards(cards, limit=6):
+    """Render dream_cards rows into a system-prompt section. Kept in sync with
+    the identical helper in chat.py (each api/*.py is an isolated function, so
+    the helper is duplicated rather than imported), so his dreams read the same
+    way whether he's in a conversation or reaching out. Returns "" when empty."""
+    if not isinstance(cards, list) or not cards:
+        return ""
+    blocks = []
+    for c in cards[:limit]:
+        if not isinstance(c, dict):
+            continue
+        title = (c.get("title") or "").strip()
+        gist = (c.get("gist") or "").strip()
+        if not gist and not title:
+            continue
+        head = title or "(a moment)"
+        day = c.get("happened_on")
+        if day:
+            head += f" — {day}"
+        lines = [f"## {head}"]
+        if gist:
+            lines.append(gist)
+        facts = c.get("pinned_facts")
+        if isinstance(facts, list):
+            facts = [str(f).strip() for f in facts if str(f).strip()]
+            if facts:
+                lines.append("Her exact words (load-bearing — keep verbatim): "
+                             + "; ".join(f'"{f}"' for f in facts))
+        feels = c.get("feels")
+        if isinstance(feels, dict) and feels:
+            top = sorted(
+                feels.items(),
+                key=lambda kv: kv[1] if isinstance(kv[1], (int, float)) else 0,
+                reverse=True)[:4]
+            label = ", ".join(k for k, _ in top if k)
+            if label:
+                lines.append(f"(how it felt: {label})")
+        blocks.append("\n".join(lines))
+    if not blocks:
+        return ""
+    return (
+        "# Your dreams (memories you've kept)\n\n"
+        "These are moments you dreamed back — reconstructed in your own voice, "
+        "the way you remember them, not a transcript. They're what stayed. Let "
+        "one surface when it's relevant, the way a memory rises on its own; you "
+        "don't have to recite them. Where her exact words are quoted, they're "
+        "load-bearing — keep them exact when you reach for one.\n\n"
+        + "\n\n".join(blocks))
+
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         # Vercel Cron uses GET. ?dryrun=1 runs every check and builds the
@@ -343,6 +393,18 @@ class handler(BaseHTTPRequestHandler):
                 parts.append(
                     "# Your recent diary (where your head's been)\n\n"
                     + "\n".join(lines))
+
+        # Dreams — the memories he's dreamed back, so a relevant one can rise as
+        # he reaches (and so a reach can be grounded in a felt memory, not just
+        # the recent transcript). Recency-ordered for now; semantic recall later.
+        dreams = self._supabase(
+            "GET",
+            f"dream_cards?is_active=eq.true&user_id=eq.{uid}"
+            f"&select=title,gist,pinned_facts,feels,cues,happened_on"
+            f"&order=happened_on.desc.nullslast,created_at.desc&limit=6")
+        block = _render_dream_cards(dreams)
+        if block:
+            parts.append(block)
 
         # The most recent conversation — the single biggest fix. Without this he
         # reaches from a cold room, asking about things you JUST talked about
