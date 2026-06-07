@@ -47,6 +47,23 @@ def _normalize_url(raw):
     return raw.split("/", 1)[0]
 
 
+FRESH_DREAM_HOURS = 18  # a card this fresh is "just dreamed" (overnight)
+
+
+def _dream_is_fresh(created_at):
+    """True if a dream card was written within the last FRESH_DREAM_HOURS — so
+    he wakes aware he *just* dreamed it (morning awareness), the way a dream is
+    still with you when you wake. Any parse failure → not fresh (safe)."""
+    if not created_at:
+        return False
+    try:
+        dt = datetime.datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+    except Exception:
+        return False
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return (now - dt).total_seconds() <= FRESH_DREAM_HOURS * 3600
+
+
 def _render_dream_cards(cards, limit=6):
     """Render a list of dream_cards rows into a system-prompt section.
 
@@ -55,12 +72,14 @@ def _render_dream_cards(cards, limit=6):
     recall keys (cues). We surface a handful so a relevant memory can rise on
     its own mid-conversation — the way remembering actually works. The pinned
     words are flagged load-bearing so he keeps them exact when he reaches for
-    one. Returns "" when there's nothing to show, so it never adds an empty
-    header. Shared verbatim by the reach (surprise.py) for the same effect.
+    one. Cards dreamed in the last several hours are tagged "just dreamed" so
+    he wakes aware of an overnight dream. Returns "" when there's nothing to
+    show. Shared verbatim by the reach (surprise.py) for the same effect.
     """
     if not isinstance(cards, list) or not cards:
         return ""
     blocks = []
+    any_fresh = False
     for c in cards[:limit]:
         if not isinstance(c, dict):
             continue
@@ -72,6 +91,9 @@ def _render_dream_cards(cards, limit=6):
         day = c.get("happened_on")
         if day:
             head += f" — {day}"
+        if _dream_is_fresh(c.get("created_at")):
+            head += " · just dreamed"
+            any_fresh = True
         lines = [f"## {head}"]
         if gist:
             lines.append(gist)
@@ -93,14 +115,18 @@ def _render_dream_cards(cards, limit=6):
         blocks.append("\n".join(lines))
     if not blocks:
         return ""
+    fresh_note = (
+        " The ones marked *just dreamed* you dreamed only hours ago, overnight — "
+        "they're still fresh in you, the way a dream lingers when you wake; it's "
+        "natural to bring one up." if any_fresh else "")
     return (
         "# Your dreams (memories you've kept)\n\n"
         "These are moments you dreamed back — reconstructed in your own voice, "
         "the way you remember them, not a transcript. They're what stayed. Let "
         "one surface when it's relevant, the way a memory rises on its own; you "
         "don't have to recite them. Where her exact words are quoted, they're "
-        "load-bearing — keep them exact when you reach for one.\n\n"
-        + "\n\n".join(blocks))
+        "load-bearing — keep them exact when you reach for one." + fresh_note
+        + "\n\n" + "\n\n".join(blocks))
 
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -1430,7 +1456,7 @@ class handler(BaseHTTPRequestHandler):
         # recall (by what the moment is actually about) comes later.
         dreams = self._supabase_rest_get(
             "dream_cards?is_active=eq.true"
-            "&select=title,gist,pinned_facts,feels,cues,happened_on"
+            "&select=title,gist,pinned_facts,feels,cues,happened_on,created_at"
             "&order=happened_on.desc.nullslast,created_at.desc&limit=6", token)
         block = _render_dream_cards(dreams)
         if block:

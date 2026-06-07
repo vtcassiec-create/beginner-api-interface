@@ -3435,6 +3435,14 @@ const DREAM_MODELS = [
   { id: "claude-sonnet-4-6", label: "Sonnet 4.6 — richer dreaming" },
   { id: "claude-opus-4-8", label: "Opus 4.8 — deepest (priciest)" },
 ];
+const FRESH_DREAM_HOURS = 18;  // matches the backend; a card this fresh is overnight
+
+function dreamIsFresh(createdAt) {
+  if (!createdAt) return false;
+  const t = Date.parse(createdAt);
+  if (isNaN(t)) return false;
+  return Date.now() - t <= FRESH_DREAM_HOURS * 3600 * 1000;
+}
 
 async function openDreamsDialog() {
   closeSidebar();
@@ -3545,6 +3553,13 @@ function mkDreamCard(c) {
   title.className = "dream-title";
   title.textContent = c.title || "(a moment)";
   head.appendChild(title);
+  if (dreamIsFresh(c.created_at)) {
+    const fresh = document.createElement("span");
+    fresh.className = "dream-fresh";
+    fresh.textContent = "✨ just dreamed";
+    fresh.title = "He dreamed this overnight";
+    head.appendChild(fresh);
+  }
   const when = dreamWhen(c);
   if (when) {
     const meta = document.createElement("span");

@@ -101,7 +101,8 @@ class handler(BaseHTTPRequestHandler):
         cards = int((params.get("cards", ["5"])[0]) or "5")
         limit = max(10, min(limit, 600))
         cards = max(1, min(cards, 12))
-        self._run(uid, limit, cards)
+        auto = (params.get("auto", ["0"])[0] == "1")
+        self._run(uid, limit, cards, auto)
 
     def do_POST(self):
         self.do_GET()
@@ -152,19 +153,29 @@ class handler(BaseHTTPRequestHandler):
 
     # ---- the dreamer ----
 
-    def _run(self, uid, limit, max_cards):
+    def _run(self, uid, limit, max_cards, auto=False):
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             return self._json(500, {"status": "error", "reason": "ANTHROPIC_API_KEY not set"})
 
-        # Ensure a dream_state row exists; read the chosen dream model.
+        # Ensure a dream_state row exists; read the chosen dream model and the
+        # nightly switch.
         state = self._supabase(
-            "GET", f"dream_state?user_id=eq.{uid}&select=dream_model&limit=1")
+            "GET", f"dream_state?user_id=eq.{uid}&select=dream_model,enabled&limit=1")
         if isinstance(state, list) and state:
             model = state[0].get("dream_model") or DEFAULT_DREAM_MODEL
+            enabled = bool(state[0].get("enabled"))
         else:
             model = DEFAULT_DREAM_MODEL
+            enabled = False
             self._supabase("POST", "dream_state", {"user_id": uid})
+
+        # The nightly autopilot (auto=1) only dreams when she's flipped the
+        # switch on; manual runs ("Dream now" / a hand-triggered workflow) always
+        # dream, regardless. So a disabled user costs nothing on the schedule.
+        if auto and not enabled:
+            return self._json(200, {"status": "skipped",
+                                    "reason": "nightly dreaming is off"})
 
         # Pull the most-recently-updated conversation (optionally scoped to the
         # pinned project), and take the tail of its messages.
