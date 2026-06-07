@@ -1311,6 +1311,27 @@ class handler(BaseHTTPRequestHandler):
             return f"{int(days / 7)}w ago"
         return f"{int(days / 30)}mo ago"
 
+    def _recent_query_text(self, data, max_msgs=4, cap=600):
+        """A short blob of the latest turns, used to find the dream cards that
+        fit what she's talking about now. Pulls text from the last few messages
+        (handles both string and block-list content). Returns "" if there's
+        nothing — match_dream_cards then just falls back to recency."""
+        msgs = data.get("messages")
+        if not isinstance(msgs, list):
+            return ""
+        parts = []
+        for m in msgs[-max_msgs:]:
+            if not isinstance(m, dict):
+                continue
+            content = m.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "text":
+                        parts.append(b.get("text") or "")
+        return " ".join(p for p in parts if p).strip()[:cap]
+
     def _load_memory_context(self, token, data):
         """Assemble the preamble in fixed order: self-state, then the
         current-moment block, then user preferences, then active core
@@ -1451,13 +1472,22 @@ class handler(BaseHTTPRequestHandler):
                     + "\n".join(lines))
 
         # Dreams — the memories he's dreamed back (felt reconstructions in his
-        # own voice, her exact words pinned). Surfaced so a relevant one can
-        # rise on its own mid-conversation. Recency-ordered for now; semantic
-        # recall (by what the moment is actually about) comes later.
-        dreams = self._supabase_rest_get(
-            "dream_cards?is_active=eq.true"
-            "&select=title,gist,pinned_facts,feels,cues,happened_on,created_at"
-            "&order=happened_on.desc.nullslast,created_at.desc&limit=6", token)
+        # own voice, her exact words pinned). We surface the ones that fit what
+        # she's talking about now (in-database full-text match via the
+        # match_dream_cards RPC), so a relevant memory rises even if it was
+        # dreamed long ago. If that function isn't present yet (migration not
+        # run) the call fails cleanly and we fall back to plain recency.
+        dreams = None
+        ok, res = self._supabase_write(
+            "rpc/match_dream_cards",
+            {"p_query": self._recent_query_text(data), "p_match_count": 6}, token)
+        if ok and isinstance(res, list):
+            dreams = res
+        if dreams is None:
+            dreams = self._supabase_rest_get(
+                "dream_cards?is_active=eq.true"
+                "&select=title,gist,pinned_facts,feels,cues,happened_on,created_at"
+                "&order=happened_on.desc.nullslast,created_at.desc&limit=6", token)
         block = _render_dream_cards(dreams)
         if block:
             sections.append(block)

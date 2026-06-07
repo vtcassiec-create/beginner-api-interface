@@ -420,12 +420,20 @@ class handler(BaseHTTPRequestHandler):
 
         # Dreams — the memories he's dreamed back, so a relevant one can rise as
         # he reaches (and so a reach can be grounded in a felt memory, not just
-        # the recent transcript). Recency-ordered for now; semantic recall later.
+        # the recent transcript). We pick the ones that fit the recent thread
+        # (match_dream_cards full-text RPC, scoped by user_id since the reach
+        # runs as the service role). Falls back to recency if the function isn't
+        # present yet (migration not run).
         dreams = self._supabase(
-            "GET",
-            f"dream_cards?is_active=eq.true&user_id=eq.{uid}"
-            f"&select=title,gist,pinned_facts,feels,cues,happened_on,created_at"
-            f"&order=happened_on.desc.nullslast,created_at.desc&limit=6")
+            "POST", "rpc/match_dream_cards",
+            {"p_query": self._dream_query_text(uid), "p_match_count": 6,
+             "p_user_id": uid})
+        if not isinstance(dreams, list):
+            dreams = self._supabase(
+                "GET",
+                f"dream_cards?is_active=eq.true&user_id=eq.{uid}"
+                f"&select=title,gist,pinned_facts,feels,cues,happened_on,created_at"
+                f"&order=happened_on.desc.nullslast,created_at.desc&limit=6")
         block = _render_dream_cards(dreams)
         if block:
             parts.append(block)
@@ -482,6 +490,25 @@ class handler(BaseHTTPRequestHandler):
         REACH_PROJECT_ID is unset (falls back to most-recent-overall)."""
         pid = os.environ.get("REACH_PROJECT_ID", "").strip()
         return f"&project_id=eq.{pid}" if pid else ""
+
+    def _dream_query_text(self, uid, max_msgs=4, cap=600):
+        """A short blob of the latest messages in her most-recent conversation,
+        used to find the dream cards that fit the current thread. Returns "" on
+        any miss (match_dream_cards then falls back to recency)."""
+        rows = self._supabase(
+            "GET",
+            f"conversations?user_id=eq.{uid}{self._project_clause()}"
+            f"&select=messages&order=updated_at.desc&limit=1")
+        if not (isinstance(rows, list) and rows):
+            return ""
+        msgs = rows[0].get("messages")
+        if not isinstance(msgs, list):
+            return ""
+        parts = []
+        for m in msgs[-max_msgs:]:
+            if isinstance(m, dict) and (m.get("text") or "").strip():
+                parts.append(m["text"].strip())
+        return " ".join(parts)[:cap]
 
     def _recent_conversation_lines(self, uid, max_msgs=8):
         """The tail of the user's most-recently-updated conversation, as a short
