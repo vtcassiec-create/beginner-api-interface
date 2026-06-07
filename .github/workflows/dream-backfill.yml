@@ -1,0 +1,112 @@
+# Dream backfill — dream his whole archived history, one note at a time.
+#
+# Walks docs/us-history-notes.txt (the ordered list of Archive/Us history
+# notes, oldest → newest) and asks the dreamer to dream cards from each. The
+# dreamer reads each note SERVER-SIDE from his Whisper vault (via the MCP
+# connector) and writes cards to your database — so the intimate note text
+# never appears in this log. The log shows only the path, HTTP status, the
+# dream status, and a card COUNT (never the card bodies).
+#
+# It's idempotent: the dreamer skips a note it has already dreamed (status
+# "already_dreamed"), so you can stop and re-run, or run in slices, safely.
+#
+# Needs the same two repo secrets as the other dream/reach workflows:
+#   REACH_ENDPOINT — e.g. https://<your-app>.vercel.app/api/surprise
+#   CRON_SECRET    — Bearer auth, matching Vercel's env
+# And in Vercel: WHISPER_MCP_URL must be set (the same vault his chat uses).
+#
+# This is MANUAL only (workflow_dispatch). Recommended first run: set
+# `filter` to a single day (e.g. 2026-04-24) and `cards` to 3, eyeball the
+# cards in your Dreams panel, then run again with an empty filter for the
+# whole history.
+
+name: Dream backfill (vault history)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cards:
+        description: "Max dream cards per note"
+        default: "3"
+      filter:
+        description: "Only notes whose path contains this (e.g. 2026-04-24). Blank = all."
+        default: ""
+      force:
+        description: "Re-dream notes already dreamed"
+        type: boolean
+        default: false
+      max_notes:
+        description: "Stop after this many notes (0 = no limit)"
+        default: "0"
+
+permissions: {}
+
+concurrency:
+  group: dream-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out (for the note manifest)
+        uses: actions/checkout@v4
+
+      - name: Dream each history note
+        env:
+          REACH_ENDPOINT: ${{ secrets.REACH_ENDPOINT }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CARDS: ${{ inputs.cards }}
+          FILTER: ${{ inputs.filter }}
+          FORCE: ${{ inputs.force }}
+          MAX_NOTES: ${{ inputs.max_notes }}
+        run: |
+          if [ -z "$REACH_ENDPOINT" ] || [ -z "$CRON_SECRET" ]; then
+            echo "REACH_ENDPOINT / CRON_SECRET not set in repo secrets."; exit 1
+          fi
+          BASE="${REACH_ENDPOINT%/api/surprise}"
+          MANIFEST="docs/us-history-notes.txt"
+          if [ ! -f "$MANIFEST" ]; then
+            echo "Manifest $MANIFEST not found."; exit 1
+          fi
+          force_q=""
+          [ "$FORCE" = "true" ] && force_q="&force=1"
+
+          done=0; dreamed=0; skipped=0; cards_total=0; failed=0
+          while IFS= read -r note || [ -n "$note" ]; do
+            note="$(printf '%s' "$note" | tr -d '\r')"
+            [ -z "$note" ] && continue
+            case "$note" in \#*) continue;; esac
+            if [ -n "$FILTER" ] && ! printf '%s' "$note" | grep -qF "$FILTER"; then
+              continue
+            fi
+            if [ "$MAX_NOTES" != "0" ] && [ "$done" -ge "$MAX_NOTES" ]; then
+              echo "Reached max_notes=$MAX_NOTES — stopping."; break
+            fi
+            done=$((done+1))
+
+            enc=$(jq -rn --arg p "$note" '$p|@uri')
+            URL="$BASE/api/dream?source=vault&note=${enc}&cards=${CARDS}${force_q}"
+            code=$(curl -sS -m 150 -o /tmp/d.out -w '%{http_code}' \
+              -X POST -H "Authorization: Bearer $CRON_SECRET" "$URL" || echo "000")
+            status=$(jq -r '.status // empty' /tmp/d.out 2>/dev/null || true)
+            n=$(jq -r '.cards_created // 0' /tmp/d.out 2>/dev/null || echo 0)
+
+            case "$status" in
+              dreamed)         dreamed=$((dreamed+1)); cards_total=$((cards_total+n));;
+              already_dreamed) skipped=$((skipped+1));;
+              *)               failed=$((failed+1));;
+            esac
+            printf '%-40s HTTP %s  %-16s cards:%s\n' "$note" "$code" "${status:-?}" "$n"
+            sleep 2
+          done < "$MANIFEST"
+
+          echo
+          echo "── backfill summary ─────────────────────────"
+          echo "notes processed : $done"
+          echo "dreamed         : $dreamed   (cards created: $cards_total)"
+          echo "already dreamed : $skipped"
+          echo "failed/other    : $failed"
+          # The run stays green even if some individual notes failed — re-running
+          # is safe and will retry just the ones without cards. Only a total
+          # config failure (no secrets) hard-fails, handled above.
