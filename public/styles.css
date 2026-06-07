@@ -1855,10 +1855,20 @@ dialog::backdrop {
 .dream-card-head {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
 }
+.dream-card-head .mem-meta { margin-left: auto; }
 .dream-title { color: var(--text); font-weight: 600; }
+.dream-fresh {
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  opacity: 0.9;
+}
 .dream-gist {
   margin: 0;
   color: var(--text);

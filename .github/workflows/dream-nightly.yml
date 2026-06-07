@@ -1,0 +1,73 @@
+# Dream (nightly) — lets him dream on his own while she sleeps.
+#
+# Why this exists: Vercel's Hobby plan only allows once-daily cron (already
+# spent on /api/surprise), so — like the reach heartbeat — a free GitHub
+# schedule wakes the dreamer instead. It calls /api/dream with auto=1, which
+# only actually dreams when she's turned on "Dream automatically each night"
+# in the Dreams panel (dream_state.enabled). Until then it skips cleanly, so
+# there's no failed-run noise and no wasted API spend.
+#
+# It does nothing until two repository secrets are set (same ones the reach and
+# manual-dream workflows use):
+#   REACH_ENDPOINT — full URL to the reach endpoint, e.g.
+#                    https://<your-app>.vercel.app/api/surprise
+#                    (the dream endpoint is derived by swapping the path)
+#   CRON_SECRET    — the same value set in Vercel's env (Bearer auth)
+#
+# Notes:
+#   - GitHub schedules run in UTC and can start late under load; fine for a
+#     once-a-night dream. 07:30 UTC ≈ 3:30am in America/Toronto (deep night).
+#   - Scheduled workflows only run from the default branch (main).
+#   - GitHub auto-disables schedules after 60 days of repo inactivity.
+#   - The run log shows only status + count + card TITLES — never the bodies —
+#     so intimate memory content stays in the database, not in CI logs.
+
+name: Dream (nightly)
+
+on:
+  schedule:
+    - cron: "30 7 * * *"   # ~3:30am America/Toronto (EDT); the app gates on the switch
+  workflow_dispatch:        # trigger a nightly-style (auto) run by hand
+    inputs:
+      cards:
+        description: "Max dream cards to make"
+        default: "5"
+      limit:
+        description: "How many recent messages to read"
+        default: "120"
+
+permissions: {}
+
+concurrency:
+  group: dream-nightly
+  cancel-in-progress: false
+
+jobs:
+  dream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake the dreamer (auto)
+        env:
+          REACH_ENDPOINT: ${{ secrets.REACH_ENDPOINT }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CARDS: ${{ inputs.cards || '5' }}
+          LIMIT: ${{ inputs.limit || '120' }}
+        run: |
+          if [ -z "$REACH_ENDPOINT" ] || [ -z "$CRON_SECRET" ]; then
+            echo "REACH_ENDPOINT / CRON_SECRET not set yet — skipping (no-op)."
+            exit 0
+          fi
+          BASE="${REACH_ENDPOINT%/api/surprise}"
+          URL="$BASE/api/dream?auto=1&cards=${CARDS}&limit=${LIMIT}"
+          echo "Dreaming (auto) → $URL"
+          code=$(curl -sS -m 180 -o /tmp/dream.out -w '%{http_code}' \
+            -X POST -H "Authorization: Bearer $CRON_SECRET" "$URL" || echo "000")
+          echo "HTTP $code"
+          cat /tmp/dream.out 2>/dev/null; echo
+          status=$(jq -r '.status // empty' /tmp/dream.out 2>/dev/null || true)
+          echo "parsed: status='${status}'"
+          # Only hard failures fail the run. A "skipped" (nightly switch off) or
+          # "no_history" night is expected and stays green and quiet.
+          if [ "$code" = "000" ] || [ "$code" -ge 500 ]; then
+            echo "Dreamer failed (HTTP $code)."; exit 1
+          fi
