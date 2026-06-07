@@ -90,11 +90,9 @@ def _valid_day(s):
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        secret = os.environ.get("CRON_SECRET", "").strip()
-        if not secret:
-            return self._json(500, {"status": "error", "reason": "CRON_SECRET not set"})
-        if self.headers.get("Authorization", "") != f"Bearer {secret}":
-            return self._json(401, {"status": "error", "reason": "unauthorized"})
+        uid = self._authorize()
+        if not uid:
+            return  # _authorize already sent the error response
         try:
             params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         except Exception:
@@ -103,17 +101,58 @@ class handler(BaseHTTPRequestHandler):
         cards = int((params.get("cards", ["5"])[0]) or "5")
         limit = max(10, min(limit, 600))
         cards = max(1, min(cards, 12))
-        self._run(limit, cards)
+        self._run(uid, limit, cards)
 
     def do_POST(self):
         self.do_GET()
 
+    # ---- auth ----
+
+    def _authorize(self):
+        """Two ways in, both via Authorization: Bearer <token>:
+          - the cron/workflow sends CRON_SECRET → dream for REACH_USER_ID.
+          - the app sends a signed-in user's Supabase access token → verify it
+            and dream for THAT user (so 'Dream now' is self-serve from the UI).
+        Returns the user id to dream for, or None after sending an error."""
+        auth = self.headers.get("Authorization", "")
+        token = auth[len("Bearer "):].strip() if auth.startswith("Bearer ") else ""
+        if not token:
+            self._json(401, {"status": "error", "reason": "unauthorized"})
+            return None
+        secret = os.environ.get("CRON_SECRET", "").strip()
+        if secret and token == secret:
+            uid = os.environ.get("REACH_USER_ID", "").strip()
+            if not uid:
+                self._json(500, {"status": "error", "reason": "REACH_USER_ID not set"})
+                return None
+            return uid
+        uid = self._verify_user_token(token)
+        if not uid:
+            self._json(401, {"status": "error", "reason": "unauthorized"})
+            return None
+        return uid
+
+    def _verify_user_token(self, token):
+        """Ask Supabase whether this access token is valid; return its user id
+        or None. Same approach chat.py uses — sidesteps JWT-algorithm choices."""
+        url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        if not url or not anon or not token:
+            return None
+        try:
+            req = urllib.request.Request(
+                f"{url}/auth/v1/user",
+                headers={"Authorization": f"Bearer {token}", "apikey": anon})
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                if resp.status != 200:
+                    return None
+                return json.loads(resp.read().decode()).get("id")
+        except Exception:
+            return None
+
     # ---- the dreamer ----
 
-    def _run(self, limit, max_cards):
-        uid = os.environ.get("REACH_USER_ID", "").strip()
-        if not uid:
-            return self._json(500, {"status": "error", "reason": "REACH_USER_ID not set"})
+    def _run(self, uid, limit, max_cards):
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             return self._json(500, {"status": "error", "reason": "ANTHROPIC_API_KEY not set"})

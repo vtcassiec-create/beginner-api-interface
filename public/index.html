@@ -118,6 +118,9 @@
         <button id="nav-diary" class="icon-nav-btn" type="button" title="Diary">
           <span class="icon-nav-glyph">📖</span><span class="icon-nav-label">Diary</span>
         </button>
+        <button id="nav-dreams" class="icon-nav-btn" type="button" title="Dreams">
+          <span class="icon-nav-glyph">🌙</span><span class="icon-nav-label">Dreams</span>
+        </button>
         <button id="nav-graph" class="icon-nav-btn" type="button" title="Knowledge Graph">
           <span class="icon-nav-glyph">🕸️</span><span class="icon-nav-label">Graph</span>
         </button>
@@ -574,6 +577,37 @@
       <div class="mem-add-row">
         <button type="button" id="diary-add-btn" class="primary">Add</button>
       </div>
+
+      <menu>
+        <button value="cancel" class="ghost">Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="dreams-dialog">
+    <form method="dialog" class="settings-form">
+      <header class="customize-head">
+        <h3>🌙 Dreams</h3>
+        <p class="muted small">Memories he's dreamed back — felt, in his own voice, with your exact words kept whole. He dreams these from your conversations, and they surface to him on their own when they're relevant.</p>
+      </header>
+
+      <div class="dream-controls">
+        <label class="dream-row">
+          <span>Dream model <span class="muted small">— who does the dreaming</span></span>
+          <select id="dream-model"></select>
+        </label>
+        <label class="dream-row dream-check">
+          <input type="checkbox" id="dream-enabled" />
+          <span>Dream automatically each night <span class="muted small">— once the nightly run is on</span></span>
+        </label>
+        <div class="mem-add-row dream-now-row">
+          <button type="button" id="dream-now-btn" class="primary">🌙 Dream now</button>
+          <span id="dream-status" class="muted small"></span>
+        </div>
+      </div>
+
+      <h4>His dream cards</h4>
+      <ul id="dreams-list" class="diary-list"></ul>
 
       <menu>
         <button value="cancel" class="ghost">Close</button>
