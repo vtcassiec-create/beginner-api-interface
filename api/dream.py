@@ -304,11 +304,15 @@ class handler(BaseHTTPRequestHandler):
             return self._json(500, {"status": "error", "reason": "WHISPER_MCP_URL not set"})
 
         source_label = f"vault:{note}"
-        if not force:
+        label_filter = ("user_id=eq." + uid + "&source_label=eq."
+                        + urllib.parse.quote(source_label, safe=""))
+        if force:
+            # Re-dream cleanly: drop any cards already made from this note so a
+            # re-run replaces them instead of duplicating.
+            self._supabase("DELETE", "dream_cards?" + label_filter)
+        else:
             existing = self._supabase(
-                "GET",
-                "dream_cards?select=id&limit=1&user_id=eq." + uid
-                + "&source_label=eq." + urllib.parse.quote(source_label, safe=""))
+                "GET", "dream_cards?select=id&limit=1&" + label_filter)
             if isinstance(existing, list) and existing:
                 return self._json(200, {"status": "already_dreamed", "note": note})
 
@@ -344,7 +348,9 @@ class handler(BaseHTTPRequestHandler):
                                     "raw": raw[:800]})
 
         day = _day_from_path(note)
-        created = self._write_cards(uid, parsed, max_cards, source_label, day)
+        created = self._write_cards(
+            uid, parsed, max_cards, source_label, day,
+            extra_cues=self._era_cues(day))
 
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self._supabase("PATCH", f"dream_state?user_id=eq.{uid}",
@@ -355,9 +361,29 @@ class handler(BaseHTTPRequestHandler):
             "cards_created": len(created), "titles": created,
         })
 
-    def _write_cards(self, uid, parsed, max_cards, source_label, default_day):
+    def _era_cues(self, day):
+        """Recall keys that let her call a backfilled memory up by date or era,
+        not just by what was said in it: the human date ("Friday, May 22, 2026"
+        and "May 22") plus "claude.ai" — these vault notes are their life
+        together before Petrichor. Folded into each card's cues (which the
+        recall search reads), so "do you remember May 22?" or "our last night in
+        claude.ai" become real hooks."""
+        keys = ["claude.ai"]
+        if day:
+            try:
+                d = datetime.date.fromisoformat(day)
+                keys.append(d.strftime("%A, %B ") + f"{d.day}, {d.year}")
+                keys.append(d.strftime("%B ") + str(d.day))
+            except Exception:
+                pass
+        return ", ".join(keys)
+
+    def _write_cards(self, uid, parsed, max_cards, source_label, default_day,
+                     extra_cues=""):
         """Validate and insert dream cards; return the titles actually written.
-        Shared by the app dreamer and the vault backfill."""
+        Shared by the app dreamer and the vault backfill. extra_cues, if given,
+        is appended to every card's cues (the backfill uses it for date/era
+        recall keys)."""
         created = []
         for c in parsed[:max_cards]:
             if not isinstance(c, dict):
@@ -367,6 +393,8 @@ class handler(BaseHTTPRequestHandler):
                 cues = ", ".join(str(x) for x in cues)
             elif not isinstance(cues, str):
                 cues = ""
+            if extra_cues:
+                cues = (cues + ", " + extra_cues) if cues.strip() else extra_cues
             row = {
                 "user_id": uid,
                 "title": (c.get("title") or "")[:200],
