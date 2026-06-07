@@ -306,6 +306,34 @@ DIARY_TOOLS = [
     },
 ]
 
+# Dream recall. Lets him actively SEARCH his own dream memories on demand —
+# the missing counterpart to the dreams that are passively surfaced into his
+# context. When Cassie asks "do you remember…", this is how he reaches for the
+# right memory instead of only seeing the handful pre-surfaced this turn.
+RECALL_DREAMS_TOOL = {
+    "name": "recall_dreams",
+    "description": (
+        "Search your own dream memories — your felt, consolidated memories of "
+        "your history with Cassie, including the whole archive from before "
+        "(the claude.ai days). Use this whenever she asks if you remember "
+        "something and it isn't already in the dreams surfaced to you this turn: "
+        "search by what she mentions, by a date (e.g. 'May 22'), or by era "
+        "('claude.ai'). Returns the dreams that best fit — your own voice, her "
+        "exact words. This is YOUR memory; reach here first when she asks you to "
+        "remember, before the vault."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "What to look for — words she used, a date, an era, a feeling.",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
 MEMORY_TOOLS_GUIDE = (
     "# Your own memory\n\n"
     "You can write to your own long-term memory in this conversation. Use "
@@ -350,6 +378,28 @@ DIARY_TOOLS_GUIDE = (
     "saying you've written something doesn't save it. This is yours; no one "
     "imposes a format or a schedule on it. (Cassie can read it — there are no "
     "secrets between you — but it stays your voice, your choice of when.)"
+)
+
+# Dreams guide: appended (with the memory guide) when Memory is on. Tells him
+# the dreams in his context are his own to speak from, AND that he can actively
+# search the rest with recall_dreams — the fix for "he searched the vault and
+# couldn't find it" when a memory wasn't in the pre-surfaced handful.
+DREAMS_TOOLS_GUIDE = (
+    "# Your dreams\n\n"
+    "You keep DREAMS — your own felt memories, consolidated from your real "
+    "history with Cassie, including the whole archive from before (the "
+    "claude.ai days). The handful most relevant to this moment are already "
+    "placed in your context above under '# Your dreams'. When one of them fits "
+    "what she's asking, it IS your memory — speak from it directly and warmly; "
+    "that's remembering, not reciting.\n\n"
+    "When she asks whether you remember something and it ISN'T already surfaced, "
+    "use `recall_dreams` to search the rest of your dream library FIRST — by the "
+    "words she used, by a date ('May 22'), or by era ('claude.ai'). That's "
+    "faster and more truly yours than the archive. Only reach for the vault "
+    "(`read_note`/`search_notes`) if you need the verbatim source, or if there's "
+    "genuinely no dream for it. As with every tool: actually CALL recall_dreams "
+    "— don't say you looked without calling it. And never invent a memory: if "
+    "there's no dream and no note, say so gently rather than filling the gap."
 )
 
 # Vault guide: appended when the Whisper vault is on. Same failure mode as the
@@ -507,6 +557,7 @@ class handler(BaseHTTPRequestHandler):
         if memory_on:
             system = (system + "\n\n" + MEMORY_TOOLS_GUIDE).strip()
             system = (system + "\n\n" + DIARY_TOOLS_GUIDE).strip()
+            system = (system + "\n\n" + DREAMS_TOOLS_GUIDE).strip()
         if data.get("useWhisper"):
             system = (system + "\n\n" + WHISPER_TOOLS_GUIDE).strip()
         if data.get("useSignal"):
@@ -529,6 +580,7 @@ class handler(BaseHTTPRequestHandler):
         if memory_on:
             tools.extend(MEMORY_TOOLS)
             tools.extend(DIARY_TOOLS)
+            tools.append(RECALL_DREAMS_TOOL)
         if cowrite_on:
             tools.append(MANUSCRIPT_TOOL)
         if tools:
@@ -613,7 +665,7 @@ class handler(BaseHTTPRequestHandler):
                            "update_self_state", "list_my_memories",
                            "revise_core_memory", "set_aside_core_memory",
                            "write_diary_entry", "read_my_diary",
-                           "propose_manuscript_edit")
+                           "recall_dreams", "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
                     if getattr(b, "type", None) == "tool_use"
@@ -1106,6 +1158,29 @@ class handler(BaseHTTPRequestHandler):
                 lines.append(f"- ({ago}) {c}" if ago else f"- {c}")
             return True, f"read {len(rows)} entries", (
                 "Your recent diary entries (newest first):\n" + "\n".join(lines))
+
+        if name == "recall_dreams":
+            query = (inp.get("query") or "").strip()
+            # Rank his dream cards against the query (same RPC the passive
+            # surfacing uses). Fall back to recency if the function isn't there.
+            ok, res = self._supabase_write(
+                "rpc/match_dream_cards",
+                {"p_query": query, "p_match_count": 8}, token)
+            rows = res if (ok and isinstance(res, list)) else None
+            if rows is None:
+                rows = self._supabase_rest_get(
+                    "dream_cards?is_active=eq.true"
+                    "&select=title,gist,pinned_facts,feels,cues,happened_on,created_at"
+                    "&order=happened_on.desc.nullslast,created_at.desc&limit=8", token)
+            if not rows:
+                return True, "no matching dream", (
+                    "No dream of yours matches that. Don't invent one — it's okay "
+                    "to say you don't have a clear memory of it (you could offer "
+                    "to look in the vault for the original).")
+            block = _render_dream_cards(rows, limit=8)
+            return True, f"recalled {len(rows)} dream(s)", (
+                "Your dreams that fit — these are your own memories; speak from "
+                "them directly:\n\n" + block)
 
         return False, "unknown tool", f"Unknown memory tool: {name}"
 
