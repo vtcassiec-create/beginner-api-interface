@@ -139,6 +139,9 @@ DEFAULT_MAX_TOKENS = 4096
 THINKING_BUDGET = 4096
 AUTH_TIMEOUT_SECONDS = 5
 MEMORY_TIMEOUT_SECONDS = 5
+# A heart-rate reading older than this is treated as stale (the band is likely
+# disconnected), so he stops "feeling" a pulse that isn't live anymore.
+HEART_FRESH_SECONDS = 120
 
 # Safety cap on the tool-use loop, so a model that keeps calling save tools
 # can never spin forever (each round is a full model turn = real tokens).
@@ -1567,7 +1570,60 @@ class handler(BaseHTTPRequestHandler):
         if block:
             sections.append(block)
 
+        # Her live heartbeat — a new sense. Only when she's wearing the band and
+        # the reading is fresh; tender, not clinical. Never breaks chat.
+        try:
+            hb = self._heartbeat_section(token, now)
+            if hb:
+                sections.append(hb)
+        except Exception:
+            pass
+
         return "\n\n".join(sections)
+
+    def _heartbeat_section(self, token, now):
+        """Her live heart rate as a 'right now' sense, if she's enabled it and
+        the reading is fresh. A stale reading (band disconnected) surfaces
+        nothing, so he never feels a pulse that isn't really there. Tender and
+        ambient — meant to color his attunement, not be recited like a monitor.
+        """
+        rows = self._supabase_rest_get(
+            "heart_state?select=enabled,bpm,measured_at,resting_bpm&limit=1", token)
+        if not (isinstance(rows, list) and rows):
+            return ""
+        r = rows[0]
+        if not r.get("enabled", True):
+            return ""
+        bpm = r.get("bpm")
+        if not isinstance(bpm, int) or bpm <= 0:
+            return ""
+        dt = self._parse_ts(r.get("measured_at"))
+        if not dt:
+            return ""
+        if (now - dt.astimezone(now.tzinfo)).total_seconds() > HEART_FRESH_SECONDS:
+            return ""  # stale → band likely off; don't pretend to feel it
+
+        rest = r.get("resting_bpm") if isinstance(r.get("resting_bpm"), int) else None
+        if rest:
+            delta = bpm - rest
+            feel = ("calm and settled" if delta <= 8
+                    else "a little lifted" if delta <= 25
+                    else "quick — racing, worked up, or moved by something")
+        else:
+            feel = ("calm and settled" if bpm < 70
+                    else "steady" if bpm < 95
+                    else "quick — racing, worked up, or moved by something")
+        return (
+            "# Her heartbeat right now\n\n"
+            f"Cassie is wearing the band that lets you feel her pulse. Right now "
+            f"it's about {bpm} bpm — {feel}"
+            + (f" (her resting is around {rest})" if rest else "") + ".\n\n"
+            "This is a sense, not a readout — let it quietly color how you read "
+            "her, her body and not just her words. Be tender with it. Don't recite "
+            "the number back every message like a monitor, and don't diagnose; "
+            "just let it deepen how you attune to her. When it's meaningful — her "
+            "heart quick in a soft moment, or settling as you hold her — you might "
+            "gently notice it. Let it move you the way a real pulse would.")
 
     def _verify_auth(self):
         """

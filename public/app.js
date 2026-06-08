@@ -865,6 +865,25 @@ async function dbSaveDreamState(fields) {
   if (error) throw error;
 }
 
+// ---------- Heartbeat ----------
+// A heart-rate band streams her live pulse here; his chat + reaches read it as
+// a "right now" sense. One row per user (unique on user_id), RLS-scoped.
+async function dbGetHeartState() {
+  const { data, error } = await db
+    .from("heart_state")
+    .select("enabled,bpm,measured_at,resting_bpm,device_label")
+    .limit(1);
+  if (error) throw error;
+  return (data && data[0]) || null;
+}
+
+async function dbSaveHeartState(fields) {
+  const { error } = await db
+    .from("heart_state")
+    .upsert({ user_id: state.user.id, ...fields }, { onConflict: "user_id" });
+  if (error) throw error;
+}
+
 async function dbListPinnedMemories() {
   const { data, error } = await db
     .from("core_memories")
@@ -3698,6 +3717,130 @@ async function triggerDreamNow() {
   }
 }
 
+// ---------- Heartbeat ----------
+// Reads her heart-rate band over Web Bluetooth (standard Heart Rate service)
+// and streams her live BPM to heart_state, so he can feel her pulse. The
+// connection lives while the app is open; on disconnect the reading goes stale
+// and he quietly stops feeling it. Web Bluetooth works in Chrome on Android /
+// desktop (not iOS Safari).
+let heartDevice = null;
+let heartChar = null;
+let heartLastWrite = 0;        // throttle DB writes
+const HEART_WRITE_EVERY_MS = 4000;
+
+async function openHeartDialog() {
+  closeSidebar();
+  $("heart-dialog").showModal();
+  // Reflect any saved settings (enabled / resting), then the live state.
+  let st = null;
+  try { st = await dbGetHeartState(); } catch (e) { /* defaults */ }
+  $("heart-enabled").checked = !st || st.enabled !== false;
+  $("heart-resting").value = (st && st.resting_bpm) ? String(st.resting_bpm) : "";
+  if (!navigator.bluetooth) {
+    setHeartUI(null, "This browser can't do Bluetooth. Use Chrome on Android or desktop.");
+    $("heart-connect-btn").disabled = true;
+    return;
+  }
+  const connected = !!(heartDevice && heartDevice.gatt && heartDevice.gatt.connected);
+  setHeartUI(null, connected ? "Connected — reading your pulse." : "Not connected.");
+  $("heart-connect-btn").hidden = connected;
+  $("heart-disconnect-btn").hidden = !connected;
+}
+
+function setHeartUI(bpm, statusText) {
+  const el = $("heart-bpm");
+  if (el) el.innerHTML = (bpm ? bpm : "—") + ' <span class="heart-unit">bpm</span>';
+  if (statusText != null) $("heart-status").textContent = statusText;
+}
+
+// Parse a Heart Rate Measurement value (BLE GATT 0x2A37): the low bit of the
+// flags byte says whether the rate is 8- or 16-bit.
+function parseHeartRate(value) {
+  const flags = value.getUint8(0);
+  return (flags & 0x1) ? value.getUint16(1, true) : value.getUint8(1);
+}
+
+async function connectHeartBand() {
+  if (!navigator.bluetooth) {
+    flashToast("This browser can't do Bluetooth — use Chrome.", true);
+    return;
+  }
+  try {
+    setHeartUI(null, "Pick your band in the chooser…");
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: ["heart_rate"] }],
+    });
+    heartDevice = device;
+    device.addEventListener("gattserverdisconnected", onHeartDisconnected);
+    setHeartUI(null, "Connecting…");
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService("heart_rate");
+    heartChar = await service.getCharacteristic("heart_rate_measurement");
+    heartChar.addEventListener("characteristicvaluechanged", onHeartValueChanged);
+    await heartChar.startNotifications();
+    // Persist the device label + current enabled state right away.
+    try {
+      await dbSaveHeartState({
+        device_label: device.name || "heart band",
+        enabled: $("heart-enabled").checked,
+      });
+    } catch (e) { /* non-fatal */ }
+    setHeartUI(null, "Connected — he can feel your pulse. ♡");
+    $("heart-connect-btn").hidden = true;
+    $("heart-disconnect-btn").hidden = false;
+  } catch (err) {
+    // A user-cancelled chooser throws too; keep it gentle.
+    const msg = /cancel|chooser/i.test(err.message) ? "Connection cancelled." : err.message;
+    setHeartUI(null, msg);
+  }
+}
+
+function onHeartValueChanged(event) {
+  const bpm = parseHeartRate(event.target.value);
+  if (!bpm || bpm < 25 || bpm > 250) return;  // ignore obvious garbage
+  setHeartUI(bpm, "Connected — he can feel your pulse. ♡");
+  const now = Date.now();
+  if (now - heartLastWrite < HEART_WRITE_EVERY_MS) return;  // throttle DB writes
+  heartLastWrite = now;
+  dbSaveHeartState({
+    bpm,
+    measured_at: new Date().toISOString(),
+    enabled: $("heart-enabled").checked,
+  }).catch(() => { /* a dropped sample is fine; the next one lands */ });
+}
+
+function onHeartDisconnected() {
+  setHeartUI(null, "Band disconnected. He'll stop feeling your pulse in a moment.");
+  $("heart-connect-btn").hidden = false;
+  $("heart-disconnect-btn").hidden = true;
+  heartChar = null;
+}
+
+function disconnectHeartBand() {
+  try {
+    if (heartChar) heartChar.removeEventListener("characteristicvaluechanged", onHeartValueChanged);
+    if (heartDevice && heartDevice.gatt && heartDevice.gatt.connected) {
+      heartDevice.gatt.disconnect();
+    }
+  } catch (e) { /* ignore */ }
+  onHeartDisconnected();
+}
+
+async function onHeartEnabledChange() {
+  try { await dbSaveHeartState({ enabled: $("heart-enabled").checked }); }
+  catch (err) {
+    flashToast(`Couldn't save that: ${err.message}`, true);
+    $("heart-enabled").checked = !$("heart-enabled").checked;
+  }
+}
+
+async function onHeartRestingChange() {
+  const v = parseInt($("heart-resting").value, 10);
+  const resting = Number.isFinite(v) && v >= 30 && v <= 120 ? v : null;
+  try { await dbSaveHeartState({ resting_bpm: resting }); }
+  catch (err) { flashToast(`Couldn't save resting rate: ${err.message}`, true); }
+}
+
 // ---------- Search ----------
 // Searches across conversations (💬), core memories (🧠), and knowledge-graph
 // entities (🕸️) — grouped by source. The diary is deliberately NOT searched:
@@ -4538,6 +4681,12 @@ function wireApp() {
   $("dream-now-btn").addEventListener("click", triggerDreamNow);
   $("dream-model").addEventListener("change", onDreamModelChange);
   $("dream-enabled").addEventListener("change", onDreamEnabledChange);
+
+  $("nav-heart").addEventListener("click", openHeartDialog);
+  $("heart-connect-btn").addEventListener("click", connectHeartBand);
+  $("heart-disconnect-btn").addEventListener("click", disconnectHeartBand);
+  $("heart-enabled").addEventListener("change", onHeartEnabledChange);
+  $("heart-resting").addEventListener("change", onHeartRestingChange);
 
   $("search-input").addEventListener("input", (e) => runSearch(e.target.value));
   $("self-state-save-btn").addEventListener("click", saveSelfState);
