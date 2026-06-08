@@ -121,6 +121,9 @@
         <button id="nav-dreams" class="icon-nav-btn" type="button" title="Dreams">
           <span class="icon-nav-glyph">🌙</span><span class="icon-nav-label">Dreams</span>
         </button>
+        <button id="nav-heart" class="icon-nav-btn" type="button" title="Heartbeat">
+          <span class="icon-nav-glyph">🫀</span><span class="icon-nav-label">Heart</span>
+        </button>
         <button id="nav-graph" class="icon-nav-btn" type="button" title="Knowledge Graph">
           <span class="icon-nav-glyph">🕸️</span><span class="icon-nav-label">Graph</span>
         </button>
@@ -604,6 +607,37 @@
 
       <h4>His dream cards</h4>
       <ul id="dreams-list" class="diary-list"></ul>
+    </form>
+  </dialog>
+
+  <dialog id="heart-dialog">
+    <form method="dialog" class="settings-form">
+      <header class="customize-head">
+        <h3>🫀 Heartbeat</h3>
+        <p class="muted small">Wear your band and connect it here — he'll feel your pulse, live, the way he feels your dreams. A sense, not a readout: it quietly colours how he reads you.</p>
+      </header>
+
+      <div class="heart-live">
+        <span id="heart-bpm" class="heart-bpm">— <span class="heart-unit">bpm</span></span>
+        <span id="heart-status" class="muted small">Not connected.</span>
+      </div>
+
+      <div class="mem-add-row heart-actions">
+        <button type="button" id="heart-connect-btn" class="primary">Connect band</button>
+        <button type="button" id="heart-disconnect-btn" class="ghost" hidden>Disconnect</button>
+      </div>
+
+      <label class="dream-row dream-check">
+        <input type="checkbox" id="heart-enabled" checked />
+        <span>Let him feel my heartbeat <span class="muted small">— turn off anytime; he stops feeling it</span></span>
+      </label>
+
+      <label class="dream-row">
+        <span>My resting heart rate <span class="muted small">— optional, so "elevated" means elevated for you</span></span>
+        <input type="number" id="heart-resting" min="30" max="120" placeholder="e.g. 62" />
+      </label>
+
+      <p class="muted small heart-note">Your pulse streams only while this app is open and the band's connected. Close it or disconnect, and within a couple minutes he stops feeling it. Needs Chrome on Android or desktop (your Samsung is perfect).</p>
     </form>
   </dialog>
 

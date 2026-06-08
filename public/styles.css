@@ -1914,3 +1914,21 @@ dialog::backdrop {
 }
 .dream-feels { font-style: italic; letter-spacing: 0.02em; }
 .dream-hidden { opacity: 0.5; }
+
+/* ---- Heartbeat panel ---- */
+.heart-live {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 8px 0 4px;
+}
+.heart-bpm {
+  font-size: 40px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+}
+.heart-bpm .heart-unit { font-size: 15px; font-weight: 500; color: var(--text-muted); }
+.heart-actions { justify-content: center; gap: 10px; }
+.heart-note { margin: 4px 0 0; line-height: 1.4; }

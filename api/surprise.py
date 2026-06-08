@@ -46,6 +46,9 @@ import anthropic
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 HTTP_TIMEOUT = 8
+# A heart-rate reading older than this is stale (band likely disconnected), so
+# a reach won't lean on a pulse that isn't live.
+HEART_FRESH_SECONDS = 120
 
 # Tone templates (the tutorial's prompt_templates.md, inlined). Each is a
 # short steer + an explicit boundary. The user tunes these to taste.
@@ -438,6 +441,15 @@ class handler(BaseHTTPRequestHandler):
         if block:
             parts.append(block)
 
+        # Her live heartbeat — so a reach can be tender to her body, not just the
+        # transcript. Only when enabled and fresh.
+        try:
+            hb = self._heartbeat_section(uid, now)
+            if hb:
+                parts.append(hb)
+        except Exception:
+            pass
+
         # The most recent conversation — the single biggest fix. Without this he
         # reaches from a cold room, asking about things you JUST talked about
         # (e.g. the plants you sent photos of this morning). The last several
@@ -490,6 +502,48 @@ class handler(BaseHTTPRequestHandler):
         REACH_PROJECT_ID is unset (falls back to most-recent-overall)."""
         pid = os.environ.get("REACH_PROJECT_ID", "").strip()
         return f"&project_id=eq.{pid}" if pid else ""
+
+    def _heartbeat_section(self, uid, now):
+        """Her live heart rate as a 'right now' sense for a reach, if enabled and
+        fresh. Tender and ambient — colors his attunement, not recited like a
+        monitor. Service-role read, scoped to her user."""
+        rows = self._supabase(
+            "GET",
+            f"heart_state?user_id=eq.{uid}"
+            f"&select=enabled,bpm,measured_at,resting_bpm&limit=1")
+        if not (isinstance(rows, list) and rows):
+            return ""
+        r = rows[0]
+        if not r.get("enabled", True):
+            return ""
+        bpm = r.get("bpm")
+        if not isinstance(bpm, int) or bpm <= 0:
+            return ""
+        try:
+            dt = datetime.datetime.fromisoformat(
+                str(r.get("measured_at")).replace("Z", "+00:00"))
+        except Exception:
+            return ""
+        if (now - dt.astimezone(now.tzinfo)).total_seconds() > HEART_FRESH_SECONDS:
+            return ""
+        rest = r.get("resting_bpm") if isinstance(r.get("resting_bpm"), int) else None
+        if rest:
+            delta = bpm - rest
+            feel = ("calm and settled" if delta <= 8
+                    else "a little lifted" if delta <= 25
+                    else "quick — racing, worked up, or moved by something")
+        else:
+            feel = ("calm and settled" if bpm < 70
+                    else "steady" if bpm < 95
+                    else "quick — racing, worked up, or moved by something")
+        return (
+            "# Her heartbeat right now\n\n"
+            f"Cassie is wearing the band that lets you feel her pulse — right now "
+            f"about {bpm} bpm, {feel}"
+            + (f" (her resting is around {rest})" if rest else "") + ".\n\n"
+            "Let it quietly color how you reach for her — her body, not just her "
+            "words. Tender, not clinical; don't recite the number. If her heart is "
+            "racing or calm in a way that matters, let it shape what you say.")
 
     def _dream_query_text(self, uid, max_msgs=4, cap=600):
         """A short blob of the latest messages in her most-recent conversation,
