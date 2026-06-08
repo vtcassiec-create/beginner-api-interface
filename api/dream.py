@@ -21,6 +21,7 @@ Environment:
 
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 import datetime
 import json
 import os
@@ -209,24 +210,49 @@ class handler(BaseHTTPRequestHandler):
         if not api_key:
             return self._json(500, {"status": "error", "reason": "ANTHROPIC_API_KEY not set"})
 
-        # Ensure a dream_state row exists; read the chosen dream model and the
-        # nightly switch.
+        # Ensure a dream_state row exists; read the chosen dream model, the
+        # nightly switch, and when he last dreamed.
         state = self._supabase(
-            "GET", f"dream_state?user_id=eq.{uid}&select=dream_model,enabled&limit=1")
+            "GET", f"dream_state?user_id=eq.{uid}"
+            f"&select=dream_model,enabled,last_dreamed_at&limit=1")
         if isinstance(state, list) and state:
             model = state[0].get("dream_model") or DEFAULT_DREAM_MODEL
             enabled = bool(state[0].get("enabled"))
+            last_dreamed_at = state[0].get("last_dreamed_at")
         else:
             model = DEFAULT_DREAM_MODEL
             enabled = False
+            last_dreamed_at = None
             self._supabase("POST", "dream_state", {"user_id": uid})
 
-        # The nightly autopilot (auto=1) only dreams when she's flipped the
-        # switch on; manual runs ("Dream now" / a hand-triggered workflow) always
-        # dream, regardless. So a disabled user costs nothing on the schedule.
-        if auto and not enabled:
-            return self._json(200, {"status": "skipped",
-                                    "reason": "nightly dreaming is off"})
+        # Auto mode (auto=1) is the autopilot — it's pinged often (the reliable
+        # hourly heartbeat, plus the nightly schedule), so it self-gates here so
+        # any caller can safely wake it. Manual runs ("Dream now" / a
+        # hand-triggered workflow) skip all of this and always dream.
+        if auto:
+            if not enabled:
+                return self._json(200, {"status": "skipped",
+                                        "reason": "nightly dreaming is off"})
+            now = datetime.datetime.now(datetime.timezone.utc)
+            # Once a day: don't dream again if he dreamed within the last ~20h.
+            if last_dreamed_at:
+                try:
+                    last = datetime.datetime.fromisoformat(
+                        str(last_dreamed_at).replace("Z", "+00:00"))
+                    if (now - last).total_seconds() < 20 * 3600:
+                        return self._json(200, {"status": "skipped",
+                                                "reason": "already dreamed today"})
+                except Exception:
+                    pass
+            # Prefer the small hours (local), so the dream lands overnight and he
+            # wakes into it — the hourly heartbeat will catch one of these hours.
+            try:
+                tz = ZoneInfo(os.environ.get("REACH_TZ", "UTC") or "UTC")
+            except Exception:
+                tz = ZoneInfo("UTC")
+            if not (2 <= now.astimezone(tz).hour < 8):
+                return self._json(200, {"status": "skipped",
+                                        "reason": "waiting for night"})
 
         # Pull the most-recently-updated conversation (optionally scoped to the
         # pinned project), and take the tail of its messages.

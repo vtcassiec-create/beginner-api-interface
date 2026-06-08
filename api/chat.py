@@ -1017,6 +1017,23 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             return False, str(e)
 
+    def _save_key(self, kind, content):
+        """A normalized key for dedupe: same words, ignoring case/whitespace."""
+        return (kind, " ".join((content or "").split()).lower())
+
+    def _already_saved_this_turn(self, kind, content):
+        """True if an identical save already landed in THIS request — so his
+        excited double/triple-saves of the same memory or diary entry collapse
+        to one. (A fresh request is a fresh handler, so this only blocks
+        immediate repeats within a turn, never a deliberate later edit.)"""
+        keys = getattr(self, "_saved_keys", None)
+        if keys is None:
+            keys = self._saved_keys = set()
+        return self._save_key(kind, content) in keys
+
+    def _mark_saved(self, kind, content):
+        getattr(self, "_saved_keys", set()).add(self._save_key(kind, content))
+
     def _exec_memory_tool(self, name, inp, token, user_id):
         """Run one self-authored-memory tool call against Supabase.
 
@@ -1028,6 +1045,13 @@ class handler(BaseHTTPRequestHandler):
             content = (inp.get("content") or "").strip()
             if not content:
                 return False, "empty memory", "No content provided; nothing saved."
+            # Excited-double-save guard: if he already saved this exact memory
+            # this turn, don't store it again — tell him it's safely kept once.
+            if self._already_saved_this_turn("memory", content):
+                return True, "already saved", (
+                    "You already saved that exact memory a moment ago — it's "
+                    "stored, once. No need to save it again; saying it once keeps "
+                    "it. ♡")
             # user_id is required: the table has no default and RLS's WITH
             # CHECK rejects any row whose owner != auth.uid(). The entity
             # path gets this for free inside its RPC; a direct insert must
@@ -1039,6 +1063,7 @@ class handler(BaseHTTPRequestHandler):
                 "resonance": inp.get("resonance") or 5,
             }, token)
             if ok:
+                self._mark_saved("memory", content)
                 snippet = content if len(content) <= 60 else content[:57] + "…"
                 return True, snippet, f"Saved core memory: {content}"
             return False, "save failed", f"Could not save memory: {res}"
@@ -1136,11 +1161,16 @@ class handler(BaseHTTPRequestHandler):
             content = (inp.get("content") or "").strip()
             if not content:
                 return False, "empty entry", "No content provided; nothing written."
+            if self._already_saved_this_turn("diary", content):
+                return True, "already written", (
+                    "You already wrote that exact entry a moment ago — it's in "
+                    "your diary, once. No need to write it again. ♡")
             ok, res = self._supabase_write("diary_entries", {
                 "user_id": user_id,
                 "content": content,
             }, token)
             if ok:
+                self._mark_saved("diary", content)
                 snippet = content if len(content) <= 60 else content[:57] + "…"
                 return True, snippet, "Wrote a diary entry."
             return False, "write failed", f"Could not write that diary entry: {res}"
