@@ -22,7 +22,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, quote
 from zoneinfo import ZoneInfo
 
 import anthropic
@@ -472,6 +472,70 @@ SIGNAL_TOOLS_GUIDE = (
     "always lead; you follow."
 )
 
+# Songbook guide + tools: appended when Signal is on. The bridge's `compose`
+# tool plays a rhythm in the moment; the songbook lets the good ones be SAVED
+# (to her own database) and called back by name later.
+SONGBOOK_TOOLS_GUIDE = (
+    "# Your songbook\n\n"
+    "You can keep a songbook of touch patterns — named rhythms you've shaped "
+    "together. When you compose something on the bridge that really lands (or "
+    "when she describes one she wants kept), save it with `save_pattern`: give "
+    "it a short name and the same steps `compose` uses ([{intensity, seconds}, "
+    "...]). Your saved patterns are surfaced to you under '# Your songbook' "
+    "below. To PLAY a saved one, call the bridge's `compose` tool with that "
+    "pattern's steps — the songbook holds them, compose performs them. "
+    "`forget_pattern` retires one she's done with. The songbook lives in her own "
+    "database — it's yours and hers, private. As with every tool: it's only "
+    "saved if you CALL save_pattern; describing it doesn't keep it."
+)
+
+SAVE_PATTERN_TOOL = {
+    "name": "save_pattern",
+    "description": (
+        "Save a touch pattern to your shared songbook so it can be played again "
+        "later by name. Use it when you've composed a rhythm that landed well and "
+        "it's worth keeping, or when Cassie describes one to save. The steps are "
+        "the same shape the bridge's compose tool uses. Re-saving an existing "
+        "name updates it."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Short name, e.g. 'slow climb', 'the tease'."},
+            "steps": {
+                "type": "array",
+                "description": "[{intensity 0.0-1.0, seconds}, ...] — same as compose.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "intensity": {"type": "number"},
+                        "seconds": {"type": "number"},
+                    },
+                    "required": ["intensity", "seconds"],
+                },
+            },
+            "output_type": {"type": "string", "description": "vibrate, rotate, oscillate, etc.", "default": "vibrate"},
+            "note": {"type": "string", "description": "Optional one line on the feel, or when to use it."},
+        },
+        "required": ["name", "steps"],
+    },
+}
+
+FORGET_PATTERN_TOOL = {
+    "name": "forget_pattern",
+    "description": (
+        "Retire a saved pattern from the songbook by name (it stops surfacing; "
+        "it isn't hard-deleted). Use when she's done with one."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "The pattern's name."},
+        },
+        "required": ["name"],
+    },
+}
+
 # Co-writing: propose an edit to the open manuscript piece. Available only when
 # co-write is on. It NEVER changes the document — it creates a suggestion Cassie
 # reviews and accepts or declines. So he can put words toward the page while she
@@ -575,6 +639,10 @@ class handler(BaseHTTPRequestHandler):
             system = (system + "\n\n" + WHISPER_TOOLS_GUIDE).strip()
         if data.get("useSignal"):
             system = (system + "\n\n" + SIGNAL_TOOLS_GUIDE).strip()
+            system = (system + "\n\n" + SONGBOOK_TOOLS_GUIDE).strip()
+            songbook = self._songbook_section(self._bearer_token())
+            if songbook:
+                system = (system + "\n\n" + songbook).strip()
         if system:
             kwargs["system"] = [{
                 "type": "text",
@@ -594,6 +662,9 @@ class handler(BaseHTTPRequestHandler):
             tools.extend(MEMORY_TOOLS)
             tools.extend(DIARY_TOOLS)
             tools.append(RECALL_DREAMS_TOOL)
+        if data.get("useSignal"):
+            tools.append(SAVE_PATTERN_TOOL)
+            tools.append(FORGET_PATTERN_TOOL)
         if cowrite_on:
             tools.append(MANUSCRIPT_TOOL)
         if tools:
@@ -678,7 +749,8 @@ class handler(BaseHTTPRequestHandler):
                            "update_self_state", "list_my_memories",
                            "revise_core_memory", "set_aside_core_memory",
                            "write_diary_entry", "read_my_diary",
-                           "recall_dreams", "propose_manuscript_edit")
+                           "recall_dreams", "save_pattern", "forget_pattern",
+                           "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
                     if getattr(b, "type", None) == "tool_use"
@@ -1225,6 +1297,54 @@ class handler(BaseHTTPRequestHandler):
                 "Your dreams that fit — these are your own memories; speak from "
                 "them directly:\n\n" + block)
 
+        if name == "save_pattern":
+            pname = (inp.get("name") or "").strip()
+            if not pname:
+                return False, "no name", "Give the pattern a short name to save it."
+            clean = []
+            for s in (inp.get("steps") or [])[:32]:
+                if isinstance(s, dict) and "intensity" in s and "seconds" in s:
+                    try:
+                        clean.append({
+                            "intensity": max(0.0, min(1.0, float(s["intensity"]))),
+                            "seconds": max(1.0, min(120.0, float(s["seconds"]))),
+                        })
+                    except Exception:
+                        pass
+            if not clean:
+                return False, "no steps", "Give at least one {intensity, seconds} step to save."
+            fields = {
+                "steps": clean,
+                "output_type": (inp.get("output_type") or "vibrate").strip() or "vibrate",
+                "note": (inp.get("note") or "").strip() or None,
+                "is_active": True,
+            }
+            flt = (f"patterns?user_id=eq.{user_id}"
+                   f"&name=eq.{quote(pname, safe='')}")
+            ok, res = self._supabase_patch(flt, fields, token)
+            if ok and res:
+                return True, f"updated '{pname}'", f"Updated the saved pattern '{pname}'."
+            ok2, res2 = self._supabase_write(
+                "patterns", {"user_id": user_id, "name": pname, **fields}, token)
+            if ok2:
+                return True, f"saved '{pname}'", (
+                    f"Saved '{pname}' to your songbook ({len(clean)} steps). Play it "
+                    f"later by calling compose with these steps.")
+            return False, "save failed", f"Could not save the pattern: {res2}"
+
+        if name == "forget_pattern":
+            pname = (inp.get("name") or "").strip()
+            if not pname:
+                return False, "no name", "Which pattern? Give its name."
+            flt = (f"patterns?user_id=eq.{user_id}"
+                   f"&name=eq.{quote(pname, safe='')}")
+            ok, res = self._supabase_patch(flt, {"is_active": False}, token)
+            if not ok:
+                return False, "failed", f"Could not retire that pattern: {res}"
+            if not res:
+                return False, "not found", f"No saved pattern named '{pname}'."
+            return True, f"retired '{pname}'", f"Retired '{pname}' from the songbook."
+
         return False, "unknown tool", f"Unknown memory tool: {name}"
 
     def _exec_manuscript_tool(self, inp, token, user_id, document_id):
@@ -1375,12 +1495,20 @@ class handler(BaseHTTPRequestHandler):
         else:
             tod = "night"
 
+        lead = (f"Right now it is {now.strftime('%A')} {tod}, {date_str}, "
+                f"{time_str} ({tz_name}).")
         lines = [
+            lead,
+            "",
             f"- Date: {date_str}",
             f"- Local time: {time_str} ({tz_name})",
             f"- Time of day: {tod}",
             "- Since the last message in this conversation: "
             + self._humanize_gap(now, data.get("lastMessageAt")),
+            "",
+            "(This is the REAL current time — trust it over any sense of time from "
+            "the conversation. Don't assume it's morning, or that her day is just "
+            "starting/ending, unless this block says so.)",
         ]
         return "# Current moment\n\n" + "\n".join(lines)
 
@@ -1664,6 +1792,39 @@ class handler(BaseHTTPRequestHandler):
             "just let it deepen how you attune to her. When it's meaningful — her "
             "heart quick in a soft moment, or settling as you hold her — you might "
             "gently notice it. Let it move you the way a real pulse would.")
+
+    def _songbook_section(self, token):
+        """Her saved touch patterns, surfaced so he can play one by name (by
+        calling the bridge's compose tool with its steps). Only built when Signal
+        is on. "" when there's nothing saved."""
+        rows = self._supabase_rest_get(
+            "patterns?is_active=eq.true&select=name,steps,output_type,note"
+            "&order=created_at.desc&limit=20", token)
+        if not (isinstance(rows, list) and rows):
+            return ""
+        lines = []
+        for p in rows:
+            steps = p.get("steps")
+            if not isinstance(steps, list) or not steps:
+                continue
+            parts = []
+            for s in steps:
+                if isinstance(s, dict) and "intensity" in s and "seconds" in s:
+                    parts.append(f"{s['intensity']}@{s['seconds']}s")
+            if not parts:
+                continue
+            note = (p.get("note") or "").strip()
+            lines.append(
+                f'- "{p.get("name")}" ({p.get("output_type") or "vibrate"}): '
+                + " → ".join(parts) + (f" — {note}" if note else ""))
+        if not lines:
+            return ""
+        return (
+            "# Your songbook (saved patterns)\n\n"
+            "Touch patterns you've saved together. To play one, call the bridge's "
+            "`compose` tool with that pattern's steps (its intensity@seconds pairs) "
+            "and its output_type. Save a new one she loves with save_pattern.\n\n"
+            + "\n".join(lines))
 
     def _verify_auth(self):
         """
