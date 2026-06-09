@@ -294,11 +294,16 @@ class handler(BaseHTTPRequestHandler):
         if parsed is None:
             return self._json(200, {"status": "parse_failed", "raw": raw[:1500]})
 
+        # The real date this conversation happened, from the last message's
+        # timestamp, in her local timezone (so it reads as "that day" to her,
+        # not a UTC-shifted one). This is reliable; the dream model has no date
+        # anchor and will hallucinate one, so we prefer THIS (see _write_cards).
         default_day = None
         if isinstance(last_at, (int, float)):
             try:
-                default_day = datetime.datetime.utcfromtimestamp(
-                    last_at / 1000).date().isoformat()
+                tz = ZoneInfo(os.environ.get("REACH_TZ", "UTC") or "UTC")
+                default_day = datetime.datetime.fromtimestamp(
+                    last_at / 1000, tz).date().isoformat()
             except Exception:
                 default_day = None
 
@@ -429,7 +434,12 @@ class handler(BaseHTTPRequestHandler):
                 "feels": c.get("feels") if isinstance(c.get("feels"), dict) else {},
                 "cues": cues,
                 "source_label": source_label,
-                "happened_on": _valid_day(c.get("happened_on")) or default_day,
+                # Prefer the REAL date (the conversation's message timestamp, or
+                # the vault note's filename date) over the model's guess — the
+                # dream model has no date anchor and hallucinates wildly (it once
+                # stamped a June 2026 dream as "10 Mar 2025"). Only fall back to
+                # its guess if we genuinely have no real date.
+                "happened_on": default_day or _valid_day(c.get("happened_on")),
             }
             if self._supabase("POST", "dream_cards", row) is not None:
                 created.append(row["title"] or "(untitled)")
