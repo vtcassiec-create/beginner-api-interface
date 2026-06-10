@@ -4799,7 +4799,6 @@ function wireApp() {
   // StillHere icon nav. Memories + Knowledge Graph open the real dialog
   // (graph is a tab within it). Search opens its own dialog; Diary is upcoming.
   $("nav-memories").addEventListener("click", () => openMemoriesDialog("identity"));
-  $("nav-graph").addEventListener("click", () => openMemoriesDialog("graph"));
   $("nav-search").addEventListener("click", openSearchDialog);
   $("nav-diary").addEventListener("click", openDiaryDialog);
   $("nav-dreams").addEventListener("click", openDreamsDialog);
