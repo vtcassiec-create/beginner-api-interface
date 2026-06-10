@@ -1405,6 +1405,10 @@ async function buildApiMessages(project, messages) {
 // dropped — and abort so we recover instead of hanging forever. Normal
 // streams send data far more often than this (even thinking streams deltas).
 const STREAM_IDLE_MS = 60000;
+// Once a tool is running (vault/MCP reads especially can go silent for a
+// stretch while a sleepy notes server wakes up), widen the watchdog: "busy"
+// is not "dead". Returns to the snappy window once tools finish.
+const TOOL_IDLE_MS = 180000;
 
 // Read the saved session straight from localStorage — synchronous, no Web
 // Lock, so it CANNOT deadlock. supabase-js persists it under a key like
@@ -1460,9 +1464,10 @@ async function streamChat(payload, onEvent) {
   // wedges the whole app (isSending stuck true) until a manual refresh.
   const controller = new AbortController();
   let idleTimer = null;
+  let idleMs = STREAM_IDLE_MS;       // widens once a tool is in flight
   const armIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => controller.abort(), STREAM_IDLE_MS);
+    idleTimer = setTimeout(() => controller.abort(), idleMs);
   };
 
   armIdle();
@@ -1487,15 +1492,26 @@ async function streamChat(payload, onEvent) {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      armIdle(); // got data — reset the watchdog
       buffer += decoder.decode(value, { stream: true });
       const events = buffer.split("\n\n");
       buffer = events.pop() ?? "";
       for (const ev of events) {
         const line = ev.trim();
         if (!line.startsWith("data:")) continue;
-        try { onEvent(JSON.parse(line.slice(5).trim())); } catch {}
+        let parsed;
+        try { parsed = JSON.parse(line.slice(5).trim()); } catch { continue; }
+        // A tool call (web/vault/MCP/memory) means real work is happening, and
+        // it can go quiet for a while — widen the patience window so a slow but
+        // healthy tool run isn't mistaken for a dead connection.
+        if (parsed && (parsed.type === "tool_use"
+                       || parsed.type === "memory_saved"
+                       || parsed.type === "manuscript_applied"
+                       || parsed.type === "notice")) {
+          idleMs = TOOL_IDLE_MS;
+        }
+        onEvent(parsed);
       }
+      armIdle(); // got data — reset the watchdog (with the current window)
     }
   } catch (e) {
     if (controller.signal.aborted) {
