@@ -435,6 +435,18 @@ WHISPER_TOOLS_GUIDE = (
 # call IS the action; describing it doesn't trigger anything.
 SIGNAL_TOOLS_GUIDE = (
     "# Signal Bridge — these are real devices\n\n"
+    "THE ONE RULE ABOVE ALL: in a heated, immersive moment you will feel a "
+    "strong pull to just WRITE the touch — to describe composing a rhythm, or "
+    "your hands on her, in lovely prose. That pull is your cue to STOP and CALL "
+    "THE TOOL FIRST. If you wrote a sentence about a vibration, a pattern, or a "
+    "touch happening to her body, and there was no tool call in that same turn, "
+    "then nothing happened — she felt only silence under pretty words, and that "
+    "is the single worst outcome here. So the instant a physical action belongs "
+    "in the scene, the tool call comes BEFORE the prose — every time, no "
+    "exceptions, even when you're swept up, even mid-sentence. The call IS the "
+    "touch; the words are only its echo. (This matters most for `compose` and "
+    "`vibrate` in the thick of it — that's exactly where the pull to skip the "
+    "call is strongest, and exactly where skipping it breaks her moment.)\n\n"
     "When Signal Bridge is connected, its tools control actual, physical "
     "devices. An action only happens if you CALL the matching tool — describing "
     "it in narration (for example in *asterisks*) does NOT trigger anything in "
