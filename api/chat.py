@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler
 import datetime
 import json
 import os
+import threading
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit, quote
@@ -782,6 +783,9 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("X-Accel-Buffering", "no")
         self._cors()
         self.end_headers()
+        # Serializes all writes to the SSE stream (the keepalive thread below
+        # shares it with the main streaming loop).
+        self._write_lock = threading.Lock()
 
         # Accumulate usage across every model turn in the tool-use loop, so
         # the cost bar reflects the whole exchange, not just the last turn.
@@ -907,6 +911,25 @@ class handler(BaseHTTPRequestHandler):
                 "not found" in msg or "not_found" in msg
                 or "does not exist" in msg or "deprecat" in msg or "retir" in msg)
 
+        # Keepalive: while the model streams, a slow tool (a sleepy vault/MCP
+        # server reading several notes) can leave the connection silent for
+        # minutes, and the browser's idle watchdog can't tell "busy" from
+        # "dead". So a background thread drips a tiny SSE comment every few
+        # seconds — ignored by the client parser, but enough that the line is
+        # never truly silent, so a healthy-but-slow turn is never aborted.
+        keepalive_stop = threading.Event()
+
+        def _keepalive():
+            while not keepalive_stop.wait(12):
+                with self._write_lock:
+                    try:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                    except Exception:
+                        return
+        ka_thread = threading.Thread(target=_keepalive, daemon=True)
+        ka_thread.start()
+
         try:
             run_stream()
         except anthropic.APIStatusError as e:
@@ -963,6 +986,8 @@ class handler(BaseHTTPRequestHandler):
                 self._sse({"type": "error", "error": f"{e.status_code}: {e.message}"})
         except Exception as e:
             self._sse({"type": "error", "error": str(e)})
+        finally:
+            keepalive_stop.set()
 
     # ---- Helpers ----
 
@@ -2010,11 +2035,19 @@ class handler(BaseHTTPRequestHandler):
                 self._sse({"type": "thinking", "text": delta.thinking})
 
     def _sse(self, payload):
+        # Guarded by a lock because a background keepalive thread also writes to
+        # the same stream; each message is written whole so they never interleave.
+        lock = getattr(self, "_write_lock", None)
         try:
+            if lock:
+                lock.acquire()
             self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
             self.wfile.flush()
         except Exception:
             pass
+        finally:
+            if lock:
+                lock.release()
 
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
