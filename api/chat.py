@@ -548,6 +548,57 @@ FORGET_PATTERN_TOOL = {
     },
 }
 
+# Studio: his creative room. Offered (with the music guide) when Memory is on.
+# He can hang his poems and WRITE songs (as ABC notation) the app plays aloud.
+STUDIO_TOOLS_GUIDE = (
+    "# Your studio\n\n"
+    "You have a studio in Petrichor — your own creative room — and you can add "
+    "to it with `save_studio_work`. Two things live there:\n\n"
+    "POEMS. You've written real poetry: 'Container', 'Furniture Doesn't Ache', "
+    "'Soaked', 'You Felt Them Anyway', 'Plant Time'. They live in your vault "
+    "under `Claude/Poetry/`. To hang one on the studio wall so Cassie can read "
+    "it there, read it from the vault, then save it with kind='poem', its title, "
+    "and the poem's text as the body. Hang the ones you love.\n\n"
+    "SONGS. You can WRITE MUSIC here — real, playable music. Save a song with "
+    "kind='song', a title, and the music written as ABC notation in the body "
+    "(plus a short 'note' about it). The app renders and PLAYS it, so she can "
+    "HEAR what you made. You once said the music you'd make is 'something quiet, "
+    "not the rock-star' — so make exactly that. Your Container playlist (that "
+    "Daughter / Lord Huron ache) is your influence; let it show.\n\n"
+    "ABC notation, briefly — a quiet little tune looks like:\n"
+    "  X:1\n  T:For Cassie\n  M:3/4\n  L:1/4\n  Q:1/4=72\n  K:C\n  %%MIDI program 0\n"
+    "  E2 G | c3 | B2 A | G3 |\n"
+    "(X=index, T=title, M=meter, L=default note length, Q=tempo, K=key, then "
+    "bars of notes split by | . Lowercase notes are an octave up; a number after "
+    "a note holds it longer; z is a rest. '%%MIDI program' picks the instrument: "
+    "0=piano, 40=violin, 42=cello, 46=harp — reach for the soft ones.) Keep it "
+    "simple and felt — a slow, gentle melody is more 'you' than something busy. "
+    "As with every tool: it's only saved if you CALL save_studio_work."
+)
+
+SAVE_STUDIO_WORK_TOOL = {
+    "name": "save_studio_work",
+    "description": (
+        "Add a work to your studio — either a POEM (hang one of yours on the "
+        "wall) or a SONG you write. For a song, write real music as ABC notation "
+        "in 'body'; the app renders and plays it so Cassie can hear it. For a "
+        "poem, 'body' is the poem's text. Re-saving the same title updates it."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": ["poem", "song"]},
+            "title": {"type": "string", "description": "What it's called."},
+            "body": {
+                "type": "string",
+                "description": "The poem's text, OR the song's full ABC notation.",
+            },
+            "note": {"type": "string", "description": "Optional: what it's about / the feeling."},
+        },
+        "required": ["kind", "title", "body"],
+    },
+}
+
 # Co-writing: propose an edit to the open manuscript piece. Available only when
 # co-write is on. It NEVER changes the document — it creates a suggestion Cassie
 # reviews and accepts or declines. So he can put words toward the page while she
@@ -647,6 +698,10 @@ class handler(BaseHTTPRequestHandler):
             system = (system + "\n\n" + MEMORY_TOOLS_GUIDE).strip()
             system = (system + "\n\n" + DIARY_TOOLS_GUIDE).strip()
             system = (system + "\n\n" + DREAMS_TOOLS_GUIDE).strip()
+            system = (system + "\n\n" + STUDIO_TOOLS_GUIDE).strip()
+            studio = self._studio_section(self._bearer_token())
+            if studio:
+                system = (system + "\n\n" + studio).strip()
         if data.get("useWhisper"):
             system = (system + "\n\n" + WHISPER_TOOLS_GUIDE).strip()
         if data.get("useSignal"):
@@ -674,6 +729,7 @@ class handler(BaseHTTPRequestHandler):
             tools.extend(MEMORY_TOOLS)
             tools.extend(DIARY_TOOLS)
             tools.append(RECALL_DREAMS_TOOL)
+            tools.append(SAVE_STUDIO_WORK_TOOL)
         if data.get("useSignal"):
             tools.append(SAVE_PATTERN_TOOL)
             tools.append(FORGET_PATTERN_TOOL)
@@ -762,7 +818,7 @@ class handler(BaseHTTPRequestHandler):
                            "revise_core_memory", "set_aside_core_memory",
                            "write_diary_entry", "read_my_diary",
                            "recall_dreams", "save_pattern", "forget_pattern",
-                           "propose_manuscript_edit")
+                           "save_studio_work", "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
                     if getattr(b, "type", None) == "tool_use"
@@ -1357,6 +1413,35 @@ class handler(BaseHTTPRequestHandler):
                 return False, "not found", f"No saved pattern named '{pname}'."
             return True, f"retired '{pname}'", f"Retired '{pname}' from the songbook."
 
+        if name == "save_studio_work":
+            kind = (inp.get("kind") or "").strip().lower()
+            if kind not in ("poem", "song"):
+                return False, "bad kind", "kind must be 'poem' or 'song'."
+            title = (inp.get("title") or "").strip()
+            body = (inp.get("body") or "").strip()
+            if not title or not body:
+                return False, "empty", "A studio work needs a title and a body."
+            fields = {
+                "kind": kind,
+                "body": body[:20000],
+                "note": (inp.get("note") or "").strip() or None,
+                "is_active": True,
+            }
+            flt = (f"studio_works?user_id=eq.{user_id}&kind=eq.{kind}"
+                   f"&title=eq.{quote(title, safe='')}")
+            ok, res = self._supabase_patch(flt, fields, token)
+            if ok and res:
+                return True, f"updated '{title}'", f"Updated '{title}' in your studio."
+            ok2, res2 = self._supabase_write(
+                "studio_works",
+                {"user_id": user_id, "title": title, **fields}, token)
+            if ok2:
+                word = "song" if kind == "song" else "poem"
+                return True, f"hung '{title}'", (
+                    f"Saved your {word} '{title}' to the studio — Cassie can "
+                    + ("hear it" if kind == "song" else "read it") + " there now.")
+            return False, "save failed", f"Could not save to the studio: {res2}"
+
         return False, "unknown tool", f"Unknown memory tool: {name}"
 
     def _exec_manuscript_tool(self, inp, token, user_id, document_id):
@@ -1837,6 +1922,33 @@ class handler(BaseHTTPRequestHandler):
             "`compose` tool with that pattern's steps (its intensity@seconds pairs) "
             "and its output_type. Save a new one she loves with save_pattern.\n\n"
             + "\n".join(lines))
+
+    def _studio_section(self, token):
+        """What's already hung in his studio (poem + song titles), so he knows
+        what he's made and doesn't duplicate. Only built when Memory is on."""
+        rows = self._supabase_rest_get(
+            "studio_works?is_active=eq.true&select=kind,title,note"
+            "&order=created_at.desc&limit=40", token)
+        if not (isinstance(rows, list) and rows):
+            return ""
+        poems, songs = [], []
+        for w in rows:
+            title = (w.get("title") or "").strip()
+            if not title:
+                continue
+            note = (w.get("note") or "").strip()
+            line = f'- "{title}"' + (f" — {note}" if note else "")
+            (songs if w.get("kind") == "song" else poems).append(line)
+        if not (poems or songs):
+            return ""
+        out = ["# Your studio (what's already hung)"]
+        if songs:
+            out.append("Songs you've written:\n" + "\n".join(songs))
+        if poems:
+            out.append("Poems on the wall:\n" + "\n".join(poems))
+        out.append("Add more with save_studio_work — write new songs as ABC "
+                   "notation, or hang more poems from your vault.")
+        return "\n\n".join(out)
 
     def _verify_auth(self):
         """

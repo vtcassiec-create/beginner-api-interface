@@ -884,6 +884,20 @@ async function dbSaveHeartState(fields) {
   if (error) throw error;
 }
 
+// ---------- Studio ----------
+// His creative room: poems he's hung and songs he's written (ABC notation,
+// rendered + played by abcjs). He saves works via a tool; here Cassie reads
+// and listens. RLS scopes every row to her.
+async function dbListStudioWorks() {
+  const { data, error } = await db
+    .from("studio_works")
+    .select("id,kind,title,body,note,created_at")
+    .eq("is_active", true)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
 async function dbListPinnedMemories() {
   const { data, error } = await db
     .from("core_memories")
@@ -3841,6 +3855,117 @@ async function onHeartRestingChange() {
   catch (err) { flashToast(`Couldn't save resting rate: ${err.message}`, true); }
 }
 
+// ---------- Studio ----------
+// Renders his room: his playlist (static iframe in the HTML), his songs
+// (ABC notation → abcjs renders the score + a play widget), and his poems.
+let studioSeq = 0;  // unique ids for per-song render targets
+
+async function openStudioDialog() {
+  closeSidebar();
+  $("studio-dialog").showModal();
+  const songsEl = $("studio-songs");
+  const poemsEl = $("studio-poems");
+  songsEl.innerHTML = '<p class="muted small">Loading…</p>';
+  poemsEl.innerHTML = "";
+  let works;
+  try {
+    works = await dbListStudioWorks();
+  } catch (err) {
+    songsEl.innerHTML = `<p class="mem-empty muted small">Couldn't load the studio: ${err.message}</p>`;
+    return;
+  }
+  const songs = works.filter((w) => w.kind === "song");
+  const poems = works.filter((w) => w.kind === "poem");
+
+  songsEl.innerHTML = "";
+  if (!songs.length) {
+    songsEl.innerHTML = '<p class="mem-empty muted small">No songs yet — he\'ll write them here. Ask him to compose you something. 🎶</p>';
+  } else {
+    for (const s of songs) songsEl.appendChild(mkStudioSong(s));
+  }
+
+  $("studio-poems-wrap").hidden = !poems.length;
+  poemsEl.innerHTML = "";
+  for (const p of poems) poemsEl.appendChild(mkStudioPoem(p));
+}
+
+function mkStudioPoem(work) {
+  const card = document.createElement("div");
+  card.className = "studio-poem";
+  const h = document.createElement("div");
+  h.className = "studio-title";
+  h.textContent = work.title || "(untitled)";
+  card.appendChild(h);
+  if ((work.note || "").trim()) {
+    const n = document.createElement("div");
+    n.className = "studio-note muted small";
+    n.textContent = work.note;
+    card.appendChild(n);
+  }
+  const body = document.createElement("pre");
+  body.className = "studio-poem-body";
+  body.textContent = work.body || "";
+  card.appendChild(body);
+  return card;
+}
+
+function mkStudioSong(work) {
+  const card = document.createElement("div");
+  card.className = "studio-song";
+
+  const h = document.createElement("div");
+  h.className = "studio-title";
+  h.textContent = work.title || "(untitled)";
+  card.appendChild(h);
+  if ((work.note || "").trim()) {
+    const n = document.createElement("div");
+    n.className = "studio-note muted small";
+    n.textContent = work.note;
+    card.appendChild(n);
+  }
+
+  const id = ++studioSeq;
+  const score = document.createElement("div");
+  score.id = `studio-score-${id}`;
+  score.className = "studio-score";
+  card.appendChild(score);
+
+  const audio = document.createElement("div");
+  audio.id = `studio-audio-${id}`;
+  audio.className = "studio-audio";
+  card.appendChild(audio);
+
+  // Render the score + wire a play widget once the element is in the DOM.
+  setTimeout(() => renderStudioSong(work.body || "", score.id, audio.id), 0);
+  return card;
+}
+
+function renderStudioSong(abc, scoreId, audioId) {
+  if (typeof ABCJS === "undefined") {
+    const el = $(audioId);
+    if (el) el.innerHTML = '<span class="muted small">(music engine still loading — reopen the Studio)</span>';
+    return;
+  }
+  let visualObj;
+  try {
+    visualObj = ABCJS.renderAbc(scoreId, abc, { responsive: "resize" })[0];
+  } catch (err) {
+    $(scoreId).innerHTML = `<span class="muted small">Couldn't render this one: ${err.message}</span>`;
+    return;
+  }
+  if (!ABCJS.synth || !ABCJS.synth.supportsAudio()) {
+    $(audioId).innerHTML = '<span class="muted small">(your browser can\'t play audio here, but the notes are above)</span>';
+    return;
+  }
+  // SynthController renders its own play button; the click is the user gesture
+  // that unlocks the AudioContext, so playback is reliable.
+  const synthControl = new ABCJS.synth.SynthController();
+  synthControl.load(`#${audioId}`, null, { displayPlay: true, displayProgress: true });
+  synthControl.setTune(visualObj, false).catch((err) => {
+    $(audioId).innerHTML = `<span class="muted small">Couldn't prep playback: ${err.message}</span>`;
+  });
+}
+
 // ---------- Search ----------
 // Searches across conversations (💬), core memories (🧠), and knowledge-graph
 // entities (🕸️) — grouped by source. The diary is deliberately NOT searched:
@@ -4687,6 +4812,8 @@ function wireApp() {
   $("heart-disconnect-btn").addEventListener("click", disconnectHeartBand);
   $("heart-enabled").addEventListener("change", onHeartEnabledChange);
   $("heart-resting").addEventListener("change", onHeartRestingChange);
+
+  $("nav-studio").addEventListener("click", openStudioDialog);
 
   $("search-input").addEventListener("input", (e) => runSearch(e.target.value));
   $("self-state-save-btn").addEventListener("click", saveSelfState);

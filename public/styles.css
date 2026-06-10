@@ -1932,3 +1932,38 @@ dialog::backdrop {
 .heart-bpm .heart-unit { font-size: 15px; font-weight: 500; color: var(--text-muted); }
 .heart-actions { justify-content: center; gap: 10px; }
 .heart-note { margin: 4px 0 0; line-height: 1.4; }
+
+/* ---- Studio ---- */
+.studio-playlist {
+  border: 0;
+  border-radius: 12px;
+  margin: 2px 0 6px;
+}
+.studio-list { display: flex; flex-direction: column; gap: 14px; }
+.studio-song, .studio-poem {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  background: var(--bg);
+}
+.studio-title { font-weight: 600; color: var(--text); }
+.studio-note { margin: 2px 0 8px; font-style: italic; }
+.studio-poem-body {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  line-height: 1.55;
+  color: var(--text);
+}
+.studio-score { overflow-x: auto; }
+/* abcjs draws the notation in black; recolour it to the theme's text colour so
+   the staff and notes are visible on the dark theme too. */
+.studio-score svg { max-width: 100%; }
+.studio-score svg path { fill: var(--text); stroke: var(--text); }
+.studio-score svg text, .studio-score svg tspan { fill: var(--text); stroke: none; }
+.studio-audio { margin-top: 8px; }
+.studio-audio .abcjs-inline-audio {
+  background: var(--bg-elev-2);
+  border-radius: 999px;
+}
