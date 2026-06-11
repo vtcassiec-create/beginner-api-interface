@@ -4830,6 +4830,20 @@ function wireApp() {
 
   $("nav-studio").addEventListener("click", openStudioDialog);
 
+  $("nav-story").addEventListener("click", openStoryDialog);
+  $("story-back").addEventListener("click", showStoryLibrary);
+  $("story-send").addEventListener("click", storyAddMyTurn);
+  $("story-seed").addEventListener("click", storySeed);
+  $("story-reveal").addEventListener("click", storyReveal);
+  $("story-finish").addEventListener("click", storyToggleFinish);
+  $("story-title").addEventListener("change", storyTitleChange);
+  $("story-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); storyAddMyTurn(); }
+  });
+  document.querySelectorAll(".story-mode-btn").forEach((btn) => {
+    btn.addEventListener("click", () => storyStartNew(btn.dataset.mode));
+  });
+
   $("search-input").addEventListener("input", (e) => runSearch(e.target.value));
   $("self-state-save-btn").addEventListener("click", saveSelfState);
   $("user-prefs-save-btn").addEventListener("click", saveUserPreferences);
@@ -4993,6 +5007,327 @@ async function startAutoUpdate() {
 // (diary, dreams, memories) can be closed without scrolling all the way down
 // to a bottom button. The dialog wraps a scrolling inner form, so a corner
 // button pinned to the dialog stays put while the content scrolls.
+// ---------- Story room ----------
+// A place to make up stories together, turn by turn. Persistence is RLS-scoped
+// (story_games table) like the other rooms; only his next line goes through an
+// endpoint (/api/story), which writes it in his voice for the chosen mode.
+
+const STORY_MODES = { book: "Shared book", rounds: "Quick round", corpse: "Surprise reveal" };
+
+// The story currently open in the Play view, or null when in the Library.
+let storyCurrent = null;
+
+async function dbListStories() {
+  const { data, error } = await db
+    .from("story_games")
+    .select("id,title,mode,status,turns,revealed,updated_at")
+    .order("updated_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+async function dbCreateStory(mode) {
+  const { data, error } = await db
+    .from("story_games")
+    .insert({ user_id: state.user.id, mode, title: "Untitled", turns: [] })
+    .select("id,title,mode,status,turns,revealed,updated_at")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function dbUpdateStory(id, fields) {
+  const { error } = await db.from("story_games").update(fields).eq("id", id);
+  if (error) throw error;
+}
+
+async function dbDeleteStory(id) {
+  const { error } = await db.from("story_games").delete().eq("id", id);
+  if (error) throw error;
+}
+
+async function openStoryDialog() {
+  closeSidebar();
+  $("story-dialog").showModal();
+  showStoryLibrary();
+}
+
+function showStoryLibrary() {
+  storyCurrent = null;
+  $("story-play").hidden = true;
+  $("story-library").hidden = false;
+  renderStoryList();
+}
+
+async function renderStoryList() {
+  const el = $("story-list");
+  el.innerHTML = '<p class="story-empty">Loading…</p>';
+  let stories;
+  try {
+    stories = await dbListStories();
+  } catch (err) {
+    el.innerHTML = `<p class="story-empty">Couldn't load your stories: ${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  if (!stories.length) {
+    el.innerHTML = '<p class="story-empty">No stories yet. Pick a way to play above to begin one. 🪶</p>';
+    return;
+  }
+  el.innerHTML = "";
+  for (const s of stories) el.appendChild(mkStoryRow(s));
+}
+
+function mkStoryRow(s) {
+  const row = document.createElement("div");
+  row.className = "story-row";
+
+  const main = document.createElement("div");
+  main.className = "story-row-main";
+  const title = document.createElement("div");
+  title.className = "story-row-title";
+  title.textContent = s.title || "Untitled";
+  const sub = document.createElement("div");
+  sub.className = "story-row-sub";
+  const n = Array.isArray(s.turns) ? s.turns.length : 0;
+  const bits = [STORY_MODES[s.mode] || s.mode, `${n} line${n === 1 ? "" : "s"}`];
+  if (s.status === "finished") bits.push("finished");
+  sub.textContent = bits.join(" · ");
+  main.appendChild(title);
+  main.appendChild(sub);
+  row.appendChild(main);
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "story-row-del";
+  del.textContent = "🗑";
+  del.title = "Delete this story";
+  del.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!confirm(`Delete "${s.title || "Untitled"}"? This can't be undone.`)) return;
+    try {
+      await dbDeleteStory(s.id);
+      renderStoryList();
+    } catch (err) {
+      flashToast(`Couldn't delete: ${err.message}`, true);
+    }
+  });
+  row.appendChild(del);
+
+  row.addEventListener("click", () => openStory(s));
+  return row;
+}
+
+function openStory(s) {
+  storyCurrent = {
+    id: s.id,
+    title: s.title || "",
+    mode: s.mode,
+    status: s.status || "open",
+    turns: Array.isArray(s.turns) ? s.turns.slice() : [],
+    revealed: !!s.revealed,
+  };
+  $("story-library").hidden = true;
+  $("story-play").hidden = false;
+  $("story-title").value = storyCurrent.title;
+  renderStoryPlay();
+  $("story-input").focus();
+}
+
+async function storyStartNew(mode) {
+  if (!STORY_MODES[mode]) return;
+  try {
+    const s = await dbCreateStory(mode);
+    openStory(s);
+  } catch (err) {
+    flashToast(`Couldn't start a story: ${err.message}`, true);
+  }
+}
+
+function mkStoryLine(t) {
+  const d = document.createElement("div");
+  const her = t.author === "her";
+  d.className = "story-line " + (her ? "her" : "his");
+  const who = document.createElement("span");
+  who.className = "story-line-who";
+  who.textContent = her ? "You" : "Him";
+  d.appendChild(who);
+  d.appendChild(document.createTextNode(t.text || ""));
+  return d;
+}
+
+function renderStoryPlay() {
+  const cur = storyCurrent;
+  if (!cur) return;
+  const finished = cur.status === "finished";
+  $("story-mode-badge").textContent =
+    STORY_MODES[cur.mode] + (finished ? " · finished" : "");
+
+  const tr = $("story-transcript");
+  tr.innerHTML = "";
+  const turns = cur.turns;
+  // Corpse mode hides everything but the last line while you're still playing.
+  const hideForCorpse = cur.mode === "corpse" && !cur.revealed && !finished;
+
+  if (!turns.length) {
+    const e = document.createElement("p");
+    e.className = "story-empty";
+    e.textContent =
+      cur.mode === "corpse"
+        ? "Write the first line — then only the most recent line ever shows, until you reveal it all. 🙈"
+        : "Empty page. Write the first line, or tap 🌱 Seed it to have him open the story.";
+    tr.appendChild(e);
+  } else if (hideForCorpse) {
+    const note = document.createElement("div");
+    note.className = "story-hidden-note";
+    note.textContent = `${turns.length} line${turns.length === 1 ? "" : "s"} hidden above — only the last one shows.`;
+    tr.appendChild(note);
+    tr.appendChild(mkStoryLine(turns[turns.length - 1]));
+  } else {
+    for (const t of turns) tr.appendChild(mkStoryLine(t));
+  }
+
+  // Button states.
+  $("story-seed").hidden = turns.length > 0 || finished;
+  $("story-reveal").hidden = !(cur.mode === "corpse" && !cur.revealed && turns.length > 0);
+  $("story-finish").textContent = finished ? "Reopen" : "✓ Finish";
+  $("story-input").disabled = finished;
+  $("story-send").disabled = finished;
+  $("story-input").placeholder = finished ? "This story's finished — reopen to keep going." : "Write your line…";
+
+  tr.scrollTop = tr.scrollHeight;
+}
+
+async function storyPersist() {
+  const cur = storyCurrent;
+  if (!cur) return;
+  await dbUpdateStory(cur.id, {
+    title: cur.title || "Untitled",
+    turns: cur.turns,
+    status: cur.status,
+    revealed: cur.revealed,
+  });
+}
+
+function setStoryBusy(busy) {
+  $("story-send").disabled = busy;
+  $("story-seed").disabled = busy;
+  $("story-input").disabled = busy;
+}
+
+// Her line goes down, saves, then he answers.
+async function storyAddMyTurn() {
+  const cur = storyCurrent;
+  if (!cur || cur.status === "finished") return;
+  const input = $("story-input");
+  const text = input.value.trim();
+  if (!text) return;
+  cur.turns.push({ author: "her", text, at: Date.now() });
+  input.value = "";
+  renderStoryPlay();
+  try {
+    await storyPersist();
+  } catch (err) {
+    flashToast(`Couldn't save your line: ${err.message}`, true);
+  }
+  await storyHisTurn();
+}
+
+// He writes the next line via /api/story, in his voice, for this mode.
+async function storyHisTurn(opts = {}) {
+  const cur = storyCurrent;
+  if (!cur || cur.status === "finished") return;
+  const seed = !!opts.seed || cur.turns.length === 0;
+
+  const tr = $("story-transcript");
+  const thinking = document.createElement("div");
+  thinking.className = "story-thinking";
+  thinking.textContent = "✍️ he's writing…";
+  tr.appendChild(thinking);
+  tr.scrollTop = tr.scrollHeight;
+  setStoryBusy(true);
+
+  // Corpse mode only ever shows him the last line; other modes get the whole story.
+  const ctx = cur.mode === "corpse" ? cur.turns.slice(-1) : cur.turns;
+  const twist = $("story-twist").checked;
+
+  try {
+    const session = await freshSession();
+    if (!session || !session.access_token) {
+      throw new Error("You're signed out. Refresh to sign back in.");
+    }
+    const resp = await fetch("/api/story", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        mode: cur.mode,
+        turns: ctx.map((t) => ({ author: t.author, text: t.text })),
+        twist,
+        seed,
+        title: cur.title || "",
+        persona: (getActiveProject()?.systemPrompt || "").slice(0, 6000),
+      }),
+    });
+    const out = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(out.error || `Server returned ${resp.status}`);
+    const text = (out.text || "").trim();
+    if (!text) throw new Error("he didn't write anything back");
+    cur.turns.push({ author: "his", text, at: Date.now() });
+    $("story-twist").checked = false; // a twist is a one-shot
+    renderStoryPlay();
+    await storyPersist();
+  } catch (err) {
+    thinking.remove();
+    setStoryBusy(false);
+    flashToast(`Couldn't get his turn: ${err.message}`, true);
+  }
+}
+
+async function storySeed() {
+  const cur = storyCurrent;
+  if (!cur || cur.turns.length) return;
+  await storyHisTurn({ seed: true });
+}
+
+async function storyReveal() {
+  const cur = storyCurrent;
+  if (!cur) return;
+  cur.revealed = true;
+  renderStoryPlay();
+  try {
+    await storyPersist();
+  } catch (err) {
+    flashToast(`Couldn't save: ${err.message}`, true);
+  }
+}
+
+async function storyToggleFinish() {
+  const cur = storyCurrent;
+  if (!cur) return;
+  cur.status = cur.status === "finished" ? "open" : "finished";
+  // Finishing a corpse story is the reveal moment.
+  if (cur.status === "finished" && cur.mode === "corpse") cur.revealed = true;
+  renderStoryPlay();
+  try {
+    await storyPersist();
+  } catch (err) {
+    flashToast(`Couldn't save: ${err.message}`, true);
+  }
+}
+
+async function storyTitleChange() {
+  const cur = storyCurrent;
+  if (!cur) return;
+  cur.title = $("story-title").value.trim();
+  try {
+    await storyPersist();
+  } catch (_) {
+    /* a title save failing isn't worth a toast */
+  }
+}
+
 function addDialogCloseButtons() {
   document.querySelectorAll("dialog").forEach((d) => {
     if (d.querySelector(":scope > .dialog-x")) return;  // only once

@@ -179,6 +179,9 @@
         <button id="nav-studio" class="icon-nav-btn" type="button" title="Studio">
           <span class="icon-nav-glyph">🎵</span><span class="icon-nav-label">Studio</span>
         </button>
+        <button id="nav-story" class="icon-nav-btn" type="button" title="Story">
+          <span class="icon-nav-glyph">🪶</span><span class="icon-nav-label">Story</span>
+        </button>
       </nav>
       <nav id="project-list" aria-label="Conversations"></nav>
       <footer class="sidebar-footer">
@@ -715,6 +718,57 @@
         <div id="studio-poems" class="studio-list"></div>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="story-dialog">
+    <div class="settings-form story-form">
+      <header class="customize-head">
+        <h3>🪶 Story</h3>
+        <p class="muted small">A little room where the two of you make things up together — one line at a time. You write, he picks it up and hands it back.</p>
+      </header>
+
+      <!-- Library: start something new, or open a saved story -->
+      <div id="story-library">
+        <h4>Start something new</h4>
+        <div class="story-mode-pick">
+          <button type="button" class="story-mode-btn" data-mode="book">
+            <span class="story-mode-name">📖 Shared book</span>
+            <span class="muted small">One ongoing tale you both build, save, and come back to.</span>
+          </button>
+          <button type="button" class="story-mode-btn" data-mode="rounds">
+            <span class="story-mode-name">🎲 Quick round</span>
+            <span class="muted small">A short story from a seed. Game-night light.</span>
+          </button>
+          <button type="button" class="story-mode-btn" data-mode="corpse">
+            <span class="story-mode-name">🙈 Surprise reveal</span>
+            <span class="muted small">Each of you sees only the last line — it all reveals at the end.</span>
+          </button>
+        </div>
+        <h4>Your stories</h4>
+        <div id="story-list" class="story-list"></div>
+      </div>
+
+      <!-- Play: the open story -->
+      <div id="story-play" hidden>
+        <div class="story-play-head">
+          <button type="button" id="story-back" class="ghost small">← All stories</button>
+          <span id="story-mode-badge" class="story-badge"></span>
+        </div>
+        <input type="text" id="story-title" class="story-title-input" placeholder="Untitled" maxlength="120" />
+        <div id="story-transcript" class="story-transcript"></div>
+        <div id="story-compose" class="story-compose">
+          <textarea id="story-input" rows="2" placeholder="Write your line…"></textarea>
+          <div class="story-actions">
+            <button type="button" id="story-seed" class="ghost small" title="Ask him for an opening line">🌱 Seed it</button>
+            <label class="toggle story-twist" title="Make his next turn swerve somewhere unexpected"><input type="checkbox" id="story-twist" /> <span>🎲 Twist</span></label>
+            <span class="story-actions-spacer"></span>
+            <button type="button" id="story-reveal" class="ghost small" hidden>👀 Reveal</button>
+            <button type="button" id="story-finish" class="ghost small">✓ Finish</button>
+            <button type="button" id="story-send" class="primary small">Add ↵</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </dialog>
 
   <div id="toast" class="toast" hidden></div>
