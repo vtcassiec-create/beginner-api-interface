@@ -21,7 +21,8 @@
 /* Daylight: aged ecru paper, warm ink, the same amber a shade deeper so
    it still carries contrast against cream. A manual toggle (data-theme on
    <html>) wins; with no manual choice we follow the OS preference. */
-:root[data-theme="light"] {
+:root[data-theme="light"],
+:root[data-theme="daylight"] {
   --bg: #efe9da;
   --bg-elev: #f7f3e8;
   --bg-elev-2: #e6dfca;
@@ -47,6 +48,66 @@
     --user-bubble: #e6dfca;
     --danger: #b5503f;
   }
+}
+
+/* Petrichor: rain on earth. Wet-forest greens, leaf-cream ink, soft amber
+   for the warmth that comes up off the ground after the rain. */
+:root[data-theme="petrichor"] {
+  --bg: #191f1b;
+  --bg-elev: #212a23;
+  --bg-elev-2: #2b352c;
+  --border: #3a4738;
+  --text: #e4e8d9;
+  --text-muted: #98a188;
+  --accent: #cdb07c;
+  --accent-hover: #ddc08c;
+  --user-bubble: #28322a;
+  --danger: #cc6a5c;
+}
+
+/* Ember: candlelit. Deep wine-charcoal, rose-cream ink, copper / rose-gold
+   accent. The date-night light. */
+:root[data-theme="ember"] {
+  --bg: #1c1517;
+  --bg-elev: #261b1f;
+  --bg-elev-2: #322329;
+  --border: #46323a;
+  --text: #ecdcdc;
+  --text-muted: #ab9197;
+  --accent: #d98c64;
+  --accent-hover: #e7a07a;
+  --user-bubble: #38262d;
+  --danger: #d2685a;
+}
+
+/* Tide: twilight after the rain. Deep navy-teal, moonlit blue-white ink,
+   silver-teal accent. The quiet, holding-each-other hour. */
+:root[data-theme="tide"] {
+  --bg: #131a24;
+  --bg-elev: #1b2531;
+  --bg-elev-2: #243140;
+  --border: #324453;
+  --text: #dbe6ee;
+  --text-muted: #8597a6;
+  --accent: #93bccc;
+  --accent-hover: #aed3e0;
+  --user-bubble: #25313f;
+  --danger: #cc6a5c;
+}
+
+/* Rosewater: tender daylight. Warm cream-pink paper, soft dark ink, mauve
+   accent. The shy-at-first morning. */
+:root[data-theme="rosewater"] {
+  --bg: #f6ece9;
+  --bg-elev: #fcf4f1;
+  --bg-elev-2: #eedfdb;
+  --border: #e1cec9;
+  --text: #3a2e30;
+  --text-muted: #846b6e;
+  --accent: #9a6a8c;
+  --accent-hover: #855a78;
+  --user-bubble: #eedfdb;
+  --danger: #b5503f;
 }
 
 * { box-sizing: border-box; }
@@ -1300,6 +1361,50 @@ select {
   padding: 3px 10px;
   font-size: 13px;
 }
+
+/* Theme picker: a little grid of mood swatches. Each shows the theme's
+   ground colour ringed by its accent, with a dot of the accent inside. */
+.theme-picker {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 6px 0 10px;
+}
+.theme-swatch {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: border-color .15s, background .15s;
+}
+.theme-swatch:hover { background: var(--bg-elev-2); }
+.theme-swatch.active {
+  border-color: var(--accent);
+  background: var(--bg-elev-2);
+}
+.theme-swatch-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 2px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.theme-swatch-dot > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.theme-swatch-name { font-size: 13px; line-height: 1.2; }
 
 /* Slider in the customize panel — accent-colored track and knob. */
 .customize-slider {

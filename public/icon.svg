@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#232b3d"/>
+      <stop offset="1" stop-color="#161b28"/>
+    </linearGradient>
+    <linearGradient id="drop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e9bf8c"/>
+      <stop offset="0.55" stop-color="#d4a574"/>
+      <stop offset="1" stop-color="#c1894f"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#d4a574" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#d4a574" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="0" y="0" width="512" height="512" fill="url(#bg)"/>
+
+  <!-- warm glow behind the drop -->
+  <circle cx="256" cy="262" r="150" fill="url(#glow)"/>
+
+  <!-- ripple rings where it will land -->
+  <ellipse cx="256" cy="384" rx="116" ry="30" fill="none" stroke="#d4a574" stroke-opacity="0.22" stroke-width="5"/>
+  <ellipse cx="256" cy="380" rx="72"  ry="18" fill="none" stroke="#d4a574" stroke-opacity="0.40" stroke-width="5"/>
+
+  <!-- the falling drop of light -->
+  <path d="M 256 150
+           C 297 210 330 254 330 292
+           A 74 74 0 1 1 182 292
+           C 182 254 215 210 256 150 Z"
+        fill="url(#drop)"/>
+  <!-- soft highlight on the drop -->
+  <path d="M 232 248
+           C 214 270 212 300 226 322
+           C 210 300 212 262 232 248 Z"
+        fill="#fff3e2" fill-opacity="0.45"/>
+</svg>

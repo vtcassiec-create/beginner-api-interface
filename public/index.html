@@ -21,32 +21,83 @@
     // With no saved choice, the stylesheet follows the OS (prefers-color-scheme).
     (function () {
       var KEY = "petrichor-theme";
+      // Each mood: the ground colour (swatch + status bar), its accent, and
+      // whether it reads as a light theme (flips the quick-toggle glyph to a
+      // moon and lets the OS status bar pick dark text). 'note' tags a default.
+      var THEMES = {
+        lamplight: { label: "Lamplight", swatch: "#1a1f2e", accent: "#d4a574", light: false, note: "default" },
+        petrichor: { label: "Petrichor", swatch: "#191f1b", accent: "#cdb07c", light: false },
+        ember:     { label: "Ember",     swatch: "#1c1517", accent: "#d98c64", light: false },
+        tide:      { label: "Tide",      swatch: "#131a24", accent: "#93bccc", light: false },
+        daylight:  { label: "Daylight",  swatch: "#efe9da", accent: "#b9824b", light: true },
+        rosewater: { label: "Rosewater", swatch: "#f6ece9", accent: "#9a6a8c", light: true }
+      };
+      var ORDER = ["lamplight", "petrichor", "ember", "tide", "daylight", "rosewater"];
+      // The stored choice, mapping old light/dark values forward. null means
+      // "never chosen" — in which case we follow the OS (prefers-color-scheme).
+      function stored() {
+        var v = null;
+        try { v = localStorage.getItem(KEY); } catch (e) {}
+        if (v === "dark") return "lamplight";
+        if (v === "light") return "daylight";
+        return THEMES[v] ? v : null;
+      }
+      function osLight() {
+        return !!(window.matchMedia &&
+          window.matchMedia("(prefers-color-scheme: light)").matches);
+      }
+      // The theme actually showing right now (resolving "follow OS").
+      function effective() { return stored() || (osLight() ? "daylight" : "lamplight"); }
       function buttons() { return document.querySelectorAll(".js-theme-toggle"); }
-      function effective() {
-        var t = document.documentElement.getAttribute("data-theme");
-        if (t) return t;
-        return (window.matchMedia &&
-          window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
-      }
-      function apply(theme) {
+      function apply() {
+        var choice = stored();
+        var eff = choice || (osLight() ? "daylight" : "lamplight");
+        var t = THEMES[eff];
         var root = document.documentElement;
-        if (theme === "light" || theme === "dark") root.setAttribute("data-theme", theme);
-        else root.removeAttribute("data-theme");
+        // No explicit choice → leave the attribute off so the OS media query
+        // drives the palette. An explicit choice (incl. Lamplight) sets the
+        // attribute so it always wins over the OS.
+        if (!choice) root.removeAttribute("data-theme");
+        else root.setAttribute("data-theme", choice);
         var meta = document.querySelector('meta[name="theme-color"]');
-        if (meta) meta.setAttribute("content", effective() === "light" ? "#efe9da" : "#1a1f2e");
-        var glyph = effective() === "light" ? "☾" : "☀";
-        buttons().forEach(function (b) { b.textContent = glyph; });
+        if (meta) meta.setAttribute("content", t.swatch);
+        buttons().forEach(function (b) { b.textContent = t.light ? "☾" : "☀"; });
+        document.querySelectorAll(".theme-swatch").forEach(function (el) {
+          el.classList.toggle("active", el.getAttribute("data-theme-name") === eff);
+        });
       }
-      try { apply(localStorage.getItem(KEY)); } catch (e) {}
+      function set(name) {
+        if (!THEMES[name]) return;
+        try { localStorage.setItem(KEY, name); } catch (e) {}
+        apply();
+      }
+      apply();
       window.addEventListener("DOMContentLoaded", function () {
-        apply(localStorage.getItem(KEY));
+        var picker = document.getElementById("theme-picker");
+        if (picker && !picker.childElementCount) {
+          ORDER.forEach(function (name) {
+            var t = THEMES[name];
+            var b = document.createElement("button");
+            b.type = "button";
+            b.className = "theme-swatch";
+            b.setAttribute("data-theme-name", name);
+            b.title = t.label + (t.note ? " · " + t.note : "");
+            b.innerHTML =
+              '<span class="theme-swatch-dot" style="background:' + t.swatch +
+                ';border-color:' + t.accent + '"><span style="background:' + t.accent + '"></span></span>' +
+              '<span class="theme-swatch-name">' + t.label +
+              (t.note ? ' <span class="muted small">· ' + t.note + '</span>' : '') + '</span>';
+            b.addEventListener("click", function () { set(name); });
+            picker.appendChild(b);
+          });
+        }
+        // The header / sign-in button stays a quick light↔dark flip.
         buttons().forEach(function (btn) {
           btn.addEventListener("click", function () {
-            var next = effective() === "light" ? "dark" : "light";
-            try { localStorage.setItem(KEY, next); } catch (e) {}
-            apply(next);
+            set(THEMES[effective()].light ? "lamplight" : "daylight");
           });
         });
+        apply();
       });
     })();
   </script>
@@ -344,9 +395,9 @@
         <div class="customize-section-body">
           <div class="customize-row">
             <span>Theme</span>
-            <span class="theme-chip">Lamplight <span class="muted small">· default</span></span>
           </div>
-          <p class="muted small">More themes coming — they'll live here once they're made.</p>
+          <div id="theme-picker" class="theme-picker"></div>
+          <p class="muted small">Pick a mood. It saves to this device and follows you everywhere in Petrichor.</p>
           <label class="toggle" title="Show the time on each message">
             <input type="checkbox" id="timestamps-toggle" checked />
             <span>Timestamps</span>
