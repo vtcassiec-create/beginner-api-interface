@@ -27,6 +27,12 @@ from urllib.parse import urlsplit
 
 AUTH_TIMEOUT_SECONDS = 5
 HTTP_TIMEOUT = 10
+# Hold an undelivered push for up to 6h if the phone is asleep (pywebpush
+# defaults to ttl=0 = drop-if-not-instantly-deliverable), and send it at high
+# urgency so FCM/APNs wake the device promptly instead of batching it for
+# hours. "Topic" lets a newer push supersede an older undelivered one.
+PUSH_TTL_SECONDS = 6 * 3600
+PUSH_HEADERS = {"Urgency": "high", "Topic": "reach"}
 
 
 def _normalize_url(raw):
@@ -69,6 +75,8 @@ def send_push(subscription, payload):
             data=json.dumps(payload),
             vapid_private_key=priv,
             vapid_claims={"sub": _vapid_claims_subject()},
+            ttl=PUSH_TTL_SECONDS,
+            headers=dict(PUSH_HEADERS),
             timeout=HTTP_TIMEOUT,
         )
         return True, 201
@@ -156,6 +164,10 @@ class handler(BaseHTTPRequestHandler):
             f"push_subscriptions?user_id=eq.{user_id}&endpoint=neq."
             + urllib.parse.quote(endpoint, safe=""))
         return self._json(200, {"ok": True})
+
+    def _test(self, user_id):
+        """Send a test notification to all of the user's subscribed devices.
+        (Wired to the "Test notification" button in the app.)"""
         subs = self._supabase_get(
             f"push_subscriptions?user_id=eq.{user_id}"
             f"&select=endpoint,p256dh,auth")
