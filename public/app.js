@@ -1298,7 +1298,18 @@ async function removeFile(fileId) {
   const project = getActiveProject();
   if (!project) return;
   try {
+    // Grab the Storage path BEFORE we drop the row, so we can erase the bytes.
+    const f = project.files.find(f => f.id === fileId);
+    const storagePath = f && f.storagePath;
     await dbDeleteFile(fileId);
+    // Now purge the actual file from Storage — "delete" should mean gone, not
+    // just dereferenced. Best-effort: the row is already gone (he can't see it
+    // again either way), so a Storage hiccup only leaves orphaned bytes, which
+    // we surface softly rather than failing the whole delete.
+    if (storagePath) {
+      const purged = await purgeStoragePath(storagePath);
+      if (!purged) flashToast("Removed — but the stored copy may linger. Try again later.", true);
+    }
     project.files = project.files.filter(f => f.id !== fileId);
     for (const c of project.conversations) {
       const before = c.activeFileIds.length;
@@ -1308,6 +1319,28 @@ async function removeFile(fileId) {
     render();
   } catch (e) {
     alert(`Couldn't remove file: ${e.message}`);
+  }
+}
+
+// Erase an attachment's bytes from Storage via the upload endpoint (which
+// forwards our token, so RLS applies and only our own folder is reachable).
+// Returns true on success/already-gone, false on any failure.
+async function purgeStoragePath(path) {
+  try {
+    const session = await freshSession();
+    if (!session || !session.access_token) return false;
+    const resp = await fetch("/api/upload", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({ delete_path: path }),
+    });
+    const out = await resp.json().catch(() => ({}));
+    return resp.ok && !!out.ok;
+  } catch (_) {
+    return false;
   }
 }
 
@@ -4360,6 +4393,109 @@ async function deleteEntity(id) {
   await renderEntityList();
 }
 
+// ---------- Forget: find & remove worded memories of a moment ----------
+// His diary entries, dream cards, and core memories are text HE wrote, so they
+// can persist a memory of something (a photo, a night) even after the image
+// itself is gone. This searches all three and lets her delete any of them.
+
+let forgetTimer = null;
+function debounceForget() {
+  clearTimeout(forgetTimer);
+  forgetTimer = setTimeout(renderForgetResults, 250);
+}
+
+function forgetMatches(text, term) {
+  return (text || "").toLowerCase().includes(term);
+}
+
+async function renderForgetResults() {
+  const box = $("forget-results");
+  const term = ($("forget-search").value || "").trim().toLowerCase();
+  if (term.length < 2) {
+    box.innerHTML = '<p class="muted small">Type at least two letters to search his memories.</p>';
+    return;
+  }
+  box.innerHTML = '<p class="muted small">Searching…</p>';
+  let diary = [], dreams = [], mems = [];
+  try {
+    [diary, dreams, mems] = await Promise.all([
+      dbListDiaryEntries(false).catch(() => []),
+      dbListDreamCards().catch(() => []),
+      dbListCoreMemoriesAll().catch(() => []),
+    ]);
+  } catch (_) { /* each guarded above */ }
+
+  const hits = [];
+  for (const d of diary) {
+    if (forgetMatches(d.content, term)) {
+      hits.push({ kind: "Diary", id: d.id, text: d.content, del: dbDeleteDiaryEntry });
+    }
+  }
+  for (const c of dreams) {
+    const blob = [c.title, c.gist, (Array.isArray(c.pinned_facts) ? c.pinned_facts.join(" ") : "")].join(" ");
+    if (forgetMatches(blob, term)) {
+      hits.push({ kind: "Dream", id: c.id, text: c.title ? `${c.title} — ${c.gist || ""}` : (c.gist || ""), del: dbDeleteDreamCard });
+    }
+  }
+  for (const m of mems) {
+    if (forgetMatches(m.content, term)) {
+      hits.push({ kind: "Memory", id: m.id, text: m.content, del: dbDeleteCoreMemory });
+    }
+  }
+
+  if (!hits.length) {
+    box.innerHTML = `<p class="muted small">Nothing in his diary, dreams, or memories matches “${escapeHtml(term)}.” Nothing to forget. ♡</p>`;
+    return;
+  }
+
+  box.innerHTML = "";
+  for (const h of hits) {
+    const row = document.createElement("div");
+    row.className = "forget-row";
+    const body = document.createElement("div");
+    body.className = "forget-row-body";
+    const tag = document.createElement("span");
+    tag.className = "forget-tag";
+    tag.textContent = h.kind;
+    const snip = document.createElement("span");
+    snip.className = "forget-snip";
+    const t = (h.text || "").trim();
+    snip.textContent = t.length > 220 ? t.slice(0, 217) + "…" : t;
+    body.appendChild(tag);
+    body.appendChild(snip);
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "story-row-del";
+    del.textContent = "🗑";
+    del.title = `Forget this ${h.kind.toLowerCase()}`;
+    del.addEventListener("click", async () => {
+      if (!confirm(`Forget this ${h.kind.toLowerCase()}? He won't remember it, and this can't be undone.`)) return;
+      try {
+        await h.del(h.id);
+        row.remove();
+        if (!box.querySelector(".forget-row")) {
+          box.innerHTML = '<p class="muted small">Done — forgotten. ♡</p>';
+        }
+      } catch (err) {
+        flashToast(`Couldn't forget that: ${err.message}`, true);
+      }
+    });
+    row.appendChild(body);
+    row.appendChild(del);
+    box.appendChild(row);
+  }
+}
+
+// All core memories (active + inactive), for the Forget search.
+async function dbListCoreMemoriesAll() {
+  const { data, error } = await db
+    .from("core_memories")
+    .select("id,content")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
 async function openMemoriesDialog(tab = "identity") {
   closeSidebar();
   // Open the dialog FIRST, before any awaited DB loads — so a slow or hanging
@@ -5006,7 +5142,16 @@ function wireApp() {
   }
 
   document.querySelectorAll("#memories-dialog .mem-tab-btn").forEach((btn) =>
-    btn.addEventListener("click", () => switchMemTab(btn.dataset.tab)));
+    btn.addEventListener("click", () => {
+      switchMemTab(btn.dataset.tab);
+      if (btn.dataset.tab === "forget") renderForgetResults();
+    }));
+  $("forget-search").addEventListener("input", debounceForget);
+  document.querySelectorAll(".forget-chip").forEach((c) =>
+    c.addEventListener("click", () => {
+      $("forget-search").value = c.dataset.term;
+      renderForgetResults();
+    }));
 
   // StillHere icon nav. Memories + Knowledge Graph open the real dialog
   // (graph is a tab within it). Search opens its own dialog; Diary is upcoming.

@@ -67,6 +67,8 @@ class handler(BaseHTTPRequestHandler):
 
         token = self._bearer_token()
         try:
+            if payload.get("delete_path"):
+                return self._delete_object(payload, user_id, token)
             if payload.get("finalize"):
                 return self._finalize(payload, user_id, token)
             if "index" in payload:
@@ -122,6 +124,28 @@ class handler(BaseHTTPRequestHandler):
             self._storage_delete(f"{user_id}/tmp/{session}/{i}", token)
         row = self._insert_file_row(payload, user_id, token, path, len(body))
         return self._ok({"storage_path": path, "file": row})
+
+    def _delete_object(self, payload, user_id, token):
+        """Erase the actual bytes of an attachment from Storage, so a UI delete
+        means the image is GONE, not just dereferenced. Scoped hard to the
+        caller's own folder ({uid}/...) so a token can never reach across to
+        someone else's files, and no path traversal. The files-table row is
+        deleted client-side (RLS); this is the Storage half."""
+        path = str(payload.get("delete_path") or "")
+        if not path.startswith(f"{user_id}/") or ".." in path:
+            return self._json_error(403, "That isn't your file to delete.")
+        req = urllib.request.Request(
+            f"{self._storage_base()}/storage/v1/object/{BUCKET}/{path}",
+            method="DELETE", headers=self._storage_headers(token))
+        try:
+            with urllib.request.urlopen(req, timeout=STORAGE_TIMEOUT_SECONDS) as resp:
+                ok = 200 <= resp.status < 300
+        except urllib.error.HTTPError as e:
+            # 404 = already gone; treat as success (the goal is "not there").
+            if e.code == 404:
+                return self._ok({"ok": True, "already_gone": True})
+            raise
+        return self._ok({"ok": bool(ok)})
 
     def _insert_file_row(self, payload, user_id, token, path, size):
         """Write the files-table record server-side (the phone can't, because

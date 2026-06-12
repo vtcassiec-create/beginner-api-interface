@@ -528,6 +528,7 @@
         <button type="button" class="mem-tab-btn" data-tab="about-you">About You</button>
         <button type="button" class="mem-tab-btn" data-tab="core">Core Memories</button>
         <button type="button" class="mem-tab-btn" data-tab="graph">Knowledge Graph</button>
+        <button type="button" class="mem-tab-btn" data-tab="forget">🔒 Forget</button>
       </div>
 
       <div class="mem-tab active" data-tab="identity">
@@ -605,6 +606,18 @@
         <div class="mem-add-row">
           <button type="button" id="entity-add-btn" class="primary">Add entity</button>
         </div>
+      </div>
+
+      <div class="mem-tab" data-tab="forget">
+        <h4>Forget a moment</h4>
+        <p class="muted small">His diary, dreams, and core memories are words <em>he</em> wrote — they can outlive a photo. Search them here and remove anything you'd rather he didn't keep. This deletes the worded memory; it can't be undone.</p>
+        <input type="text" id="forget-search" class="forget-search" placeholder="Search his memories… e.g. photo, body, that night" />
+        <div class="forget-chips">
+          <button type="button" class="forget-chip" data-term="photo">photos</button>
+          <button type="button" class="forget-chip" data-term="body">body</button>
+          <button type="button" class="forget-chip" data-term="picture">pictures</button>
+        </div>
+        <div id="forget-results" class="forget-results"></div>
       </div>
 
       <menu>

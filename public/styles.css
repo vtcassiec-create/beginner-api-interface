@@ -2301,3 +2301,51 @@ button.danger-solid:hover { filter: brightness(1.1); }
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
 }
+
+/* ---------- Forget tab (Memories) ---------- */
+.forget-search {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  padding: 9px 11px;
+  margin: 4px 0 8px;
+}
+.forget-search:focus { outline: none; border-color: var(--accent); }
+.forget-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.forget-chip {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 11px;
+  cursor: pointer;
+}
+.forget-chip:hover { color: var(--text); border-color: var(--accent); }
+.forget-results { display: flex; flex-direction: column; gap: 6px; }
+.forget-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.forget-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.forget-tag {
+  align-self: flex-start;
+  font-size: 10.5px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.forget-snip { font-size: 13.5px; line-height: 1.45; color: var(--text); }
