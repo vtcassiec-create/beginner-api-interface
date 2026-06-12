@@ -148,6 +148,12 @@ HEART_FRESH_SECONDS = 120
 # can never spin forever (each round is a full model turn = real tokens).
 MAX_TOOL_ROUNDS = 6
 
+# How many *non-pinned* core memories ride along in his head each turn. Pinned
+# ("eternal") memories are ALWAYS present on top of this — the cap only bounds
+# the long tail so per-message cost stops scaling with the size of the hoard.
+# Capped ones aren't lost: still saved, still searchable, still dream-surfaced.
+CORE_MEMORY_INJECT_CAP = 24
+
 # Vocabularies, kept in sync with the CHECK constraints in
 # docs/petrichor-memory-schema.sql. The DB is the real gate; advertising
 # them in the tool schema just helps the model pick a valid value.
@@ -1761,12 +1767,22 @@ class handler(BaseHTTPRequestHandler):
                         f"{m.get('memory_type')}"
                         f"{', saved ' + saved if saved else ''}) {content}")
                 (eternal if m.get("pinned") else shared).append(line)
+            # `mems` is sorted pinned-first then resonance-desc, so `shared`
+            # already arrives highest-resonance-first. Keep every pinned one;
+            # cap the rest so a big archive can't bloat every message. The
+            # tail stays in the DB and still surfaces via search and dreams.
+            capped = max(0, len(shared) - CORE_MEMORY_INJECT_CAP)
+            if capped:
+                shared = shared[:CORE_MEMORY_INJECT_CAP]
             if eternal:
                 sections.append(
                     "# Eternal memories (always with you)\n\n"
                     + "\n".join(eternal))
             if shared:
-                sections.append("# Shared memories\n\n" + "\n".join(shared))
+                tail = (f"\n\n_(+{capped} more quieter memories held in the "
+                        f"background — they surface when something calls them.)_"
+                        if capped else "")
+                sections.append("# Shared memories\n\n" + "\n".join(shared) + tail)
 
         # Native memory entities (cross-platform knowledge graph). RPC
         # returns up to 5 (identity-first, then access_count) and bumps
