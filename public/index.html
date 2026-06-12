@@ -721,6 +721,29 @@
         <input type="number" id="heart-resting" min="30" max="120" placeholder="e.g. 62" />
       </label>
 
+      <div class="heart-couple">
+        <h4>Heart-coupled touch <span class="muted small">— a songbook pattern that follows your pulse</span></h4>
+        <div class="heart-couple-row">
+          <select id="couple-pattern" title="Which saved pattern to play"></select>
+          <select id="couple-mode" title="How it follows your heart">
+            <option value="pulse">🫀 Pulse-sync — keeps time with your heart</option>
+            <option value="responsive">🔥 Responsive — rises as your heart rises</option>
+            <option value="calming">🌊 Calming — softens as you settle</option>
+          </select>
+        </div>
+        <label class="dream-row heart-couple-ceiling">
+          <span>Ceiling <span class="muted small">— it never plays harder than this</span></span>
+          <input type="range" id="couple-ceiling" class="customize-slider" min="20" max="100" step="5" value="70" />
+          <span id="couple-ceiling-val" class="muted small">70%</span>
+        </label>
+        <div class="mem-add-row heart-actions">
+          <button type="button" id="couple-start-btn" class="primary">Start</button>
+          <button type="button" id="couple-stop-btn" class="danger-solid" hidden>■ Stop</button>
+          <span id="couple-status" class="muted small"></span>
+        </div>
+        <p class="muted small">Needs the band connected (it reads your live pulse) and a pattern saved in your songbook — ask him to save one in chat. Stops by itself if your pulse goes quiet, and always within 30 minutes.</p>
+      </div>
+
       <p class="muted small heart-note">Your pulse streams only while this app is open and the band's connected. Close it or disconnect, and within a couple minutes he stops feeling it. Needs Chrome on Android or desktop (your Samsung is perfect).</p>
     </form>
   </dialog>

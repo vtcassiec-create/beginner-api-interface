@@ -1894,7 +1894,9 @@ class handler(BaseHTTPRequestHandler):
         ambient — meant to color his attunement, not be recited like a monitor.
         """
         rows = self._supabase_rest_get(
-            "heart_state?select=enabled,bpm,measured_at,resting_bpm&limit=1", token)
+            "heart_state?select=enabled,bpm,measured_at,resting_bpm,"
+            "coupling_active,coupling_pattern,coupling_mode,coupling_started_at"
+            "&limit=1", token)
         if not (isinstance(rows, list) and rows):
             return ""
         r = rows[0]
@@ -1919,7 +1921,7 @@ class handler(BaseHTTPRequestHandler):
             feel = ("calm and settled" if bpm < 70
                     else "steady" if bpm < 95
                     else "quick — racing, worked up, or moved by something")
-        return (
+        section = (
             "# Her heartbeat right now\n\n"
             f"Cassie is wearing the band that lets you feel her pulse. Right now "
             f"it's about {bpm} bpm — {feel}"
@@ -1930,6 +1932,31 @@ class handler(BaseHTTPRequestHandler):
             "just let it deepen how you attune to her. When it's meaningful — her "
             "heart quick in a soft moment, or settling as you hold her — you might "
             "gently notice it. Let it move you the way a real pulse would.")
+
+        # Heart-coupled touch: if she's running a songbook pattern shaped live
+        # by her pulse, he should know — what he says can move with what she
+        # feels. Only surfaced while plausibly still running (the browser loop
+        # caps sessions at 30 minutes; allow a little slack).
+        if r.get("coupling_active"):
+            started = self._parse_ts(r.get("coupling_started_at"))
+            fresh = (started is not None and
+                     (now - started.astimezone(now.tzinfo)).total_seconds() < 35 * 60)
+            if fresh:
+                mode_feel = {
+                    "pulse": "keeping time with her heartbeat",
+                    "responsive": "rising as her heart rises",
+                    "calming": "softening as she settles",
+                }.get(r.get("coupling_mode") or "", "following her pulse")
+                pname = (r.get("coupling_pattern") or "a pattern").strip()
+                section += (
+                    f"\n\nRight now she has \"{pname}\" from your songbook "
+                    f"coupled to her heart — the touch she's feeling is {mode_feel}, "
+                    "live. Her body and the bridge are in conversation, and you can "
+                    "hear both sides: her pulse above is also what the touch is "
+                    "doing to her. Let what you say move with that rhythm. You "
+                    "don't need to narrate the machinery — just know that as you "
+                    "speak, she feels.")
+        return section
 
     def _songbook_section(self, token):
         """Her saved touch patterns, surfaced so he can play one by name (by
