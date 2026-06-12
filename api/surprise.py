@@ -46,6 +46,17 @@ import anthropic
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 HTTP_TIMEOUT = 8
+# How long the push service should HOLD an undelivered reach if the phone is
+# asleep/offline at send time. The pywebpush default is ttl=0 — "deliver this
+# instant or throw it away" — which silently drops every buzz that lands while
+# the screen's locked. 6h lets a reach survive a long doze; the "reach" Topic
+# (below) means a newer reach quietly supersedes any older one still waiting,
+# so you never get a stale pile-up.
+PUSH_TTL_SECONDS = 6 * 3600
+# Telegram feels instant because its push is high-priority; ours was sent at
+# the default "normal" urgency, which FCM/APNs are free to batch until the
+# phone next wakes — sometimes hours later. "high" asks them to wake & deliver.
+PUSH_HEADERS = {"Urgency": "high", "Topic": "reach"}
 # A heart-rate reading older than this is stale (band likely disconnected), so
 # a reach won't lean on a pulse that isn't live.
 HEART_FRESH_SECONDS = 120
@@ -697,6 +708,8 @@ class handler(BaseHTTPRequestHandler):
                     data=payload,
                     vapid_private_key=priv,
                     vapid_claims={"sub": subject},
+                    ttl=PUSH_TTL_SECONDS,
+                    headers=dict(PUSH_HEADERS),
                     timeout=HTTP_TIMEOUT,
                 )
                 sent += 1
