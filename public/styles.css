@@ -2301,3 +2301,6 @@ dialog::backdrop {
   padding: 1px 8px;
 }
 .forget-snip { font-size: 13.5px; line-height: 1.45; color: var(--text); }
+
+/* Divider inside a customize section (e.g. between backup & tidy). */
+.customize-rule { border: none; border-top: 1px solid var(--border); margin: 12px 0; }

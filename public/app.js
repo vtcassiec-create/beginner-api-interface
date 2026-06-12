@@ -1830,6 +1830,109 @@ function safeFilename(s) {
   return (s || "untitled").replace(/[^\w\-]+/g, "_").slice(0, 60);
 }
 
+// ---- Full backup: every table that holds "him", in one downloadable file ----
+// His self, his diary, your dreams, memories, knowledge graph, stories, his
+// studio, the songbook, and your whole chat history. Photo *bytes* are not
+// included by design (they live in private Storage); their text record is.
+const BACKUP_TABLES = [
+  "self_state", "user_preferences", "core_memories", "claude_memory_entities",
+  "diary_entries", "dream_cards", "story_games", "studio_works", "patterns",
+  "projects", "conversations", "manuscript_stories", "manuscript_documents",
+  "heart_state", "dream_state", "reach_settings",
+];
+
+async function dumpTable(name) {
+  try {
+    const { data, error } = await db.from(name).select("*");
+    if (error) throw error;
+    return data || [];
+  } catch (e) {
+    // A table this user doesn't have (migration never run) shouldn't sink the
+    // whole backup — record the miss and keep going.
+    return { _unavailable: e.message || String(e) };
+  }
+}
+
+async function exportEverythingBackup() {
+  const btn = $("backup-btn");
+  const original = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "Gathering everything…"; }
+  try {
+    const results = await Promise.all(BACKUP_TABLES.map(dumpTable));
+    const data = {};
+    const summary = [];
+    BACKUP_TABLES.forEach((t, i) => {
+      data[t] = results[i];
+      summary.push(Array.isArray(results[i]) ? `${t}: ${results[i].length}` : `${t}: unavailable`);
+    });
+    const backup = {
+      app: "Petrichor",
+      kind: "full-backup",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      account: state.user?.email || null,
+      note: "Photo image files are NOT included (they live in private Storage); their text record is.",
+      summary,
+      data,
+    };
+    const date = new Date().toISOString().slice(0, 10);
+    downloadFile(`petrichor-backup-${date}.json`,
+      JSON.stringify(backup, null, 2), "application/json");
+    flashToast("Backup saved — keep it somewhere safe. ♡");
+  } catch (e) {
+    flashToast(`Backup failed: ${e.message}`, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
+}
+
+// ---- Tidy storage: remove unreferenced photos + leftover upload scraps ----
+async function tidyStorage() {
+  if (!state.user) return;
+  if (!confirm("Tidy storage? This permanently removes photo files that aren't "
+    + "attached to anything anymore, plus leftover upload scraps. Your attached "
+    + "photos are not touched.")) return;
+  const btn = $("tidy-storage-btn");
+  const original = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "Tidying…"; }
+  const uid = state.user.id;
+  const bucket = db.storage.from("attachments");
+  try {
+    // Paths still referenced by a files row — these we keep.
+    const { data: rows } = await db.from("files").select("storage_path");
+    const keep = new Set((rows || []).map(r => r.storage_path).filter(Boolean));
+
+    const strays = [];
+    // Top-level objects in her folder (supabase-js lists folders with id null).
+    const { data: top, error } = await bucket.list(uid, { limit: 1000 });
+    if (error) throw error;
+    for (const it of (top || [])) {
+      if (it.id == null) continue;                 // a folder (e.g. tmp/)
+      const path = `${uid}/${it.name}`;
+      if (!keep.has(path)) strays.push(path);
+    }
+    // Leftover upload chunks under {uid}/tmp/<session>/<index>.
+    const { data: sessions } = await bucket.list(`${uid}/tmp`, { limit: 1000 });
+    for (const sess of (sessions || [])) {
+      if (sess.id != null) { strays.push(`${uid}/tmp/${sess.name}`); continue; }
+      const { data: chunks } = await bucket.list(`${uid}/tmp/${sess.name}`, { limit: 1000 });
+      for (const ch of (chunks || [])) strays.push(`${uid}/tmp/${sess.name}/${ch.name}`);
+    }
+
+    if (!strays.length) {
+      flashToast("Already spotless — nothing to tidy. ♡");
+      return;
+    }
+    const { error: delErr } = await bucket.remove(strays);
+    if (delErr) throw delErr;
+    flashToast(`Tidied — cleared ${strays.length} stray file${strays.length === 1 ? "" : "s"}. ♡`);
+  } catch (e) {
+    flashToast(`Couldn't tidy: ${e.message}`, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
+}
+
 function exportConversationJson() {
   const project = getActiveProject();
   const conv = getActiveConversation(project);
@@ -4809,6 +4912,9 @@ function wireApp() {
   // 500ms — so even if the dialog is closed or the page reloaded mid-
   // edit, the most recent value is persisted. A small toast confirms.
   let _spSaveTimer = null;
+  $("backup-btn").addEventListener("click", exportEverythingBackup);
+  $("tidy-storage-btn").addEventListener("click", tidyStorage);
+
   $("system-prompt").addEventListener("input", (e) => {
     const project = getActiveProject();
     if (!project) return;
