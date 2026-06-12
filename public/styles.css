@@ -2253,3 +2253,51 @@ dialog::backdrop {
   font-style: italic;
   margin: 4px 0 10px;
 }
+
+/* ---------- Heart-coupled touch ---------- */
+.heart-couple {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.heart-couple h4 { margin: 0; font-size: 14px; }
+.heart-couple-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.heart-couple-row select {
+  flex: 1;
+  min-width: 150px;
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+}
+.heart-couple-ceiling { display: flex; align-items: center; gap: 10px; }
+.heart-couple-ceiling > span:first-child { flex-shrink: 0; }
+.heart-couple-ceiling input[type="range"] { flex: 1; }
+#couple-ceiling-val { min-width: 38px; text-align: right; }
+
+/* The stop button: solid, obvious, never subtle. */
+button.danger-solid {
+  background: var(--danger);
+  border: 1px solid var(--danger);
+  color: #fff;
+  padding: 8px 18px;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.danger-solid:hover { filter: brightness(1.1); }
+
+/* A soft pulse on the status while a coupling runs. */
+#couple-status.live { color: var(--accent); animation: couple-pulse 1.6s ease-in-out infinite; }
+@keyframes couple-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
