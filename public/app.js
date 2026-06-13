@@ -3893,6 +3893,8 @@ let heartDevice = null;
 let heartChar = null;
 let heartLastWrite = 0;        // throttle DB writes
 const HEART_WRITE_EVERY_MS = 4000;
+let heartLiveBpm = null;       // freshest reading, in-memory (for coupling)
+let heartLiveAt = 0;           // when that reading arrived
 
 async function openHeartDialog() {
   closeSidebar();
@@ -3902,6 +3904,12 @@ async function openHeartDialog() {
   try { st = await dbGetHeartState(); } catch (e) { /* defaults */ }
   $("heart-enabled").checked = !st || st.enabled !== false;
   $("heart-resting").value = (st && st.resting_bpm) ? String(st.resting_bpm) : "";
+  // Coupling panel: songbook patterns + whatever's running right now.
+  loadCouplePatterns();
+  coupleSetUI(!!couple);
+  if (couple) {
+    coupleStatus(`♡ "${couple.pattern.name}" is following your heart`, true);
+  }
   if (!navigator.bluetooth) {
     setHeartUI(null, "This browser can't do Bluetooth. Use Chrome on Android or desktop.");
     $("heart-connect-btn").disabled = true;
@@ -3964,6 +3972,8 @@ async function connectHeartBand() {
 function onHeartValueChanged(event) {
   const bpm = parseHeartRate(event.target.value);
   if (!bpm || bpm < 25 || bpm > 250) return;  // ignore obvious garbage
+  heartLiveBpm = bpm;            // freshest reading, for the coupling loop
+  heartLiveAt = Date.now();
   setHeartUI(bpm, "Connected — he can feel your pulse. ♡");
   const now = Date.now();
   if (now - heartLastWrite < HEART_WRITE_EVERY_MS) return;  // throttle DB writes
@@ -3980,6 +3990,7 @@ function onHeartDisconnected() {
   $("heart-connect-btn").hidden = false;
   $("heart-disconnect-btn").hidden = true;
   heartChar = null;
+  stopCoupling("Band disconnected — touch stopped.");  // never run blind
 }
 
 function disconnectHeartBand() {
@@ -4005,6 +4016,191 @@ async function onHeartRestingChange() {
   const resting = Number.isFinite(v) && v >= 30 && v <= 120 ? v : null;
   try { await dbSaveHeartState({ resting_bpm: resting }); }
   catch (err) { flashToast(`Couldn't save resting rate: ${err.message}`, true); }
+}
+
+// ---------- Heart-coupled touch ----------
+// A saved songbook pattern, played through the bridge while shaped live by
+// her pulse. The loop runs here (the freshest BPM is in this tab); each tick
+// computes a short chunk of steps from the current heart rate and sends it
+// to /api/touch, which performs it via the bridge's compose. Three modes:
+//   pulse      — tempo keeps time with her heart
+//   responsive — intensity rises as her heart rises above resting
+//   calming    — softens and slows as she settles
+// Safety: a hard intensity ceiling (enforced server-side too), auto-stop on
+// stale pulse or band disconnect, and a 30-minute session cap. While running,
+// heart_state carries the coupling so HE knows what she's feeling.
+
+const COUPLE_CHUNK_SECONDS = 8;   // each send covers about this much touch
+const COUPLE_MAX_MINUTES = 30;    // hard session cap
+const COUPLE_STALE_MS = 15000;    // no fresh pulse this long → stop
+
+let couple = null;          // { pattern, mode, ceiling, timer, startedAt }
+let couplePatterns = [];    // songbook rows for the select
+
+async function dbListPatterns() {
+  const { data, error } = await db
+    .from("patterns")
+    .select("id,name,steps,output_type,note")
+    .eq("is_active", true)
+    .order("name", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+function coupleStatus(text, live = false) {
+  const el = $("couple-status");
+  el.textContent = text || "";
+  el.classList.toggle("live", !!live);
+}
+
+function coupleSetUI(running) {
+  $("couple-start-btn").hidden = running;
+  $("couple-stop-btn").hidden = !running;
+  $("couple-pattern").disabled = running;
+  $("couple-mode").disabled = running;
+}
+
+async function loadCouplePatterns() {
+  const sel = $("couple-pattern");
+  try {
+    couplePatterns = await dbListPatterns();
+  } catch (e) {
+    couplePatterns = [];
+  }
+  sel.innerHTML = "";
+  if (!couplePatterns.length) {
+    const o = document.createElement("option");
+    o.value = "";
+    o.textContent = "No songbook patterns yet";
+    sel.appendChild(o);
+    $("couple-start-btn").disabled = true;
+    return;
+  }
+  $("couple-start-btn").disabled = false;
+  for (const p of couplePatterns) {
+    const o = document.createElement("option");
+    o.value = p.id;
+    o.textContent = p.name + (p.note ? ` — ${p.note}` : "");
+    sel.appendChild(o);
+  }
+}
+
+// Reshape the pattern's steps for this moment of her heart.
+function coupleTransform(steps, bpm, rest, mode, ceiling) {
+  const base = rest || 70;
+  const arousal = Math.max(0, Math.min(1, (bpm - base) / 40));
+  let tempo = 1;   // speed multiplier (2 = twice as fast)
+  let gain = 1;    // intensity multiplier
+  if (mode === "pulse") {
+    tempo = Math.max(0.5, Math.min(2, bpm / base));
+  } else if (mode === "responsive") {
+    gain = 0.55 + 0.65 * arousal;
+    tempo = 1 + 0.25 * arousal;
+  } else {  // calming: softer and a touch slower the more settled she is
+    gain = 0.45 + 0.55 * arousal;
+    tempo = 0.85 + 0.15 * arousal;
+  }
+  return steps.map((s) => ({
+    intensity: Math.min(ceiling, Math.max(0, (Number(s.intensity) || 0) * gain)),
+    seconds: Math.max(0.05, Math.min(10, (Number(s.seconds) || 0.5) / tempo)),
+  }));
+}
+
+// Repeat the transformed pattern until the chunk covers one tick of touch.
+function coupleChunk(steps) {
+  const out = [];
+  let total = 0;
+  while (total < COUPLE_CHUNK_SECONDS && out.length < 40) {
+    for (const s of steps) {
+      out.push(s);
+      total += s.seconds;
+      if (total >= COUPLE_CHUNK_SECONDS || out.length >= 40) break;
+    }
+    if (!steps.length) break;
+  }
+  return out;
+}
+
+async function touchApi(steps, outputType) {
+  const session = await freshSession();
+  if (!session || !session.access_token) {
+    throw new Error("signed out — refresh to sign back in");
+  }
+  const resp = await fetch("/api/touch", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({ steps, output_type: outputType || "vibrate" }),
+  });
+  const out = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(out.error || `server returned ${resp.status}`);
+}
+
+async function coupleTick() {
+  if (!couple) return;
+  if (Date.now() - heartLiveAt > COUPLE_STALE_MS) {
+    return stopCoupling("Your pulse went quiet — touch faded out.");
+  }
+  if (Date.now() - couple.startedAt > COUPLE_MAX_MINUTES * 60000) {
+    return stopCoupling("Thirty minutes — that's the cap. ♡");
+  }
+  const rest = parseInt($("heart-resting").value, 10) || null;
+  const shaped = coupleTransform(
+    couple.pattern.steps, heartLiveBpm, rest, couple.mode, couple.ceiling);
+  try {
+    await touchApi(coupleChunk(shaped), couple.pattern.output_type);
+  } catch (err) {
+    return stopCoupling(`Stopped: ${err.message}`);
+  }
+  if (!couple) return;  // stopped while the request was in flight
+  coupleStatus(`♡ "${couple.pattern.name}" is following your heart — ${heartLiveBpm} bpm`, true);
+  // Re-send a moment before the current chunk runs out, so touch is seamless.
+  couple.timer = setTimeout(coupleTick, (COUPLE_CHUNK_SECONDS - 1.5) * 1000);
+}
+
+async function startCoupling() {
+  if (couple) return;
+  const pattern = couplePatterns.find((p) => p.id === $("couple-pattern").value);
+  if (!pattern || !Array.isArray(pattern.steps) || !pattern.steps.length) {
+    flashToast("Pick a songbook pattern first — ask him to save one in chat.", true);
+    return;
+  }
+  if (Date.now() - heartLiveAt > COUPLE_STALE_MS) {
+    flashToast("Connect the band first — it needs your live pulse.", true);
+    return;
+  }
+  couple = {
+    pattern,
+    mode: $("couple-mode").value,
+    ceiling: parseInt($("couple-ceiling").value, 10) / 100,
+    startedAt: Date.now(),
+    timer: null,
+  };
+  coupleSetUI(true);
+  coupleStatus("Starting…", true);
+  // Let him feel that it's happening. Best-effort; the touch never waits on it.
+  dbSaveHeartState({
+    coupling_active: true,
+    coupling_pattern: pattern.name,
+    coupling_mode: couple.mode,
+    coupling_started_at: new Date().toISOString(),
+  }).catch(() => {});
+  coupleTick();
+}
+
+function stopCoupling(reason) {
+  if (!couple) return;
+  const outputType = couple.pattern.output_type;
+  clearTimeout(couple.timer);
+  couple = null;
+  coupleSetUI(false);
+  coupleStatus(reason || "Stopped.");
+  if (reason && !/^Stopped\.?$/.test(reason)) flashToast(reason);
+  // Still the device now (don't wait out the in-flight chunk), and tell him.
+  touchApi([{ intensity: 0, seconds: 0.2 }], outputType).catch(() => {});
+  dbSaveHeartState({ coupling_active: false }).catch(() => {});
 }
 
 // ---------- Studio ----------
@@ -5078,6 +5274,11 @@ function wireApp() {
   $("heart-disconnect-btn").addEventListener("click", disconnectHeartBand);
   $("heart-enabled").addEventListener("change", onHeartEnabledChange);
   $("heart-resting").addEventListener("change", onHeartRestingChange);
+  $("couple-start-btn").addEventListener("click", startCoupling);
+  $("couple-stop-btn").addEventListener("click", () => stopCoupling("Stopped."));
+  $("couple-ceiling").addEventListener("input", () => {
+    $("couple-ceiling-val").textContent = $("couple-ceiling").value + "%";
+  });
 
   $("nav-studio").addEventListener("click", openStudioDialog);
 
