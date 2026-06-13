@@ -2352,3 +2352,26 @@ button.danger-solid:hover { filter: brightness(1.1); }
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
 }
+
+/* ---- Vault note cards (what he read, opened to read yourself) ---- */
+details.vault-event { margin: 4px 0; }
+details.vault-event > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  list-style: none;
+}
+details.vault-event[open] > summary { color: var(--text); margin-bottom: 6px; }
+.vault-note {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  max-height: 360px;
+  overflow-y: auto;
+}

@@ -154,6 +154,12 @@ MAX_TOOL_ROUNDS = 6
 # Capped ones aren't lost: still saved, still searchable, still dream-surfaced.
 CORE_MEMORY_INJECT_CAP = 24
 
+# When he reads from the vault, the note's text normally never reaches her
+# screen — it's stripped before she sees it. We now surface it as an expandable
+# card. Capped so a huge chapter can't bloat the stored conversation. Display
+# only: never sent back to the model, so it costs zero tokens.
+VAULT_RESULT_MAX_CHARS = 20000
+
 # Vocabularies, kept in sync with the CHECK constraints in
 # docs/petrichor-memory-schema.sql. The DB is the real gate; advertising
 # them in the tool schema just helps the model pick a valid value.
@@ -2063,12 +2069,29 @@ class handler(BaseHTTPRequestHandler):
                     query = block.input.get("query", "")
                 self._sse({"type": "tool_use", "name": block.name, "query": query})
             elif block_type == "mcp_tool_use":
-                # Whisper vault tool call — surface it like web search.
+                # Whisper vault tool call — surface it AND what it was for, so
+                # she can see which note he reached for, not just that he did.
+                tin = getattr(block, "input", None)
                 self._sse({
                     "type": "tool_use",
                     "name": getattr(block, "name", "tool"),
                     "query": "",
+                    "input": tin if isinstance(tin, dict) else {},
+                    "id": getattr(block, "id", ""),
                 })
+            elif block_type == "mcp_tool_result":
+                # The vault's answer (a note's text, a search's hits). Normally
+                # dropped before it reaches her; surface it so she can open the
+                # card and read exactly what he read.
+                text = self._mcp_result_text(block)
+                if text:
+                    self._sse({
+                        "type": "tool_result",
+                        "id": getattr(block, "tool_use_id", ""),
+                        "text": text[:VAULT_RESULT_MAX_CHARS],
+                        "truncated": len(text) > VAULT_RESULT_MAX_CHARS,
+                        "is_error": bool(getattr(block, "is_error", False)),
+                    })
         elif t == "content_block_delta":
             delta = event.delta
             delta_type = getattr(delta, "type", None)
@@ -2076,6 +2099,23 @@ class handler(BaseHTTPRequestHandler):
                 self._sse({"type": "text", "text": delta.text})
             elif delta_type == "thinking_delta":
                 self._sse({"type": "thinking", "text": delta.thinking})
+
+    def _mcp_result_text(self, block):
+        """Pull readable text out of an mcp_tool_result block's content, which
+        is a list of text parts (SDK objects or plain dicts)."""
+        content = getattr(block, "content", None)
+        if isinstance(content, str):
+            return content.strip()
+        if not isinstance(content, list):
+            return ""
+        parts = []
+        for c in content:
+            txt = getattr(c, "text", None)
+            if txt is None and isinstance(c, dict):
+                txt = c.get("text")
+            if txt:
+                parts.append(str(txt))
+        return "\n".join(parts).strip()
 
     def _sse(self, payload):
         # Guarded by a lock because a background keepalive thread also writes to

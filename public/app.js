@@ -1629,8 +1629,22 @@ async function generateAssistant() {
           assistantMsg.thinkingText += event.text;
           updateAssistantBubble(assistantMsg);
         } else if (event.type === "tool_use") {
-          assistantMsg.toolEvents.push({ name: event.name, query: event.query, at: assistantMsg.text.length });
+          assistantMsg.toolEvents.push({
+            name: event.name, query: event.query,
+            input: event.input || null, id: event.id || "",
+            at: assistantMsg.text.length,
+          });
           updateAssistantBubble(assistantMsg);
+        } else if (event.type === "tool_result") {
+          // The vault's answer — attach it to the matching read chip so she can
+          // open it and read what he read. (Display only; never re-sent to him.)
+          const tev = (assistantMsg.toolEvents || []).find(e => e.id && e.id === event.id);
+          if (tev) {
+            tev.result = event.text || "";
+            tev.resultTruncated = !!event.truncated;
+            tev.resultError = !!event.is_error;
+            updateAssistantBubble(assistantMsg);
+          }
         } else if (event.type === "notice") {
           // A server-side heads-up (e.g. an MCP connection was skipped).
           assistantMsg.toolEvents.push({ notice: true, text: event.text, at: assistantMsg.text.length });
@@ -2346,12 +2360,53 @@ function toolEventChip(ev) {
     } else {
       note.textContent = `⚠️ ${label.replace("🪶 ", "")} didn't take: ${ev.summary}`;
     }
+  } else if (isVaultTool(ev.name)) {
+    return vaultToolChip(ev);
   } else {
     note.textContent = ev.name === "web_search" && ev.query
       ? `🌐 Searching the web for "${ev.query}"…`
       : `🔧 Used tool: ${ev.name}`;
   }
   return note;
+}
+
+// ----- Vault tool cards: show which note he opened, and let her read it -----
+const VAULT_TOOLS = {
+  read_note: "📖 Read", search_notes: "🔎 Searched the vault",
+  list_notes: "📂 Listed", get_backlinks: "🔗 Backlinks for",
+  append_note: "✍️ Added to", write_note: "✍️ Wrote",
+  create_daily_note: "📓 Daily note", delete_note: "🗑️ Deleted",
+};
+function isVaultTool(name) {
+  return Object.prototype.hasOwnProperty.call(VAULT_TOOLS, name);
+}
+function vaultSubject(input) {
+  if (!input || typeof input !== "object") return "";
+  const v = input.path || input.filename || input.file || input.query ||
+            input.directory || input.folder || input.title || input.name || "";
+  return String(v || "").replace(/\.md$/i, "");
+}
+function vaultToolChip(ev) {
+  const label = VAULT_TOOLS[ev.name] || "🔧 Vault";
+  const subj = vaultSubject(ev.input);
+  const head = subj ? `${label} «${subj}»` : label;
+  // Nothing to open (a write, or the result hasn't arrived yet) → simple chip.
+  if (!ev.result) {
+    const note = document.createElement("div");
+    note.className = "tool-event";
+    note.textContent = head;
+    return note;
+  }
+  const det = document.createElement("details");
+  det.className = "tool-event vault-event";
+  const sum = document.createElement("summary");
+  sum.textContent = `${head} — tap to read`;
+  det.appendChild(sum);
+  const inner = document.createElement("div");
+  inner.className = "vault-note";
+  inner.textContent = ev.result + (ev.resultTruncated ? "\n\n… (truncated)" : "");
+  det.appendChild(inner);
+  return det;
 }
 
 function fillMessageBody(body, msg) {
