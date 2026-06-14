@@ -66,6 +66,7 @@ async function enterDrawer() {
   $("setup-error").hidden = true;
   $("drawer-shell").hidden = false;
   await loadList();
+  loadGatherable();          // non-blocking — her room shows right away
 }
 
 // ---------- sign-in (mirrors the main app's email-OTP flow) ----------
@@ -246,6 +247,75 @@ function fmtDate(iso) {
     const d = new Date(iso);
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   } catch (e) { return ""; }
+}
+
+// ---------- gather (pull her writing/poetry in from elsewhere) ----------
+
+async function loadGatherable() {
+  try {
+    const data = await api("gatherable", {});
+    renderGatherable(Array.isArray(data.notes) ? data.notes : []);
+  } catch (e) {
+    // Non-fatal: the drawer itself still works without the gather panel.
+  }
+}
+
+function renderGatherable(items) {
+  const wrap = $("drawer-gather-wrap");
+  const list = $("drawer-gather-list");
+  list.innerHTML = "";
+  // Un-gathered first, then alphabetical.
+  items.sort((a, b) => (a.mirrored - b.mirrored) || a.path.localeCompare(b.path));
+  if (!items.length) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  const pending = items.filter((i) => !i.mirrored).length;
+  $("drawer-gather-summary").textContent =
+    `📥 Bring in from elsewhere${pending ? ` (${pending})` : ""}`;
+
+  for (const it of items) {
+    const li = document.createElement("li");
+    li.className = "drawer-gather-item";
+    const info = document.createElement("div");
+    info.className = "drawer-gather-info";
+    const t = document.createElement("div");
+    t.className = "drawer-item-title";
+    t.textContent = (it.title && it.title.trim()) ||
+      (it.path.split("/").pop() || it.path).replace(/\.md$/i, "");
+    const m = document.createElement("div");
+    m.className = "drawer-item-meta";
+    m.textContent = [
+      it.folder,
+      typeof it.wordCount === "number" ? `${it.wordCount} words` : "",
+    ].filter(Boolean).join(" · ");
+    info.appendChild(t);
+    info.appendChild(m);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = it.mirrored ? "ghost small" : "primary small";
+    btn.textContent = it.mirrored ? "Remove stray" : "Bring in";
+    btn.title = it.mirrored
+      ? "A copy is already in your drawer — clear this leftover original"
+      : "Move this into your drawer";
+    btn.addEventListener("click", () => gatherNote(it.path, btn));
+
+    li.appendChild(info);
+    li.appendChild(btn);
+    list.appendChild(li);
+  }
+}
+
+async function gatherNote(path, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "…"; }
+  try {
+    await api("gather", { path });
+    toast("Brought into your drawer ♡");
+    await loadList();
+    await loadGatherable();
+  } catch (e) {
+    toast(e.message || "Couldn't gather that");
+    if (btn) { btn.disabled = false; }
+  }
 }
 
 // ---------- open / edit / save ----------
