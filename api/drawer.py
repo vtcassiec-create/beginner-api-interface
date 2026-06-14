@@ -109,6 +109,10 @@ class handler(BaseHTTPRequestHandler):
                 return self._do_read(url, body)
             if action == "save":
                 return self._do_save(url, body)
+            if action == "move":
+                return self._do_move(url, body)
+            if action == "delete":
+                return self._do_delete(url, body)
         except _VaultError as e:
             return self._json(502, {"error": str(e)})
         except Exception as e:
@@ -162,6 +166,40 @@ class handler(BaseHTTPRequestHandler):
             "path": path, "content": content, "overwrite": True,
         })
         return self._json(200, {"ok": True, "path": path})
+
+    def _do_move(self, url, body):
+        """Rename / move within her room: copy the note to the new path, then
+        trash the old one. Both paths stay under Cassie/. Never clobbers — if
+        something already lives at the destination, we stop and keep both."""
+        src = _safe_path(body.get("from"))
+        dst = _safe_path(body.get("to"))
+        if not src or not dst:
+            return self._json(400, {"error": "both paths must be notes under Cassie/"})
+        if src.lower() == dst.lower():
+            return self._json(400, {"error": "that's already where it lives"})
+        data = self._vault_tool(url, "read_note", {"path": src})
+        content = data.get("content")
+        if content is None:
+            content = data.get("text", "")
+        args = {"path": dst, "content": content, "overwrite": False}
+        frontmatter = data.get("frontmatter")
+        if isinstance(frontmatter, dict) and frontmatter:
+            args["frontmatter"] = frontmatter
+        try:
+            self._vault_tool(url, "write_note", args)
+        except _VaultError:
+            return self._json(409, {"error": "There's already something there — pick another name."})
+        # Destination is safely written; now trash the original (recoverable).
+        self._vault_tool(url, "delete_note", {"path": src, "confirm": True})
+        return self._json(200, {"ok": True, "path": dst})
+
+    def _do_delete(self, url, body):
+        """Move a note to the vault's .trash/ — recoverable, not gone."""
+        path = _safe_path(body.get("path"))
+        if not path:
+            return self._json(400, {"error": "path must be a note under Cassie/"})
+        self._vault_tool(url, "delete_note", {"path": path, "confirm": True})
+        return self._json(200, {"ok": True})
 
     # ---- MCP client (streamable HTTP, stdlib only) ----
 
