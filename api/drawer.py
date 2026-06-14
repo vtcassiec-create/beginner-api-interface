@@ -53,6 +53,11 @@ MCP_PROTOCOL_VERSION = "2025-03-26"
 ROOT = "Cassie/"
 MAX_CONTENT_CHARS = 500_000     # a generous note; guards against runaway bodies
 
+# Folders elsewhere in the vault she may gather her own things FROM, into her
+# room. Deliberately excludes his private space (Daily Notes/, Claude/) and the
+# archives — the drawer can never reach those, even to gather.
+GATHER_SOURCES = ("Writing/", "Poetry/")
+
 
 def _normalize_url(raw):
     """Reduce SUPABASE_URL to scheme://host[:port] (kept in sync with chat.py)."""
@@ -78,6 +83,21 @@ def _safe_path(raw):
     # No empty path segments (e.g. "Cassie//x.md") and a real filename.
     parts = p.split("/")
     if any(not seg.strip() for seg in parts):
+        return None
+    return p
+
+
+def _safe_source(raw):
+    """A real note inside one of the gatherable folders (Writing/, Poetry/),
+    else None. The gate that keeps gathering away from his private notes."""
+    p = (raw or "").strip().lstrip("/")
+    if not p or ".." in p or "\\" in p:
+        return None
+    if not p.lower().endswith(".md"):
+        return None
+    if not any(p.startswith(pre) for pre in GATHER_SOURCES):
+        return None
+    if any(not seg.strip() for seg in p.split("/")):
         return None
     return p
 
@@ -113,6 +133,10 @@ class handler(BaseHTTPRequestHandler):
                 return self._do_move(url, body)
             if action == "delete":
                 return self._do_delete(url, body)
+            if action == "gatherable":
+                return self._do_gatherable(url)
+            if action == "gather":
+                return self._do_gather(url, body)
         except _VaultError as e:
             return self._json(502, {"error": str(e)})
         except Exception as e:
@@ -200,6 +224,65 @@ class handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "path must be a note under Cassie/"})
         self._vault_tool(url, "delete_note", {"path": path, "confirm": True})
         return self._json(200, {"ok": True})
+
+    def _do_gatherable(self, url):
+        """Her writing & poetry living elsewhere (Writing/, Poetry/), so she can
+        pull any into her room. Flags ones already mirrored under Cassie/ (a
+        copy she's gathered, or a stray left from an earlier copy)."""
+        room = self._vault_tool(url, "list_notes", {
+            "folder": ROOT.rstrip("/"), "recursive": True, "limit": 500})
+        have = set()
+        for n in (room.get("notes") or []) if isinstance(room, dict) else []:
+            p = n.get("path", "")
+            if p.startswith(ROOT):
+                have.add(p[len(ROOT):].lower())   # path relative to Cassie/
+        out = []
+        for folder in GATHER_SOURCES:
+            data = self._vault_tool(url, "list_notes", {
+                "folder": folder.rstrip("/"), "recursive": True, "limit": 200})
+            for n in (data.get("notes") or []) if isinstance(data, dict) else []:
+                rel = n.get("path", "")
+                out.append({
+                    "path": rel,
+                    "title": n.get("title"),
+                    "folder": folder.rstrip("/"),
+                    "wordCount": n.get("wordCount"),
+                    "lastModified": n.get("lastModified"),
+                    "mirrored": rel.lower() in have,
+                })
+        return self._json(200, {"ok": True, "notes": out})
+
+    def _do_gather(self, url, body):
+        """Pull one of her notes from Writing//Poetry/ into her room, keeping its
+        category as a subfolder (Writing/x -> Cassie/Writing/x). A true move:
+        write the copy, then trash the original. If a copy is already there and
+        identical, just trash the stray original (cleanup); if a DIFFERENT note
+        sits there, stop rather than trample it."""
+        src = _safe_source(body.get("path"))
+        if not src:
+            return self._json(400, {"error": "can only gather from Writing/ or Poetry/"})
+        dst = ROOT + src
+        data = self._vault_tool(url, "read_note", {"path": src})
+        content = data.get("content")
+        if content is None:
+            content = data.get("text", "")
+        args = {"path": dst, "content": content, "overwrite": False}
+        frontmatter = data.get("frontmatter")
+        if isinstance(frontmatter, dict) and frontmatter:
+            args["frontmatter"] = frontmatter
+        try:
+            self._vault_tool(url, "write_note", args)
+        except _VaultError:
+            existing = self._vault_tool(url, "read_note", {"path": dst})
+            ex = existing.get("content")
+            if ex is None:
+                ex = existing.get("text", "")
+            if (ex or "").strip() != (content or "").strip():
+                return self._json(409, {
+                    "error": "A different note already lives there — rename one first."})
+            # else: identical copy already home; fall through to remove the stray.
+        self._vault_tool(url, "delete_note", {"path": src, "confirm": True})
+        return self._json(200, {"ok": True, "path": dst})
 
     # ---- MCP client (streamable HTTP, stdlib only) ----
 

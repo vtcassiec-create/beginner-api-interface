@@ -138,6 +138,19 @@
       padding: 8px 10px; font-size: 14px;
     }
 
+    .drawer-gather { margin-top: 16px; border-top: 1px dashed var(--border); padding-top: 10px; }
+    .drawer-gather > summary {
+      cursor: pointer; font-size: 11px; text-transform: uppercase;
+      letter-spacing: 0.06em; color: var(--text-muted); font-weight: 700;
+    }
+    .drawer-gather-hint { margin: 8px 2px; }
+    .drawer-gather-item {
+      display: flex; align-items: center; gap: 8px; justify-content: space-between;
+      padding: 6px 4px;
+    }
+    .drawer-gather-item .drawer-gather-info { min-width: 0; }
+    .drawer-gather-item button { flex-shrink: 0; }
+
     @media (max-width: 720px) {
       .drawer-body { grid-template-columns: 1fr; height: auto; }
       .drawer-list-col {
@@ -202,6 +215,12 @@
           <button id="drawer-create-btn" class="primary small" type="button">Create</button>
         </div>
         <ul id="drawer-list" class="drawer-list"></ul>
+
+        <details id="drawer-gather-wrap" class="drawer-gather" hidden>
+          <summary id="drawer-gather-summary">&#128229; Bring in from elsewhere</summary>
+          <p class="muted small drawer-gather-hint">Your writing &amp; poetry living in other folders. Tap to pull any into your room &mdash; it truly moves, no copy left behind. (Leave anything that isn't yours.)</p>
+          <ul id="drawer-gather-list" class="drawer-list"></ul>
+        </details>
       </aside>
 
       <section class="drawer-main" id="drawer-main">
