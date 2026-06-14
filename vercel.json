@@ -8,7 +8,7 @@
   ],
   "headers": [
     {
-      "source": "/(app.js|index.html|sw.js|manifest.webmanifest)",
+      "source": "/(app.js|drawer.js|drawer.html|index.html|sw.js|manifest.webmanifest)",
       "headers": [
         { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
       ]
