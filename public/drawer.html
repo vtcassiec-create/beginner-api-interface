@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Cassie's Drawer</title>
+
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#1a1f2e" />
+  <link rel="icon" href="/icon-192.png" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Drawer" />
+
+  <link rel="stylesheet" href="/styles.css" />
+  <script>
+    // Theme: apply a saved choice before paint, identical to the main app, so
+    // the drawer wears whatever mood she picked there. Self-contained; the
+    // picker/toggle hooks no-op gracefully if their elements aren't present.
+    (function () {
+      var KEY = "petrichor-theme";
+      var THEMES = {
+        lamplight: { swatch: "#1a1f2e", accent: "#d4a574", light: false },
+        petrichor: { swatch: "#191f1b", accent: "#cdb07c", light: false },
+        ember:     { swatch: "#1c1517", accent: "#d98c64", light: false },
+        tide:      { swatch: "#131a24", accent: "#93bccc", light: false },
+        daylight:  { swatch: "#efe9da", accent: "#b9824b", light: true },
+        rosewater: { swatch: "#f6ece9", accent: "#9a6a8c", light: true }
+      };
+      function stored() {
+        var v = null;
+        try { v = localStorage.getItem(KEY); } catch (e) {}
+        if (v === "dark") return "lamplight";
+        if (v === "light") return "daylight";
+        return THEMES[v] ? v : null;
+      }
+      function osLight() {
+        return !!(window.matchMedia &&
+          window.matchMedia("(prefers-color-scheme: light)").matches);
+      }
+      function effective() { return stored() || (osLight() ? "daylight" : "lamplight"); }
+      function apply() {
+        var choice = stored();
+        var eff = choice || (osLight() ? "daylight" : "lamplight");
+        var t = THEMES[eff];
+        var root = document.documentElement;
+        if (!choice) root.removeAttribute("data-theme");
+        else root.setAttribute("data-theme", choice);
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute("content", t.swatch);
+        document.querySelectorAll(".js-theme-toggle").forEach(function (b) {
+          b.textContent = t.light ? "☾" : "☀";
+        });
+      }
+      function set(name) {
+        if (!THEMES[name]) return;
+        try { localStorage.setItem(KEY, name); } catch (e) {}
+        apply();
+      }
+      apply();
+      window.addEventListener("DOMContentLoaded", function () {
+        document.querySelectorAll(".js-theme-toggle").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            set(THEMES[effective()].light ? "lamplight" : "daylight");
+          });
+        });
+        apply();
+      });
+    })();
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    /* ---- Cassie's Drawer — her own room, built on the shared palette ---- */
+    .drawer-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border);
+      background: var(--bg-elev); position: sticky; top: 0; z-index: 5;
+    }
+    .drawer-title { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .drawer-emoji { font-size: 26px; }
+    .drawer-title h1 { font-size: 19px; margin: 0; }
+    .drawer-title p { margin: 2px 0 0; }
+    .drawer-head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    a.drawer-home { text-decoration: none; }
+
+    .drawer-body {
+      display: grid; grid-template-columns: minmax(220px, 300px) 1fr;
+      gap: 0; height: calc(100vh - 69px); height: calc(100dvh - 69px);
+    }
+    .drawer-list-col {
+      border-right: 1px solid var(--border); overflow-y: auto; padding: 12px;
+    }
+    .drawer-list-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; margin-bottom: 10px;
+    }
+    .drawer-list { list-style: none; margin: 0; padding: 0; }
+    .drawer-list-item {
+      width: 100%; text-align: left; display: block; cursor: pointer;
+      background: transparent; border: 1px solid transparent; color: var(--text);
+      border-radius: var(--radius-sm); padding: 9px 11px; margin-bottom: 4px;
+    }
+    .drawer-list-item:hover { background: var(--bg); border-color: var(--border); }
+    .drawer-list-item.active { background: var(--bg); border-color: var(--accent); }
+    .drawer-item-title { font-size: 14px; font-weight: 600; }
+    .drawer-item-meta { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+    .drawer-folder-label {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--text-muted); margin: 12px 4px 6px; font-weight: 700;
+    }
+    .drawer-folder-label:first-child { margin-top: 0; }
+
+    .drawer-main { overflow-y: auto; padding: 20px; min-width: 0; }
+    .drawer-empty { padding: 40px 10px; text-align: center; }
+    .drawer-note-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; margin-bottom: 12px; flex-wrap: wrap;
+    }
+    .drawer-path { font-size: 13px; color: var(--text-muted); }
+    .drawer-note-title { font-size: 20px; font-weight: 700; margin: 0; word-break: break-word; }
+    .drawer-note-actions { display: flex; align-items: center; gap: 10px; }
+    .drawer-content {
+      width: 100%; min-height: 50vh; resize: vertical; box-sizing: border-box;
+      background: var(--bg-elev); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 14px 16px; font-size: 15px; line-height: 1.6;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .drawer-content:focus { outline: none; border-color: var(--accent); }
+
+    .drawer-newform {
+      display: flex; gap: 8px; margin-bottom: 12px;
+    }
+    .drawer-newform input {
+      flex: 1; background: var(--bg-elev); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 8px 10px; font-size: 14px;
+    }
+
+    @media (max-width: 720px) {
+      .drawer-body { grid-template-columns: 1fr; height: auto; }
+      .drawer-list-col {
+        border-right: none; border-bottom: 1px solid var(--border);
+        max-height: 38vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Sign-in (only if she isn't already signed in to Petrichor on this device) -->
+  <section id="signin-screen" class="signin-screen" hidden>
+    <div class="signin-card">
+      <button class="js-theme-toggle ghost small signin-theme-toggle" title="Light / dark" aria-label="Toggle light or dark">&#9728;</button>
+      <h1>Cassie's Drawer</h1>
+      <p class="muted">Sign in with the code sent to your email.</p>
+      <form id="signin-form" class="signin-form" autocomplete="off">
+        <input type="email" id="signin-email" placeholder="you@example.com" required />
+        <input type="text" id="signin-code" inputmode="numeric" pattern="[0-9]*"
+               maxlength="8" autocomplete="one-time-code" placeholder="Enter code" hidden />
+        <button type="submit" id="signin-submit" class="primary">Send code</button>
+        <button type="button" id="signin-restart" class="ghost small" hidden>Use a different email</button>
+      </form>
+      <p id="signin-msg" class="signin-msg"></p>
+      <button type="button" id="signin-have-code" class="linklike small">I already have a code</button>
+      <p class="muted small"><a href="/">&larr; Back to Petrichor</a></p>
+    </div>
+  </section>
+
+  <!-- Setup error (missing Supabase env) -->
+  <section id="setup-error" class="signin-screen" hidden>
+    <div class="signin-card">
+      <h1>Setup needed</h1>
+      <p id="setup-error-msg" class="error"></p>
+    </div>
+  </section>
+
+  <!-- The drawer -->
+  <div id="drawer-shell" hidden>
+    <header class="drawer-head">
+      <div class="drawer-title">
+        <span class="drawer-emoji">&#128452;</span>
+        <div>
+          <h1>Cassie's Drawer</h1>
+          <p class="muted small">Your room in the vault &mdash; keep your things, your way.</p>
+        </div>
+      </div>
+      <div class="drawer-head-actions">
+        <button class="js-theme-toggle ghost small" title="Light / dark" aria-label="Toggle light or dark">&#9728;</button>
+        <a href="/" class="ghost small drawer-home" title="Back to chat">&larr; Chat</a>
+      </div>
+    </header>
+
+    <div class="drawer-body">
+      <aside class="drawer-list-col">
+        <div class="drawer-list-head">
+          <span id="drawer-count" class="muted small">&hellip;</span>
+          <button id="drawer-new-btn" class="primary small" type="button">&#65291; New</button>
+        </div>
+        <div id="drawer-newform" class="drawer-newform" hidden>
+          <input type="text" id="drawer-newtitle" maxlength="80" placeholder="Name it&hellip; (e.g. Knitting, To-do, June journal)" />
+          <button id="drawer-create-btn" class="primary small" type="button">Create</button>
+        </div>
+        <ul id="drawer-list" class="drawer-list"></ul>
+      </aside>
+
+      <section class="drawer-main" id="drawer-main">
+        <div id="drawer-empty" class="drawer-empty muted">
+          Pick something from your drawer, or start something new. &#10084;
+        </div>
+        <article id="drawer-note" hidden>
+          <div class="drawer-note-head">
+            <div>
+              <h2 id="drawer-note-title" class="drawer-note-title">Untitled</h2>
+              <div id="drawer-note-path" class="drawer-path"></div>
+            </div>
+            <div class="drawer-note-actions">
+              <span id="drawer-savestate" class="muted small"></span>
+              <button id="drawer-save-btn" class="primary small" type="button">Save</button>
+            </div>
+          </div>
+          <textarea id="drawer-content" class="drawer-content" placeholder="Write&hellip;"></textarea>
+        </article>
+      </section>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/drawer.js"></script>
+</body>
+</html>
