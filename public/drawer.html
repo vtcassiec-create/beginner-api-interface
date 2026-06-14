@@ -198,7 +198,7 @@
           <button id="drawer-new-btn" class="primary small" type="button">&#65291; New</button>
         </div>
         <div id="drawer-newform" class="drawer-newform" hidden>
-          <input type="text" id="drawer-newtitle" maxlength="80" placeholder="Name it&hellip; (e.g. Knitting, To-do, June journal)" />
+          <input type="text" id="drawer-newtitle" maxlength="120" placeholder="Name it&hellip; use Folder/Name for a section (e.g. Plants/Monstera)" />
           <button id="drawer-create-btn" class="primary small" type="button">Create</button>
         </div>
         <ul id="drawer-list" class="drawer-list"></ul>
@@ -216,6 +216,8 @@
             </div>
             <div class="drawer-note-actions">
               <span id="drawer-savestate" class="muted small"></span>
+              <button id="drawer-rename-btn" class="ghost small" type="button" title="Rename, or move into a folder">Move</button>
+              <button id="drawer-delete-btn" class="danger ghost small" type="button" title="Move to trash (recoverable)">Delete</button>
               <button id="drawer-save-btn" class="primary small" type="button">Save</button>
             </div>
           </div>

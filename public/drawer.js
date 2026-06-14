@@ -302,36 +302,84 @@ async function confirmDiscard() {
 
 // ---------- new ----------
 
-function slugify(s) {
-  return s.toLowerCase().trim()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
+// Turn what she types into a safe relative path under Cassie/, keeping her
+// casing and spaces (so folders read "Plant Tracking", not "plant-tracking").
+// "/" makes a folder; illegal filename characters and ".." are stripped.
+function sanitizeRel(input) {
+  return String(input || "")
+    .split("/")
+    .map((seg) => seg.replace(/[\\:*?"<>|]/g, "").replace(/\.{2,}/g, "").trim())
+    .filter(Boolean)
+    .join("/");
 }
 
 async function createNote() {
-  const title = $("drawer-newtitle").value.trim();
-  if (!title) { $("drawer-newtitle").focus(); return; }
-  const slug = slugify(title);
-  if (!slug) { toast("Give it a name with some letters or numbers ♡"); return; }
-  const path = ROOT + slug + ".md";
+  const raw = $("drawer-newtitle").value.trim();
+  if (!raw) { $("drawer-newtitle").focus(); return; }
+  const rel = sanitizeRel(raw);
+  if (!rel) { toast("Give it a name with some letters or numbers ♡"); return; }
+  const path = ROOT + rel + ".md";
 
   // Don't clobber something already there — just open it instead.
   const existing = notes.find((n) => n.path.toLowerCase() === path.toLowerCase());
   if (existing) {
-    toast(`"${title}" already exists — opening it`);
+    toast(`"${rel}" already exists — opening it`);
     hideNewForm();
     return openNote(existing.path);
   }
   if (!await confirmDiscard()) return;
 
-  current = { path, title };
+  current = { path, title: rel.split("/").pop() };
   showNote("");
   setDirty(true);            // nothing saved yet — first Save creates it
   $("drawer-savestate").textContent = "New — Save to keep it";
   hideNewForm();
   $("drawer-content").focus();
+}
+
+// ---- move / rename / delete ----
+
+async function renameNote() {
+  if (!current) return;
+  if (dirty) { toast("Save your changes first, then move it ♡"); return; }
+  const rel = current.path.slice(ROOT.length).replace(/\.md$/i, "");
+  const input = window.prompt(
+    "New name — or Folder/Name to move it into a section:", rel);
+  if (input == null) return;
+  const cleaned = sanitizeRel(input);
+  if (!cleaned) { toast("Give it a name with some letters or numbers ♡"); return; }
+  const to = ROOT + cleaned + ".md";
+  if (to.toLowerCase() === current.path.toLowerCase()) return;
+  try {
+    const data = await api("move", { from: current.path, to });
+    current = { path: data.path, title: titleOf({ path: data.path }) };
+    $("drawer-note-title").textContent = current.title;
+    $("drawer-note-path").textContent = current.path;
+    await loadList();
+    toast("Moved ♡");
+  } catch (e) {
+    toast(e.message || "Couldn't move it");
+  }
+}
+
+async function deleteNote() {
+  if (!current) return;
+  if (!window.confirm(
+      `Move "${current.title}" to the trash? You can recover it from the vault's .trash folder.`)) {
+    return;
+  }
+  try {
+    await api("delete", { path: current.path });
+    current = null;
+    dirty = false;
+    $("drawer-note").hidden = true;
+    $("drawer-empty").hidden = false;
+    $("drawer-main").classList.remove("has-note");
+    await loadList();
+    toast("Moved to trash ♡");
+  } catch (e) {
+    toast(e.message || "Couldn't delete it");
+  }
 }
 
 function showNewForm() {
@@ -351,6 +399,8 @@ function wireDrawer() {
     if (e.key === "Enter") { e.preventDefault(); createNote(); }
   });
   $("drawer-save-btn").addEventListener("click", saveNote);
+  $("drawer-rename-btn").addEventListener("click", renameNote);
+  $("drawer-delete-btn").addEventListener("click", deleteNote);
   $("drawer-content").addEventListener("input", () => { if (!dirty) setDirty(true); });
 
   // Cmd/Ctrl+S saves.
