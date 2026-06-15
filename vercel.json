@@ -1,7 +1,8 @@
 {
   "framework": null,
   "functions": {
-    "api/chat.py": { "maxDuration": 60 }
+    "api/chat.py": { "maxDuration": 60 },
+    "api/backup.py": { "maxDuration": 60 }
   },
   "rewrites": [
     { "source": "/(.*)", "destination": "/public/$1" }
@@ -21,6 +22,7 @@
     }
   ],
   "crons": [
-    { "path": "/api/surprise", "schedule": "0 20 * * *" }
+    { "path": "/api/surprise", "schedule": "0 20 * * *" },
+    { "path": "/api/backup", "schedule": "0 8 * * *" }
   ]
 }
