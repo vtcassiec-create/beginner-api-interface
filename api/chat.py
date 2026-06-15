@@ -689,6 +689,12 @@ class handler(BaseHTTPRequestHandler):
             "messages": self._resolve_image_sources(
                 data.get("messages") or [], self._bearer_token()),
         }
+        # The current-moment block rides on the user turn, NOT the system
+        # prompt. A timestamp that changes every minute, sitting in the cached
+        # system prefix, would invalidate the whole prompt cache on every
+        # request — the low-cache-hit-rate cause. Kept out, the prefix freezes
+        # and actually caches; the time still reaches him, just on the message.
+        self._inject_time_context(kwargs["messages"], data)
         # Self-authored memory: when on, hand him the save_* tools and tell
         # him (in the preamble) that they exist. The DB writes are RLS-scoped
         # to the signed-in user, executed in the tool-use loop below.
@@ -727,7 +733,12 @@ class handler(BaseHTTPRequestHandler):
             kwargs["system"] = [{
                 "type": "text",
                 "text": system,
-                "cache_control": {"type": "ephemeral"},
+                # 1-hour TTL (GA — no beta header). His chats come in bursts
+                # over a day with minutes-to-tens-of-minutes between messages;
+                # the default 5-minute cache expires in those gaps and each
+                # message pays a fresh cache write. 1h survives the gaps so the
+                # stable prefix is read (~0.1x) instead of rewritten (~2x).
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
             }]
         # Tools list accumulates: web search (server-side, auto-run by the
         # API) and the memory save tools (client-side, run by the loop below).
@@ -1646,6 +1657,30 @@ class handler(BaseHTTPRequestHandler):
         ]
         return "# Current moment\n\n" + "\n".join(lines)
 
+    def _inject_time_context(self, messages, data):
+        """Append the current-moment block to the last user turn, so the live
+        time reaches him WITHOUT living in the cached system prefix. Same text
+        as before — only its home moved (system preamble → user message), which
+        is what keeps prompt caching from missing on every request."""
+        try:
+            block = self._time_context(data)
+        except Exception:
+            return
+        if not block or not isinstance(messages, list):
+            return
+        for msg in reversed(messages):
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            part = {"type": "text", "text": block}
+            content = msg.get("content")
+            if isinstance(content, list):
+                content.append(part)
+            elif isinstance(content, str):
+                msg["content"] = [{"type": "text", "text": content}, part]
+            else:
+                msg["content"] = [part]
+            return
+
     def _parse_ts(self, s):
         """Parse a Supabase ISO8601 timestamp to an aware datetime, or None."""
         if not s:
@@ -1713,10 +1748,12 @@ class handler(BaseHTTPRequestHandler):
         return " ".join(p for p in parts if p).strip()[:cap]
 
     def _load_memory_context(self, token, data):
-        """Assemble the preamble in fixed order: self-state, then the
-        current-moment block, then user preferences, then active core
-        memories sorted by resonance (highest first). Any missing or
-        failed piece is skipped; returns "" only if nothing remains.
+        """Assemble the preamble in fixed order: self-state, then user
+        preferences, then active core memories sorted by resonance (highest
+        first). The current-moment/time block is deliberately NOT here — it
+        rides on the user turn instead (see _inject_time_context), so this
+        preamble stays byte-stable and the prompt cache can actually hit. Any
+        missing or failed piece is skipped; returns "" only if nothing remains.
         """
         sections = []
         # Local now, for stamping memories and texts with when they happened.
@@ -1734,12 +1771,6 @@ class handler(BaseHTTPRequestHandler):
             if state and (state[0].get("content") or "").strip():
                 sections.append(
                     "# Who you are\n\n" + state[0]["content"].strip())
-
-        # Time awareness sits between self-state and user preferences.
-        try:
-            sections.append(self._time_context(data))
-        except Exception:
-            pass
 
         if not token:
             return "\n\n".join(sections)
