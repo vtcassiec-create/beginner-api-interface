@@ -129,13 +129,40 @@
     }
     .drawer-content:focus { outline: none; border-color: var(--accent); }
 
+    /* The pretty, rendered "read" view (with tappable checkboxes). */
+    .drawer-rendered { font-size: 15px; line-height: 1.65; color: var(--text); padding: 2px; }
+    .drawer-rendered h1 { font-size: 22px; margin: 4px 0 12px; }
+    .drawer-rendered h2 { font-size: 17px; margin: 20px 0 8px; }
+    .drawer-rendered h3 { font-size: 13px; margin: 16px 0 6px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.05em; }
+    .drawer-rendered p { margin: 7px 0; }
+    .drawer-rendered strong { font-weight: 700; }
+    .drawer-rendered blockquote { border-left: 3px solid var(--border); margin: 8px 0;
+      padding: 2px 0 2px 12px; color: var(--text-muted); }
+    .drawer-rendered hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+    .drawer-rendered code { background: var(--bg-elev); padding: 1px 5px; border-radius: 4px;
+      font-size: 13.5px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+    .drawer-rendered ul.md-list { list-style: none; margin: 7px 0; padding-left: 4px; }
+    .drawer-rendered ul.md-list li { margin: 4px 0; }
+    .drawer-rendered ul.md-list li:not(.md-task)::before { content: "\2022";
+      color: var(--text-muted); margin-right: 8px; }
+    .drawer-rendered li.md-task label { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+    .drawer-rendered li.md-task input { width: 18px; height: 18px; margin: 2px 0 0;
+      accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+    .drawer-rendered .md-done { color: var(--text-muted); text-decoration: line-through; }
+
     .drawer-newform {
-      display: flex; gap: 8px; margin-bottom: 12px;
+      display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;
     }
     .drawer-newform input {
-      flex: 1; background: var(--bg-elev); color: var(--text);
+      flex: 1 1 140px; background: var(--bg-elev); color: var(--text);
       border: 1px solid var(--border); border-radius: var(--radius-sm);
       padding: 8px 10px; font-size: 14px;
+    }
+    .drawer-template {
+      background: var(--bg-elev); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 7px 8px; font-size: 13px;
     }
 
     .drawer-gather { margin-top: 16px; border-top: 1px dashed var(--border); padding-top: 10px; }
@@ -211,7 +238,13 @@
           <button id="drawer-new-btn" class="primary small" type="button">&#65291; New</button>
         </div>
         <div id="drawer-newform" class="drawer-newform" hidden>
-          <input type="text" id="drawer-newtitle" maxlength="120" placeholder="Name it&hellip; use Folder/Name for a section (e.g. Plants/Monstera)" />
+          <input type="text" id="drawer-newtitle" maxlength="120" placeholder="Name it&hellip; (e.g. Knitting/Mom's scarf)" />
+          <select id="drawer-template" class="drawer-template" title="Start from a template">
+            <option value="blank">Blank</option>
+            <option value="knitting">&#129526; Knitting project</option>
+            <option value="todo">&#9989; To-do list</option>
+            <option value="habit">&#128197; Habit tracker</option>
+          </select>
           <button id="drawer-create-btn" class="primary small" type="button">Create</button>
         </div>
         <ul id="drawer-list" class="drawer-list"></ul>
@@ -235,11 +268,13 @@
             </div>
             <div class="drawer-note-actions">
               <span id="drawer-savestate" class="muted small"></span>
+              <button id="drawer-edit-btn" class="ghost small" type="button" title="Edit the raw text" hidden>&#9999;&#65039; Edit</button>
               <button id="drawer-rename-btn" class="ghost small" type="button" title="Rename, or move into a folder">Move</button>
               <button id="drawer-delete-btn" class="danger ghost small" type="button" title="Move to trash (recoverable)">Delete</button>
               <button id="drawer-save-btn" class="primary small" type="button">Save</button>
             </div>
           </div>
+          <div id="drawer-rendered" class="drawer-rendered" hidden></div>
           <textarea id="drawer-content" class="drawer-content" placeholder="Write&hellip;"></textarea>
         </article>
       </section>
