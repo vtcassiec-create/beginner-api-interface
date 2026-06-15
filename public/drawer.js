@@ -12,8 +12,9 @@ const $ = (id) => document.getElementById(id);
 let db = null;
 let session = null;
 let notes = [];
-let current = null;        // { path, title } of the open note
+let current = null;        // { path, title, content } of the open note
 let dirty = false;
+let viewMode = "read";     // "read" (rendered, tappable) | "edit" (raw textarea)
 
 const ROOT = "Cassie/";
 
@@ -332,14 +333,35 @@ async function openNote(path) {
   }
 }
 
-function showNote(content) {
+function showNote(content, startInEdit) {
   $("drawer-empty").hidden = true;
   $("drawer-note").hidden = false;
   $("drawer-main").classList.add("has-note");
   $("drawer-note-title").textContent = current.title;
   $("drawer-note-path").textContent = current.path;
-  $("drawer-content").value = content;
+  current.content = content || "";
   setDirty(false);
+  setMode(startInEdit ? "edit" : "read");
+}
+
+// Flip between the pretty rendered "read" view (with tappable checkboxes) and
+// the raw "edit" textarea. Existing notes open in read; new/edited ones edit.
+function setMode(mode) {
+  viewMode = mode;
+  if (mode === "edit") {
+    $("drawer-content").value = current.content || "";
+    $("drawer-content").hidden = false;
+    $("drawer-rendered").hidden = true;
+    $("drawer-edit-btn").hidden = true;
+    $("drawer-save-btn").hidden = false;
+    setTimeout(() => $("drawer-content").focus(), 0);
+  } else {
+    $("drawer-rendered").innerHTML = renderMarkdown(current.content || "");
+    $("drawer-rendered").hidden = false;
+    $("drawer-content").hidden = true;
+    $("drawer-edit-btn").hidden = false;
+    $("drawer-save-btn").hidden = true;
+  }
 }
 
 function setDirty(d) {
@@ -349,13 +371,16 @@ function setDirty(d) {
 
 async function saveNote() {
   if (!current) return;
-  const content = $("drawer-content").value;
+  // Only the textarea is authoritative while editing; in read view the
+  // textarea may be stale, so trust current.content instead.
+  if (viewMode === "edit") current.content = $("drawer-content").value;
   $("drawer-save-btn").disabled = true;
   $("drawer-savestate").textContent = "Saving…";
   try {
-    await api("save", { path: current.path, content });
+    await api("save", { path: current.path, content: current.content });
     setDirty(false);
     await loadList();
+    setMode("read");               // flip to the pretty view after saving
     toast("Saved to your drawer ♡");
   } catch (e) {
     $("drawer-savestate").textContent = "Unsaved changes";
@@ -368,6 +393,117 @@ async function saveNote() {
 async function confirmDiscard() {
   if (!dirty) return true;
   return window.confirm("You have unsaved changes. Leave without saving?");
+}
+
+// ---------- markdown render + tappable checkboxes ----------
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Inline formatting: `code`, **bold**, *italic*. HTML is escaped first.
+function renderInlineMd(s) {
+  let t = escapeHtml(s);
+  t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
+  t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  t = t.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+  return t;
+}
+
+// A small, focused renderer for her notes: headings, bullet lists, [ ]/[x]
+// checkboxes (each tagged with its SOURCE LINE so a tap can toggle it back in
+// the markdown), blockquotes, horizontal rules, and paragraphs.
+function renderMarkdown(md) {
+  const lines = String(md || "").split("\n");
+  let html = "";
+  let inList = false;
+  const closeList = () => { if (inList) { html += "</ul>"; inList = false; } };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\s+$/, "");
+    let m = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.*)$/);
+    if (m) {
+      if (!inList) { html += '<ul class="md-list">'; inList = true; }
+      const done = m[1].toLowerCase() === "x";
+      html += '<li class="md-task"><label><input type="checkbox" data-line="' + i + '"'
+        + (done ? " checked" : "") + '> <span' + (done ? ' class="md-done"' : "") + ">"
+        + renderInlineMd(m[2]) + "</span></label></li>";
+      continue;
+    }
+    m = line.match(/^\s*[-*]\s+(.*)$/);
+    if (m) {
+      if (!inList) { html += '<ul class="md-list">'; inList = true; }
+      html += "<li>" + renderInlineMd(m[1]) + "</li>";
+      continue;
+    }
+    closeList();
+    m = line.match(/^(#{1,6})\s+(.*)$/);
+    if (m) {
+      const lvl = Math.min(m[1].length, 6);
+      html += "<h" + lvl + ">" + renderInlineMd(m[2]) + "</h" + lvl + ">";
+      continue;
+    }
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) { html += "<hr>"; continue; }
+    m = line.match(/^>\s?(.*)$/);
+    if (m) { html += "<blockquote>" + renderInlineMd(m[1]) + "</blockquote>"; continue; }
+    if (line.trim() === "") continue;
+    html += "<p>" + renderInlineMd(line) + "</p>";
+  }
+  closeList();
+  return html;
+}
+
+// Tapping a checkbox in the rendered view toggles [ ]<->[x] on its source line
+// and saves immediately. Reverts the box if the save fails.
+async function onCheckboxToggle(e) {
+  const cb = e.target;
+  if (!cb || cb.tagName !== "INPUT" || cb.type !== "checkbox" || !current) return;
+  const idx = parseInt(cb.getAttribute("data-line"), 10);
+  if (isNaN(idx)) return;
+  const lines = String(current.content || "").split("\n");
+  if (idx < 0 || idx >= lines.length) return;
+  lines[idx] = lines[idx].replace(/\[[ xX]\]/, cb.checked ? "[x]" : "[ ]");
+  current.content = lines.join("\n");
+  const span = cb.parentElement && cb.parentElement.querySelector("span");
+  if (span) span.classList.toggle("md-done", cb.checked);
+  $("drawer-savestate").textContent = "Saving…";
+  try {
+    await api("save", { path: current.path, content: current.content });
+    $("drawer-savestate").textContent = "Saved ✓";
+    setTimeout(() => { if (viewMode === "read") $("drawer-savestate").textContent = ""; }, 1200);
+  } catch (err) {
+    cb.checked = !cb.checked;                  // revert on failure
+    if (span) span.classList.toggle("md-done", cb.checked);
+    toast(err.message || "Couldn't save that check");
+  }
+}
+
+// ---------- templates ----------
+
+function todayStr() {
+  try {
+    return new Date().toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  } catch (e) { return ""; }
+}
+
+function templateContent(kind, rel) {
+  const name = (rel.split("/").pop() || "").trim();
+  if (kind === "knitting") {
+    return "# " + (name || "Knitting project") + " 🧶\n\n"
+      + "**For:** \n**Pattern:** \n**Yarn:** \n**Needles:** \n"
+      + "**Started:** " + todayStr() + "\n**Deadline:** \n\n"
+      + "## Progress\n"
+      + "- [ ] Swatch / check gauge\n- [ ] Cast on\n- [ ] Body\n"
+      + "- [ ] Second piece / sleeves\n- [ ] Bind off\n- [ ] Weave in ends\n- [ ] Block\n\n"
+      + "## Notes\n- \n\n## Row counter\nRows: \n";
+  }
+  if (kind === "todo") {
+    return "# " + (name || "To-do") + "\n\n- [ ] \n- [ ] \n- [ ] \n";
+  }
+  if (kind === "habit") {
+    return "# " + (name || "Habits") + "\n\n_Tick each day you do it._\n\n"
+      + "## This week\n- [ ] Mon\n- [ ] Tue\n- [ ] Wed\n- [ ] Thu\n- [ ] Fri\n- [ ] Sat\n- [ ] Sun\n";
+  }
+  return "";
 }
 
 // ---------- new ----------
@@ -399,12 +535,14 @@ async function createNote() {
   }
   if (!await confirmDiscard()) return;
 
+  const kind = $("drawer-template") ? $("drawer-template").value : "blank";
+  const body = templateContent(kind, rel);
+
   current = { path, title: rel.split("/").pop() };
-  showNote("");
+  showNote(body, true);      // open in edit mode so she can fill it in
   setDirty(true);            // nothing saved yet — first Save creates it
   $("drawer-savestate").textContent = "New — Save to keep it";
   hideNewForm();
-  $("drawer-content").focus();
 }
 
 // ---- move / rename / delete ----
@@ -469,9 +607,15 @@ function wireDrawer() {
     if (e.key === "Enter") { e.preventDefault(); createNote(); }
   });
   $("drawer-save-btn").addEventListener("click", saveNote);
+  $("drawer-edit-btn").addEventListener("click", () => setMode("edit"));
   $("drawer-rename-btn").addEventListener("click", renameNote);
   $("drawer-delete-btn").addEventListener("click", deleteNote);
-  $("drawer-content").addEventListener("input", () => { if (!dirty) setDirty(true); });
+  $("drawer-content").addEventListener("input", () => {
+    if (current) current.content = $("drawer-content").value;
+    if (!dirty) setDirty(true);
+  });
+  // Tap a checkbox in the rendered view -> toggle it in the source + save.
+  $("drawer-rendered").addEventListener("change", onCheckboxToggle);
 
   // Cmd/Ctrl+S saves.
   document.addEventListener("keydown", (e) => {
