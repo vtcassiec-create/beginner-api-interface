@@ -4914,9 +4914,16 @@ async function saveUserPreferences() {
   flashToast("Preferences saved");
 }
 
+// Mirrors CORE_MEMORY_INJECT_CAP in api/chat.py: how many NON-pinned core
+// memories ride along in every chat. Pinned ("eternal") ones are always on top
+// of this; the rest wait in the background until something calls them.
+const CORE_MEMORY_INJECT_CAP = 24;
+
 async function renderMemoryList() {
   const ul = $("memory-list");
+  const countEl = $("memory-count");
   ul.innerHTML = "";
+  if (countEl) countEl.textContent = "";
   let mems;
   try {
     mems = await dbListCoreMemories();
@@ -4933,6 +4940,17 @@ async function renderMemoryList() {
     li.textContent = "No memories yet.";
     ul.appendChild(li);
     return;
+  }
+  if (countEl) {
+    const pinned = mems.filter((m) => m.pinned).length;
+    const shared = mems.length - pinned;
+    const waiting = Math.max(0, shared - CORE_MEMORY_INJECT_CAP);
+    let line = `${mems.length} active`;
+    if (pinned) line += ` · ${pinned} eternal (always with him)`;
+    line += waiting
+      ? ` · ${Math.min(shared, CORE_MEMORY_INJECT_CAP)} of the rest ride along each chat, ${waiting} wait in the background`
+      : ` · all ride along every chat (under the ${CORE_MEMORY_INJECT_CAP} cap)`;
+    countEl.textContent = line;
   }
   for (const m of mems) {
     const li = document.createElement("li");
