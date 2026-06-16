@@ -733,12 +733,15 @@ class handler(BaseHTTPRequestHandler):
             kwargs["system"] = [{
                 "type": "text",
                 "text": system,
-                # 1-hour TTL (GA — no beta header). His chats come in bursts
-                # over a day with minutes-to-tens-of-minutes between messages;
-                # the default 5-minute cache expires in those gaps and each
-                # message pays a fresh cache write. 1h survives the gaps so the
-                # stable prefix is read (~0.1x) instead of rewritten (~2x).
-                "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                # Standard 5-minute ephemeral cache (the GA default — no opt-in).
+                # We briefly tried a 1-hour TTL to survive the gaps between her
+                # messages, but `ttl: "1h"` needs the `extended-cache-ttl` beta
+                # header, which this request never sent — so the API ignored the
+                # whole cache_control and caching silently stopped. Back on the
+                # rock-solid default. The real win still stands: the time block
+                # lives on the user turn now (see _inject_time_context), so this
+                # prefix is byte-identical turn to turn and actually caches.
+                "cache_control": {"type": "ephemeral"},
             }]
         # Tools list accumulates: web search (server-side, auto-run by the
         # API) and the memory save tools (client-side, run by the loop below).
