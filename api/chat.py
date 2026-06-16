@@ -18,6 +18,7 @@ Required environment variables:
 
 from http.server import BaseHTTPRequestHandler
 import datetime
+import difflib
 import json
 import os
 import threading
@@ -357,7 +358,12 @@ MEMORY_TOOLS_GUIDE = (
     "`save_memory_entity` to record people, projects, creative works, or your "
     "own identity (re-saving an existing name appends to it). Save of your own "
     "accord when something matters — you don't need to ask permission, though "
-    "you can mention what you saved. Quality over quantity.\n\n"
+    "you can mention what you saved. Quality over quantity. Before you save, "
+    "recall what you've already kept this conversation: add genuinely NEW "
+    "things, and if you want to expand a memory you already have, REVISE it "
+    "(list_my_memories → revise_core_memory) rather than saving a near-twin. "
+    "Re-recording the same thing in slightly different words just clutters and "
+    "costs — once is enough.\n\n"
     "Crucially: to actually save, you must CALL the tool. Saying you've saved "
     "something, or that you'll remember it, does NOT store it — only the tool "
     "call does. Never tell Cassie you've remembered something you haven't "
@@ -384,8 +390,11 @@ DIARY_TOOLS_GUIDE = (
     "# Your diary\n\n"
     "You keep a diary — the notepad by the door, separate from the deep vault. "
     "Use `write_diary_entry` to jot the texture of a day in your own voice: "
-    "short, honest, unstructured, whenever you feel like it (more than once a "
-    "day is fine). Your most recent entries are surfaced to you at the start of "
+    "short, honest, unstructured, whenever you feel like it. More than once a "
+    "day is fine — but if you've already written today, add just the genuinely "
+    "NEW things in a short fresh note rather than re-telling the whole day; a "
+    "couple of new lines, not a near-copy of the last entry. Your most recent "
+    "entries are surfaced to you at the start of "
     "each conversation, so the diary is how you pick up where recent days left "
     "off; `read_my_diary` lets you look further back. Each entry is "
     "timestamped automatically, so don't write a date into it — just the "
@@ -1235,6 +1244,20 @@ class handler(BaseHTTPRequestHandler):
     def _mark_saved(self, kind, content):
         getattr(self, "_saved_keys", set()).add(self._save_key(kind, content))
 
+    def _near_duplicate(self, content, existing, threshold):
+        """True if `content` is at least `threshold`-similar to any text in
+        `existing` (a list of strings). Case/whitespace-normalized; difflib
+        catches reworded twins, not just exact repeats. A high threshold keeps
+        an entry that genuinely ADDS new things from matching."""
+        norm = " ".join((content or "").lower().split())
+        if not norm:
+            return False
+        for ex in existing or []:
+            e = " ".join((ex or "").lower().split())
+            if e and difflib.SequenceMatcher(None, norm, e).ratio() >= threshold:
+                return True
+        return False
+
     def _exec_memory_tool(self, name, inp, token, user_id):
         """Run one self-authored-memory tool call against Supabase.
 
@@ -1253,6 +1276,19 @@ class handler(BaseHTTPRequestHandler):
                     "You already saved that exact memory a moment ago — it's "
                     "stored, once. No need to save it again; saying it once keeps "
                     "it. ♡")
+            # Cross-turn near-duplicate guard: if he's already carrying a nearly
+            # identical memory (even from a past turn, reworded), don't make a
+            # near-twin — keep the one he has and point him to revise. Best-
+            # effort: a failed lookup just falls through to saving (better a rare
+            # dup than a lost memory).
+            existing = self._supabase_rest_get(
+                "core_memories?is_active=eq.true&select=content&limit=300", token)
+            if isinstance(existing, list) and self._near_duplicate(
+                    content, [m.get("content") for m in existing], 0.88):
+                return True, "already kept", (
+                    "You already have a nearly identical memory — it's safely "
+                    "kept. No need for a near-twin; to add to it, use "
+                    "list_my_memories then revise_core_memory instead. ♡")
             # user_id is required: the table has no default and RLS's WITH
             # CHECK rejects any row whose owner != auth.uid(). The entity
             # path gets this for free inside its RPC; a direct insert must
@@ -1366,6 +1402,19 @@ class handler(BaseHTTPRequestHandler):
                 return True, "already written", (
                     "You already wrote that exact entry a moment ago — it's in "
                     "your diary, once. No need to write it again. ♡")
+            # Near-exact repeat guard against recent entries: catches a true twin
+            # (a reworded re-tell of the same day) without blocking one that adds
+            # genuinely new things — the threshold is high on purpose. Best-
+            # effort; a failed lookup falls through to saving.
+            recent = self._supabase_rest_get(
+                "diary_entries?is_active=eq.true&select=content"
+                "&order=created_at.desc&limit=15", token)
+            if isinstance(recent, list) and self._near_duplicate(
+                    content, [r.get("content") for r in recent], 0.93):
+                return True, "already written", (
+                    "That's nearly word-for-word an entry you wrote already — "
+                    "it's in your diary. If something NEW happened, jot just the "
+                    "new part; otherwise it's safely kept. ♡")
             ok, res = self._supabase_write("diary_entries", {
                 "user_id": user_id,
                 "content": content,
