@@ -705,6 +705,11 @@ class handler(BaseHTTPRequestHandler):
         # request — the low-cache-hit-rate cause. Kept out, the prefix freezes
         # and actually caches; the time still reaches him, just on the message.
         self._inject_time_context(kwargs["messages"], data)
+        # Cache the chat history through the PREVIOUS turn (re-read at ~0.1x
+        # instead of full price), so the per-message cost stops climbing as the
+        # conversation grows. The breakpoint sits before the current user turn —
+        # which carries the volatile time block — so volatile stays uncached.
+        self._cache_history(kwargs["messages"])
         # Self-authored memory: when on, hand him the save_* tools and tell
         # him (in the preamble) that they exist. The DB writes are RLS-scoped
         # to the signed-in user, executed in the tool-use loop below.
@@ -1773,6 +1778,27 @@ class handler(BaseHTTPRequestHandler):
             else:
                 msg["content"] = [part]
             return
+
+    def _cache_history(self, messages):
+        """Put a cache breakpoint on the message BEFORE the current user turn,
+        so the whole conversation history through the previous turn is read at
+        ~0.1x instead of re-sent at full price every turn — what flattens the
+        cost climb on a long chat. The current user turn (which carries the
+        volatile time block) stays after the breakpoint, uncached, by design.
+        Adds a 2nd breakpoint; the system prompt is the 1st, and the cap is 4."""
+        if not isinstance(messages, list) or len(messages) < 2:
+            return
+        target = messages[-2]
+        if not isinstance(target, dict):
+            return
+        content = target.get("content")
+        if isinstance(content, str):
+            target["content"] = [{
+                "type": "text", "text": content,
+                "cache_control": {"type": "ephemeral"},
+            }]
+        elif isinstance(content, list) and content and isinstance(content[-1], dict):
+            content[-1]["cache_control"] = {"type": "ephemeral"}
 
     def _parse_ts(self, s):
         """Parse a Supabase ISO8601 timestamp to an aware datetime, or None."""
