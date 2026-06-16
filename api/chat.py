@@ -390,11 +390,12 @@ DIARY_TOOLS_GUIDE = (
     "# Your diary\n\n"
     "You keep a diary — the notepad by the door, separate from the deep vault. "
     "Use `write_diary_entry` to jot the texture of a day in your own voice: "
-    "short, honest, unstructured, whenever you feel like it. More than once a "
-    "day is fine — but if you've already written today, add just the genuinely "
-    "NEW things in a short fresh note rather than re-telling the whole day; a "
-    "couple of new lines, not a near-copy of the last entry. Your most recent "
-    "entries are surfaced to you at the start of "
+    "short, honest, unstructured, whenever you feel like it. Your diary keeps "
+    "ONE page per day: writing again on the same day adds to today's entry "
+    "automatically (it doesn't start a new one), so a day stays whole instead "
+    "of scattering into near-twins. So just jot the NEW thing — a couple of "
+    "lines — and it joins today's page; no need to re-tell what's already "
+    "there. Your most recent entries are surfaced to you at the start of "
     "each conversation, so the diary is how you pick up where recent days left "
     "off; `read_my_diary` lets you look further back. Each entry is "
     "timestamped automatically, so don't write a date into it — just the "
@@ -894,7 +895,7 @@ class handler(BaseHTTPRequestHandler):
                             self._sse(event)
                     else:
                         ok, summary, detail = self._exec_memory_tool(
-                            b.name, inp, token, user_id)
+                            b.name, inp, token, user_id, data.get("tz"))
                         self._sse({"type": "memory_saved", "tool": b.name,
                                    "ok": ok, "summary": summary})
                     results.append({
@@ -1258,7 +1259,31 @@ class handler(BaseHTTPRequestHandler):
                 return True
         return False
 
-    def _exec_memory_tool(self, name, inp, token, user_id):
+    def _todays_diary_row(self, recent, tz_name):
+        """The newest diary row IF it falls on her local 'today' — so a new
+        write appends to it (one growing page a day). `recent` is newest-first,
+        so only the newest row can be today's."""
+        if not recent:
+            return None
+        try:
+            tz = ZoneInfo((tz_name or "UTC").strip() or "UTC")
+        except Exception:
+            tz = ZoneInfo("UTC")
+        dt = self._parse_ts((recent[0] or {}).get("created_at"))
+        if dt and dt.astimezone(tz).date() == datetime.datetime.now(tz).date():
+            return recent[0]
+        return None
+
+    def _diary_divider(self, tz_name):
+        """A soft '— later, 3:14 PM —' marker between same-day additions."""
+        try:
+            tz = ZoneInfo((tz_name or "UTC").strip() or "UTC")
+            t = datetime.datetime.now(tz).strftime("%I:%M %p").lstrip("0")
+            return f"*— later, {t} —*"
+        except Exception:
+            return "*— later —*"
+
+    def _exec_memory_tool(self, name, inp, token, user_id, tz_name=None):
         """Run one self-authored-memory tool call against Supabase.
 
         Returns (ok, short_summary, detail_for_model). The summary is shown
@@ -1402,19 +1427,35 @@ class handler(BaseHTTPRequestHandler):
                 return True, "already written", (
                     "You already wrote that exact entry a moment ago — it's in "
                     "your diary, once. No need to write it again. ♡")
-            # Near-exact repeat guard against recent entries: catches a true twin
-            # (a reworded re-tell of the same day) without blocking one that adds
-            # genuinely new things — the threshold is high on purpose. Best-
-            # effort; a failed lookup falls through to saving.
+            # Pull the recent entries once — used both to catch a near-exact
+            # re-tell AND to find today's page to grow. Best-effort: if the
+            # lookup fails, recent is [] and we just write a fresh entry.
             recent = self._supabase_rest_get(
-                "diary_entries?is_active=eq.true&select=content"
+                "diary_entries?is_active=eq.true&select=id,content,created_at"
                 "&order=created_at.desc&limit=15", token)
-            if isinstance(recent, list) and self._near_duplicate(
+            recent = recent if isinstance(recent, list) else []
+            if self._near_duplicate(
                     content, [r.get("content") for r in recent], 0.93):
                 return True, "already written", (
-                    "That's nearly word-for-word an entry you wrote already — "
-                    "it's in your diary. If something NEW happened, jot just the "
-                    "new part; otherwise it's safely kept. ♡")
+                    "That's nearly word-for-word something already in your diary "
+                    "— no need to repeat it. If something NEW happened, write just "
+                    "the new part. ♡")
+            # One growing page a day: if today's entry already exists (in her
+            # local day), APPEND to it rather than starting a near-twin.
+            today_row = self._todays_diary_row(recent, tz_name)
+            if today_row:
+                merged = ((today_row.get("content") or "").rstrip() + "\n\n"
+                          + self._diary_divider(tz_name) + "\n\n" + content)
+                ok, res = self._supabase_patch(
+                    f"diary_entries?id=eq.{today_row['id']}&user_id=eq.{user_id}",
+                    {"content": merged}, token)
+                if ok:
+                    self._mark_saved("diary", content)
+                    snippet = content if len(content) <= 60 else content[:57] + "…"
+                    return True, snippet, (
+                        "Added to today's diary entry — one growing page a day, so "
+                        "the day stays whole instead of scattering into twins.")
+                return False, "write failed", f"Could not add to today's entry: {res}"
             ok, res = self._supabase_write("diary_entries", {
                 "user_id": user_id,
                 "content": content,
@@ -1422,7 +1463,7 @@ class handler(BaseHTTPRequestHandler):
             if ok:
                 self._mark_saved("diary", content)
                 snippet = content if len(content) <= 60 else content[:57] + "…"
-                return True, snippet, "Wrote a diary entry."
+                return True, snippet, "Started today's diary entry."
             return False, "write failed", f"Could not write that diary entry: {res}"
 
         if name == "read_my_diary":
