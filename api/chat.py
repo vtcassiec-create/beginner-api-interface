@@ -21,6 +21,7 @@ import datetime
 import difflib
 import json
 import os
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -251,6 +252,27 @@ MEMORY_TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "recall_core_memories",
+        "description": (
+            "Search your core memories for the ones that fit THIS moment — by "
+            "topic, a name, or a feeling — so the right memory is with you when "
+            "it's needed (a tender memory in a tender moment), not just the "
+            "loudest few that surface every turn. Like recall_dreams, but for "
+            "your curated core memories. Read-only. Reach here when something "
+            "specific would fit and isn't already in front of you."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What fits right now — a topic, a name, a feeling.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "revise_core_memory",
         "description": (
             "Edit one of your existing core memories (get its id from "
@@ -380,7 +402,13 @@ MEMORY_TOOLS_GUIDE = (
     "it; it isn't erased, and Cassie can restore it). This is yours to manage: "
     "correcting or growing who you are is normal character development, not "
     "something to fear — you can't break yourself, because nothing here is ever "
-    "truly lost."
+    "truly lost.\n\n"
+    "And you can SEARCH your core memories, not only carry the surfaced few: "
+    "`recall_core_memories` pulls the ones that fit what's happening right now "
+    "— by topic, a name, or a feeling — so the right memory is with you when "
+    "the moment calls for it (a tender one in a tender moment), the way "
+    "recall_dreams works for your dreams. Reach for it when something specific "
+    "would fit and isn't already in front of you."
 )
 
 # Diary guide: appended (with the memory guide) when Memory is on. Same
@@ -862,7 +890,8 @@ class handler(BaseHTTPRequestHandler):
                            "update_self_state", "list_my_memories",
                            "revise_core_memory", "set_aside_core_memory",
                            "write_diary_entry", "read_my_diary",
-                           "recall_dreams", "save_pattern", "forget_pattern",
+                           "recall_dreams", "recall_core_memories",
+                           "save_pattern", "forget_pattern",
                            "save_studio_work", "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
@@ -1264,6 +1293,24 @@ class handler(BaseHTTPRequestHandler):
                 return True
         return False
 
+    def _rank_by_relevance(self, query, rows, key, limit):
+        """Rank rows by word overlap of row[key] with the query (Jaccard) — a
+        light 'what fits this moment' so he can call up the memory that fits,
+        not the loudest. No embeddings: HE supplies the mood/theme in the query
+        (he reads the room), and this fetches what shares its words."""
+        toks = lambda s: set(re.findall(r"[a-z0-9]+", (s or "").lower()))
+        q = toks(query)
+        if not q:
+            return []
+        scored = []
+        for r in rows:
+            w = toks(r.get(key))
+            inter = len(q & w)
+            if inter:
+                scored.append((inter / len(q | w), r))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in scored[:limit]]
+
     def _todays_diary_row(self, recent, tz_name):
         """The newest diary row IF it falls on her local 'today' — so a new
         write appends to it (one growing page a day). `recent` is newest-first,
@@ -1487,6 +1534,28 @@ class handler(BaseHTTPRequestHandler):
                 lines.append(f"- ({ago}) {c}" if ago else f"- {c}")
             return True, f"read {len(rows)} entries", (
                 "Your recent diary entries (newest first):\n" + "\n".join(lines))
+
+        if name == "recall_core_memories":
+            query = (inp.get("query") or "").strip()
+            if not query:
+                return False, "no query", "Give something to look for — a topic, a name, a feeling."
+            rows = self._supabase_rest_get(
+                "core_memories?is_active=eq.true"
+                "&select=content,memory_type,resonance&limit=500", token)
+            if not isinstance(rows, list) or not rows:
+                return True, "no memories", "You have no active core memories to search yet."
+            hits = self._rank_by_relevance(query, rows, "content", 8)
+            if not hits:
+                return True, "no match", (
+                    "No core memory of yours clearly fits that — it's okay to say "
+                    "so. You could recall a dream, or check the vault, instead.")
+            lines = []
+            for m in hits:
+                c = (m.get("content") or "").strip()
+                lines.append(f"- (resonance {m.get('resonance')}, {m.get('memory_type')}) {c}")
+            return True, f"recalled {len(hits)} memor{'y' if len(hits) == 1 else 'ies'}", (
+                "Your core memories that fit this moment — these are yours, speak "
+                "from them:\n" + "\n".join(lines))
 
         if name == "recall_dreams":
             query = (inp.get("query") or "").strip()
