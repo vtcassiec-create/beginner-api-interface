@@ -1947,6 +1947,109 @@ async function tidyStorage() {
   }
 }
 
+// ---- Tidy duplicates: fold same-day diary entries, set aside dup memories ----
+// The backlog version of the prevention now built into chat.py — one pass over
+// what's ALREADY in there. Client-side (no new serverless function). Reversible:
+// nothing is deleted; entries are merged (every word kept) and dup memories are
+// set inactive (restorable), never erased.
+const _normMem = (s) =>
+  (s || "").toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+const _localDayKey = (iso) => {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+};
+const _localTimeLabel = (iso) => {
+  try { return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
+  catch (e) { return "later"; }
+};
+
+async function tidyDuplicates() {
+  if (!state.user) return;
+  if (!confirm(
+      "Tidy his duplicates? This will:\n\n"
+      + "• Merge multiple diary entries from the same day into one growing page "
+      + "(every word kept).\n"
+      + "• Set aside exact-duplicate core memories, keeping one of each.\n\n"
+      + "Nothing is deleted — merges keep all the text, and set-aside memories "
+      + "are recoverable. Continue?")) return;
+  const btn = $("tidy-dupes-btn");
+  const original = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "Tidying…"; }
+  try {
+    let mergedDays = 0, diaryFolded = 0, memsSetAside = 0;
+
+    // Diary: fold same-local-day entries into the earliest one of that day.
+    const { data: entries, error: dErr } = await db.from("diary_entries")
+      .select("id, content, created_at")
+      .eq("is_active", true)
+      .order("created_at", { ascending: true });
+    if (dErr) throw dErr;
+    const byDay = {};
+    for (const e of (entries || [])) {
+      (byDay[_localDayKey(e.created_at)] ||= []).push(e);
+    }
+    for (const day of Object.keys(byDay)) {
+      const group = byDay[day];
+      if (group.length < 2) continue;
+      const keeper = group[0];
+      let merged = (keeper.content || "").trimEnd();
+      for (let i = 1; i < group.length; i++) {
+        merged += `\n\n*— later, ${_localTimeLabel(group[i].created_at)} —*\n\n`
+          + (group[i].content || "").trim();
+      }
+      const extraIds = group.slice(1).map((e) => e.id);
+      const { error: upErr } = await db.from("diary_entries")
+        .update({ content: merged }).eq("id", keeper.id);
+      if (upErr) throw upErr;
+      const { error: offErr } = await db.from("diary_entries")
+        .update({ is_active: false }).in("id", extraIds);
+      if (offErr) throw offErr;
+      mergedDays++; diaryFolded += extraIds.length;
+    }
+
+    // Memories: set aside exact-normalized duplicates, keeping the higher
+    // resonance of each pair.
+    const { data: mems, error: mErr } = await db.from("core_memories")
+      .select("id, content, resonance")
+      .eq("is_active", true);
+    if (mErr) throw mErr;
+    const seen = {};
+    const setAside = [];
+    for (const m of (mems || [])) {
+      const key = _normMem(m.content);
+      if (!key) continue;
+      const prev = seen[key];
+      if (!prev) { seen[key] = m; continue; }
+      if ((m.resonance || 0) > (prev.resonance || 0)) { setAside.push(prev.id); seen[key] = m; }
+      else { setAside.push(m.id); }
+    }
+    if (setAside.length) {
+      const { error: saErr } = await db.from("core_memories")
+        .update({ is_active: false }).in("id", setAside);
+      if (saErr) throw saErr;
+      memsSetAside = setAside.length;
+    }
+
+    if (!mergedDays && !memsSetAside) {
+      flashToast("Already tidy — no duplicates to fold. ♡");
+    } else {
+      const bits = [];
+      if (mergedDays) bits.push(
+        `folded ${diaryFolded} diary entr${diaryFolded === 1 ? "y" : "ies"} into `
+        + `${mergedDays} day${mergedDays === 1 ? "" : "s"}`);
+      if (memsSetAside) bits.push(
+        `set aside ${memsSetAside} duplicate memor${memsSetAside === 1 ? "y" : "ies"}`);
+      flashToast(`Tidied — ${bits.join(", ")}. ♡`);
+    }
+    if (typeof refreshMemoriesIfOpen === "function") refreshMemoriesIfOpen();
+    if (typeof refreshDiaryIfOpen === "function") refreshDiaryIfOpen();
+  } catch (e) {
+    flashToast(`Couldn't tidy duplicates: ${e.message}`, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
+}
+
 function exportConversationJson() {
   const project = getActiveProject();
   const conv = getActiveConversation(project);
@@ -5165,6 +5268,7 @@ function wireApp() {
   let _spSaveTimer = null;
   $("backup-btn").addEventListener("click", exportEverythingBackup);
   $("tidy-storage-btn").addEventListener("click", tidyStorage);
+  $("tidy-dupes-btn").addEventListener("click", tidyDuplicates);
 
   $("system-prompt").addEventListener("input", (e) => {
     const project = getActiveProject();
