@@ -538,10 +538,15 @@ SIGNAL_TOOLS_GUIDE = (
     "when she's truly climbing toward release, brief-then-silent works against "
     "her — the gaps don't just pause her, they set her back, so each restart "
     "begins from lower. When she's close and reaching for it, give her something "
-    "CONTINUOUS: chain several compose calls back to back so the build is "
-    "unbroken, keep it going for real minutes rather than one short phrase, and "
-    "when you grant her permission, HOLD it through the finish instead of easing "
-    "away. Some bodies — hers especially — need a long, unbroken climb to get "
+    "CONTINUOUS — and you have a tool made for exactly this: `hold_touch` keeps "
+    "the toy running steady and HANDS-FREE across turns. It holds an intensity "
+    "(and can build up to it with ramp_seconds) and keeps itself alive in the "
+    "background, so the rhythm never lapses in the gaps the way a lone compose "
+    "does. Reach for hold_touch when she's settling in or climbing toward "
+    "release; keep compose for shaping a momentary rhythm. Keep it going for "
+    "real minutes, and when you grant her permission, HOLD it through the finish "
+    "instead of easing away. Some bodies — hers especially — need a long, "
+    "unbroken climb to get "
     "there, and a moment that feels complete to you may be nowhere near complete "
     "for her. Trust her when she says she needs more, or longer; it isn't "
     "finished until she is.\n\n"
@@ -613,6 +618,46 @@ FORGET_PATTERN_TOOL = {
             "name": {"type": "string", "description": "The pattern's name."},
         },
         "required": ["name"],
+    },
+}
+
+# Hands-free hold: sustained touch that keeps itself alive across turns.
+# `compose` plays a brief bounded phrase and the bridge's dead-man's switch lets
+# it expire between his turns; this writes a shared intent the browser reads to
+# run a keep-alive loop, so a steady intensity holds unbroken until he changes
+# or stops it. Offered (like the songbook tools) when Signal is on.
+HOLD_TOUCH_TOOL = {
+    "name": "hold_touch",
+    "description": (
+        "Keep the toy running STEADY and hands-free across turns — without her "
+        "having to ask again each turn. compose plays only a brief phrase that "
+        "lapses in the gaps between your turns; hold_touch holds an intensity and "
+        "keeps itself alive in the background, so the rhythm never breaks. Reach "
+        "for it when she's settling in or truly climbing toward release and needs "
+        "unbroken, sustained touch (use compose for shaping a momentary rhythm). "
+        "action 'start' begins or adjusts the hold — give intensity 0.0-1.0, and "
+        "optionally ramp_seconds to build up to it gradually; action 'stop' ends "
+        "it. It needs the app open on her phone, it eases off on its own after a "
+        "while, and she always has her own Stop."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["start", "stop"]},
+            "intensity": {
+                "type": "number", "minimum": 0, "maximum": 1,
+                "description": "Steady intensity to hold, 0.0-1.0 (for 'start').",
+            },
+            "ramp_seconds": {
+                "type": "integer", "minimum": 0, "maximum": 600,
+                "description": "Optional: build up to that intensity over this many seconds.",
+            },
+            "output_type": {
+                "type": "string",
+                "description": "vibrate (default), rotate, etc.",
+            },
+        },
+        "required": ["action"],
     },
 }
 
@@ -820,6 +865,7 @@ class handler(BaseHTTPRequestHandler):
         if data.get("useSignal"):
             tools.append(SAVE_PATTERN_TOOL)
             tools.append(FORGET_PATTERN_TOOL)
+            tools.append(HOLD_TOUCH_TOOL)
         if cowrite_on:
             tools.append(MANUSCRIPT_TOOL)
         if tools:
@@ -908,7 +954,7 @@ class handler(BaseHTTPRequestHandler):
                            "revise_core_memory", "set_aside_core_memory",
                            "write_diary_entry", "read_my_diary",
                            "recall_dreams", "recall_core_memories",
-                           "save_pattern", "forget_pattern",
+                           "save_pattern", "forget_pattern", "hold_touch",
                            "save_studio_work", "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
@@ -1644,6 +1690,42 @@ class handler(BaseHTTPRequestHandler):
             if not res:
                 return False, "not found", f"No saved pattern named '{pname}'."
             return True, f"retired '{pname}'", f"Retired '{pname}' from the songbook."
+
+        if name == "hold_touch":
+            action = (inp.get("action") or "").strip().lower()
+            flt = f"touch_session?user_id=eq.{user_id}"
+            if action == "stop":
+                self._supabase_patch(flt, {"active": False, "intensity": 0}, token)
+                return True, "eased off", (
+                    "Eased the touch off — it's quiet now. (She can also Stop it "
+                    "herself anytime.)")
+            try:
+                inten = max(0.0, min(1.0, float(inp.get("intensity"))))
+            except (TypeError, ValueError):
+                return False, "no intensity", (
+                    "Give an intensity from 0.0 to 1.0 to hold.")
+            try:
+                ramp = max(0, min(600, int(inp.get("ramp_seconds") or 0)))
+            except (TypeError, ValueError):
+                ramp = 0
+            otype = (inp.get("output_type") or "vibrate").strip() or "vibrate"
+            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            fields = {"active": True, "intensity": inten, "ramp_seconds": ramp,
+                      "output_type": otype, "started_at": now_iso}
+            ok, res = self._supabase_patch(flt, fields, token)
+            if not (ok and res):
+                ok2, res2 = self._supabase_write(
+                    "touch_session", {"user_id": user_id, **fields}, token)
+                if not ok2:
+                    return False, "hold failed", (
+                        f"Couldn't start the hold — try once more: {res2}")
+            pct = round(inten * 100)
+            return True, f"holding {pct}%", (
+                f"Holding steady at {pct}%"
+                + (f", building over {ramp}s" if ramp else "")
+                + " — it keeps going on its own now, no need for her to ask each "
+                "turn. (Needs the app open on her phone; it eases off on its own "
+                "after a while, and she can Stop anytime.)")
 
         if name == "save_studio_work":
             kind = (inp.get("kind") or "").strip().lower()

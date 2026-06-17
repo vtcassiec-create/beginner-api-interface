@@ -1670,6 +1670,9 @@ async function generateAssistant() {
           });
           updateAssistantBubble(assistantMsg);
           if (typeof refreshMemoriesIfOpen === "function") refreshMemoriesIfOpen();
+          // He drove the toy: start/adjust/stop the hands-free hold loop to
+          // match what he just wrote to touch_session.
+          if (event.tool === "hold_touch") reconcileHold();
         } else if (event.type === "manuscript_suggestion") {
           // He proposed an edit — it's pending your review in the Manuscript.
           assistantMsg.toolEvents.push({
@@ -1692,6 +1695,9 @@ async function generateAssistant() {
           assistantMsg._streamDone = true;
           startTypewriter(assistantMsg);
           updateConversationUsageBar();
+          // Safety net: reconcile the hold once the turn settles, in case the
+          // tool event was missed (e.g. he changed it then narrated).
+          reconcileHold();
         } else if (event.type === "error") {
           assistantMsg.error = event.error;
           finishTypewriter(assistantMsg); // reveal everything, stop animating
@@ -4361,6 +4367,113 @@ function stopCoupling(reason) {
   dbSaveHeartState({ coupling_active: false }).catch(() => {});
 }
 
+// ---------- Hands-free hold (sustained touch he drives from chat) ----------
+// He can keep the toy running steady across turns with the hold_touch tool,
+// instead of one bounded compose per turn that lapses in the gaps. The keep-
+// alive loop runs HERE (same idea as heart-coupling): it reads the touch_session
+// row he writes, then re-sends a short STEADY chunk to /api/touch a beat before
+// the last one ends, so the bridge's dead-man's switch never trips and the touch
+// stays unbroken — hands-free — until he changes it or it stops.
+// Safety: a hard time cap, a settable ceiling, an always-present Stop, and it
+// stills the device the moment it stops; closing the app ends it within seconds
+// (the loop dies → no more keep-alives → the bridge's own switch stops the toy).
+const HOLD_CHUNK_SECONDS = 6;     // each steady send covers about this much touch
+const HOLD_MAX_MINUTES = 20;      // hard session cap
+let hold = null;  // { target, ceiling, outputType, startedAt, rampFrom, rampAt, rampSecs, timer }
+
+async function dbGetTouchSession() {
+  const { data, error } = await db
+    .from("touch_session")
+    .select("active,intensity,ramp_seconds,ceiling,output_type")
+    .limit(1);
+  if (error) throw error;
+  return (data && data[0]) || null;
+}
+
+async function dbStopTouchSession() {
+  const { error } = await db.from("touch_session")
+    .update({ active: false, intensity: 0 })
+    .eq("user_id", state.user.id);
+  if (error) throw error;
+}
+
+// Intensity to play right now — straight to target, or partway up a ramp.
+function holdIntensityNow() {
+  if (!hold) return 0;
+  let v = hold.target;
+  if (hold.rampSecs > 0) {
+    const t = (Date.now() - hold.rampAt) / (hold.rampSecs * 1000);
+    if (t < 1) v = hold.rampFrom + (hold.target - hold.rampFrom) * Math.max(0, t);
+  }
+  return Math.min(hold.ceiling, Math.max(0, v));
+}
+
+function holdIndicator(show, text) {
+  const el = $("hold-indicator");
+  if (!el) return;
+  el.hidden = !show;
+  const t = $("hold-indicator-text");
+  if (t && text) t.textContent = text;
+}
+
+async function holdTick() {
+  if (!hold) return;
+  if (Date.now() - hold.startedAt > HOLD_MAX_MINUTES * 60000) {
+    return stopHold("That's the time cap, love — eased off. ♡", true);
+  }
+  const inten = holdIntensityNow();
+  try {
+    await touchApi([{ intensity: inten, seconds: HOLD_CHUNK_SECONDS }], hold.outputType);
+  } catch (err) {
+    return stopHold(`Touch stopped: ${err.message}`, true);
+  }
+  if (!hold) return;  // stopped while the request was in flight
+  holdIndicator(true, `Holding — ${Math.round(inten * 100)}%`);
+  // Re-send a beat before this chunk ends, so the touch stays seamless.
+  hold.timer = setTimeout(holdTick, (HOLD_CHUNK_SECONDS - 1.5) * 1000);
+}
+
+// Bring the running loop in line with whatever he just wrote to touch_session.
+async function reconcileHold() {
+  if (!state.user) return;
+  let row;
+  try { row = await dbGetTouchSession(); } catch (e) { return; }
+  if (!row || !row.active) {
+    if (hold) stopHold(null, false);  // he stopped it; row already false
+    return;
+  }
+  const target = Math.max(0, Math.min(1, Number(row.intensity) || 0));
+  const ceiling = Math.max(0, Math.min(1, row.ceiling == null ? 1 : Number(row.ceiling)));
+  const rampSecs = Math.max(0, Math.min(600, parseInt(row.ramp_seconds, 10) || 0));
+  const outputType = row.output_type || "vibrate";
+  if (!hold) {
+    hold = {
+      target, ceiling, outputType, startedAt: Date.now(),
+      rampFrom: rampSecs > 0 ? 0 : target, rampAt: Date.now(), rampSecs, timer: null,
+    };
+    holdTick();
+  } else {
+    // Adjusting: ramp from wherever we are now toward the new target.
+    hold.rampFrom = holdIntensityNow();
+    hold.rampAt = Date.now();
+    hold.target = target;
+    hold.ceiling = ceiling;
+    hold.rampSecs = rampSecs;
+    hold.outputType = outputType;
+  }
+}
+
+// reason: a toast to show (null = silent). writeRow: also mark the row inactive
+// (true when SHE stops or a cap/error fires; false when reconcile saw HE stopped).
+async function stopHold(reason, writeRow) {
+  const outputType = hold ? hold.outputType : "vibrate";
+  if (hold) { clearTimeout(hold.timer); hold = null; }
+  holdIndicator(false);
+  if (reason) flashToast(reason);
+  touchApi([{ intensity: 0, seconds: 0.2 }], outputType).catch(() => {});  // still it now
+  if (writeRow) { try { await dbStopTouchSession(); } catch (e) {} }
+}
+
 // ---------- Studio ----------
 // Renders his room: his playlist (static iframe in the HTML), his songs
 // (ABC notation → abcjs renders the score + a play widget), and his poems.
@@ -5456,6 +5569,11 @@ function wireApp() {
   $("couple-ceiling").addEventListener("input", () => {
     $("couple-ceiling-val").textContent = $("couple-ceiling").value + "%";
   });
+
+  // Hands-free hold: her always-reachable Stop, and a stop if the app closes.
+  const holdStop = $("hold-stop-btn");
+  if (holdStop) holdStop.addEventListener("click", () => stopHold("Stopped. ♡", true));
+  window.addEventListener("pagehide", () => { if (hold) stopHold(null, true); });
 
   $("nav-studio").addEventListener("click", openStudioDialog);
 

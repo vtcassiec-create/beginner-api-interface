@@ -196,7 +196,7 @@
           <span class="sep">·</span>
           <a href="https://console.anthropic.com/" target="_blank" rel="noopener">Console</a>
           <span class="sep">·</span>
-          <span class="muted small" id="build-stamp" title="App build — confirms which version loaded">build 2026-06-16·c</span>
+          <span class="muted small" id="build-stamp" title="App build — confirms which version loaded">build 2026-06-17·a</span>
         </div>
       </footer>
     </aside>
@@ -834,6 +834,13 @@
   </dialog>
 
   <div id="toast" class="toast" hidden></div>
+
+  <!-- Hands-free hold: floats while a sustained touch is running, so Stop is
+       always one tap away no matter what's on screen. -->
+  <div id="hold-indicator" hidden>
+    <span id="hold-indicator-text">Holding</span>
+    <button type="button" id="hold-stop-btn">Stop</button>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/abcjs@6.4.4/dist/abcjs-basic-min.js"></script>
   <script src="/app.js"></script>
