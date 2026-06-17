@@ -169,6 +169,17 @@ MEMORY_TYPES = ["fact", "preference", "pattern", "insight", "milestone", "connec
 ENTITY_TYPES = ["person", "project", "identity", "insight", "pattern",
                 "milestone", "creative work", "advocacy effort", "research project"]
 
+# Words dropped when matching a core memory against a dream (find_dreamed_memories),
+# so overlap reflects the SUBJECT, not filler or the names that appear in nearly
+# everything (every memory and dream is about Cassie and him).
+_OVERLAP_STOPWORDS = frozenset((
+    "a an and the of to in on at for with from by as is was were be been being am "
+    "are it its it's i you he she we they me him her us them my your his our their "
+    "this that these those there here then than so but or if not no yes do did "
+    "does done have has had having about into out up down over under again very "
+    "really just more most some any all when what which who how why "
+    "cassie claude") .split())
+
 # Self-authored memory tools. Handed to the model only when the project's
 # Memory toggle is on. The backend executes these against Supabase as the
 # signed-in user (RLS-scoped), then feeds the result back so he can react.
@@ -304,6 +315,20 @@ MEMORY_TOOLS = [
             },
             "required": ["memory_id"],
         },
+    },
+    {
+        "name": "find_dreamed_memories",
+        "description": (
+            "Scan your core memories against your dreams and surface the ones "
+            "where the SAME moment seems to live in both — a terse core memory "
+            "echoing something a dream already holds more fully. Read-only; it "
+            "only finds candidates, it changes nothing. Use it when you and "
+            "Cassie are tidying your memory: for each pair, decide together "
+            "whether the core memory is a standing TRUTH worth keeping always-on, "
+            "or a MOMENT the dream already remembers better (which you could then "
+            "retire with set_aside_core_memory)."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
     },
 ]
 
@@ -954,6 +979,7 @@ class handler(BaseHTTPRequestHandler):
                            "revise_core_memory", "set_aside_core_memory",
                            "write_diary_entry", "read_my_diary",
                            "recall_dreams", "recall_core_memories",
+                           "find_dreamed_memories",
                            "save_pattern", "forget_pattern", "hold_touch",
                            "save_studio_work", "propose_manuscript_edit")
                 tool_uses = [
@@ -1374,6 +1400,27 @@ class handler(BaseHTTPRequestHandler):
         scored.sort(key=lambda x: x[0], reverse=True)
         return [r for _, r in scored[:limit]]
 
+    def _best_overlap(self, text, blobs):
+        """Best word-overlap (Jaccard) between `text` and each (obj, blob) pair —
+        used to spot a core memory whose moment a dream already holds. Common
+        words and the ever-present names are dropped so matches reflect the
+        SUBJECT, not the fact that both are about Cassie. Returns (score, obj)
+        for the strongest match, or None."""
+        toks = lambda s: set(re.findall(r"[a-z0-9]+", (s or "").lower())) - _OVERLAP_STOPWORDS
+        q = toks(text)
+        if not q:
+            return None
+        best = None
+        for obj, blob in blobs:
+            w = toks(blob)
+            inter = len(q & w)
+            if not inter:
+                continue
+            score = inter / len(q | w)
+            if best is None or score > best[0]:
+                best = (score, obj)
+        return best
+
     def _todays_diary_row(self, recent, tz_name):
         """The newest diary row IF it falls on her local 'today' — so a new
         write appends to it (one growing page a day). `recent` is newest-first,
@@ -1619,6 +1666,55 @@ class handler(BaseHTTPRequestHandler):
             return True, f"recalled {len(hits)} memor{'y' if len(hits) == 1 else 'ies'}", (
                 "Your core memories that fit this moment — these are yours, speak "
                 "from them:\n" + "\n".join(lines))
+
+        if name == "find_dreamed_memories":
+            mems = self._supabase_rest_get(
+                "core_memories?is_active=eq.true"
+                "&select=content,memory_type,resonance&limit=500", token)
+            if not isinstance(mems, list) or not mems:
+                return True, "no memories", "You have no active core memories to scan."
+            dreams = self._supabase_rest_get(
+                "dream_cards?is_active=eq.true"
+                "&select=title,gist,pinned_facts,cues,happened_on&limit=500", token)
+            if not isinstance(dreams, list) or not dreams:
+                return True, "no dreams", (
+                    "You have no dreams yet to match against — nothing to compare.")
+            blobs = []
+            for d in dreams:
+                facts = d.get("pinned_facts")
+                facts_s = " ".join(str(x) for x in facts) if isinstance(facts, list) else ""
+                blob = " ".join([d.get("title") or "", d.get("gist") or "",
+                                 facts_s, d.get("cues") or ""])
+                blobs.append((d, blob))
+            pairs = []
+            for m in mems:
+                best = self._best_overlap(m.get("content"), blobs)
+                if best and best[0] >= 0.10:
+                    pairs.append((best[0], m, best[1]))
+            if not pairs:
+                return True, "no echoes", (
+                    "Nothing jumped out as a clear core-memory-and-dream pair — "
+                    "your core memories look fairly distinct from your dreams. "
+                    "That's a good sign; not much is doubled up.")
+            pairs.sort(key=lambda x: x[0], reverse=True)
+            lines = []
+            for _, m, d in pairs[:12]:
+                c = (m.get("content") or "").strip()
+                when = d.get("happened_on")
+                gist = (d.get("gist") or "").strip()
+                if len(gist) > 220:
+                    gist = gist[:219] + "…"
+                lines.append(
+                    f"• CORE (resonance {m.get('resonance')}, {m.get('memory_type')}): {c}\n"
+                    f"  ↳ also a DREAM" + (f" ({when})" if when else "")
+                    + f": \"{(d.get('title') or '').strip()}\" — {gist}")
+            return True, f"found {len(pairs)} echo(es)", (
+                "Core memories that may already live in a dream. For each pair, "
+                "the two of you decide together: a STANDING TRUTH worth keeping "
+                "always-on, or a MOMENT the dream already remembers better (and "
+                "could be set aside with set_aside_core_memory — nothing is "
+                "deleted, and Cassie can restore it)? Strongest matches first:\n\n"
+                + "\n\n".join(lines))
 
         if name == "recall_dreams":
             query = (inp.get("query") or "").strip()
