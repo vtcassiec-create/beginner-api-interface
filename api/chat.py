@@ -140,6 +140,36 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 FALLBACK_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 4096
 THINKING_BUDGET = 4096
+
+# Per-1M-token list prices (USD), input/output. Cache rates are derived: an
+# ephemeral (5-minute) cache WRITE bills at 1.25x input, a cache READ at 0.10x.
+# Used only to log a per-turn cost breakdown so we can see which bucket grows
+# as a conversation lengthens — it never affects what's sent to the API.
+PRICING = {
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-opus-4-8": (5.00, 25.00),
+    "claude-opus-4-7": (5.00, 25.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+}
+
+
+def _usage_cost(agg, model):
+    """Return (total_usd, components_usd) for an aggregated usage dict.
+
+    components_usd breaks the spend into the four billable buckets so a creeping
+    per-turn cost can be attributed: a growing 'read' means the cached transcript
+    is lengthening (expected); a recurring 'write' on turn 2+ means the cache
+    prefix is being invalidated every turn (a bug worth chasing)."""
+    inp, out = PRICING.get(model, PRICING[DEFAULT_MODEL])
+    write_rate, read_rate = inp * 1.25, inp * 0.10
+    parts = {
+        "input": agg["input_tokens"] * inp,
+        "output": agg["output_tokens"] * out,
+        "cache_write": agg["cache_creation_input_tokens"] * write_rate,
+        "cache_read": agg["cache_read_input_tokens"] * read_rate,
+    }
+    parts = {k: v / 1_000_000 for k, v in parts.items()}
+    return sum(parts.values()), parts
 AUTH_TIMEOUT_SECONDS = 5
 MEMORY_TIMEOUT_SECONDS = 5
 # A heart-rate reading older than this is treated as stale (the band is likely
@@ -1003,6 +1033,25 @@ class handler(BaseHTTPRequestHandler):
                                    "text": "(He reached for the bridge but the turn "
                                            "came back empty — the connection likely "
                                            "blipped. Send again.)"})
+                    # Per-turn cost breakdown to the function log. Watch the
+                    # four token buckets across a conversation: 'read' rising
+                    # while 'write' stays ~0 is healthy caching of a growing
+                    # transcript; 'write' recurring every turn means the cached
+                    # prefix is being invalidated (system prompt changing per
+                    # turn, tool set varying, etc.) and is the thing to fix.
+                    total, parts = _usage_cost(agg, model)
+                    print(
+                        "[cost] model=%s total=$%.4f | "
+                        "in=%d out=%d cache_write=%d cache_read=%d | "
+                        "$in=%.4f $out=%.4f $write=%.4f $read=%.4f rounds=%d"
+                        % (model, total,
+                           agg["input_tokens"], agg["output_tokens"],
+                           agg["cache_creation_input_tokens"],
+                           agg["cache_read_input_tokens"],
+                           parts["input"], parts["output"],
+                           parts["cache_write"], parts["cache_read"], rounds),
+                        flush=True,
+                    )
                     self._sse({"type": "done",
                                "stop_reason": final.stop_reason, "usage": agg})
                     return
