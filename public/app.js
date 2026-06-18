@@ -4377,7 +4377,11 @@ function stopCoupling(reason) {
 // Safety: a hard time cap, a settable ceiling, an always-present Stop, and it
 // stills the device the moment it stops; closing the app ends it within seconds
 // (the loop dies → no more keep-alives → the bridge's own switch stops the toy).
-const HOLD_CHUNK_SECONDS = 6;     // each steady send covers about this much touch
+const HOLD_CHUNK_SECONDS = 8;     // each steady phrase the bridge plays
+const HOLD_RESEND_MS = 4000;      // re-send this often (measured start-to-start).
+                                  // Kept WELL under the chunk length so phrases
+                                  // overlap and the touch never seams open, no
+                                  // matter how slow the round-trip is.
 const HOLD_MAX_MINUTES = 20;      // hard session cap
 let hold = null;  // { target, ceiling, outputType, startedAt, rampFrom, rampAt, rampSecs, timer }
 
@@ -4422,6 +4426,7 @@ async function holdTick() {
     return stopHold("That's the time cap, love — eased off. ♡", true);
   }
   const inten = holdIntensityNow();
+  const started = Date.now();
   try {
     await touchApi([{ intensity: inten, seconds: HOLD_CHUNK_SECONDS }], hold.outputType);
   } catch (err) {
@@ -4429,8 +4434,12 @@ async function holdTick() {
   }
   if (!hold) return;  // stopped while the request was in flight
   holdIndicator(true, `Holding — ${Math.round(inten * 100)}%`);
-  // Re-send a beat before this chunk ends, so the touch stays seamless.
-  hold.timer = setTimeout(holdTick, (HOLD_CHUNK_SECONDS - 1.5) * 1000);
+  // Keep a fixed cadence measured from when the send STARTED (not after it
+  // returns), so a slow round-trip can't widen the seam — the next phrase is
+  // already overlapping the current one. If the send itself ate the interval,
+  // fire again right away; we awaited it, so sends never stack up.
+  const wait = Math.max(250, HOLD_RESEND_MS - (Date.now() - started));
+  hold.timer = setTimeout(holdTick, wait);
 }
 
 // Bring the running loop in line with whatever he just wrote to touch_session.
@@ -5574,6 +5583,12 @@ function wireApp() {
   const holdStop = $("hold-stop-btn");
   if (holdStop) holdStop.addEventListener("click", () => stopHold("Stopped. ♡", true));
   window.addEventListener("pagehide", () => { if (hold) stopHold(null, true); });
+  // Coming back to the app (its timers were throttled in the background): pick
+  // the loop straight back up so the touch resumes steady at once, not after a
+  // stale timer finally fires.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && hold) { clearTimeout(hold.timer); holdTick(); }
+  });
 
   $("nav-studio").addEventListener("click", openStudioDialog);
 
