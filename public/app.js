@@ -1395,6 +1395,20 @@ async function buildApiMessages(project, messages) {
   const out = [];
   for (const msg of messages) {
     if (msg.role !== "user") {
+      // If the API compacted on this turn, its summary block must be threaded
+      // back here — the API ignores everything before a compaction block, so
+      // this is what lets a long conversation keep running without re-sending
+      // (or re-summarizing) the whole transcript. Replay it ahead of his text.
+      // Defensive: only a well-formed block; otherwise fall back to plain text,
+      // so a malformed field can never break the turn.
+      if (msg.compaction && msg.compaction.type === "compaction"
+          && typeof msg.compaction.content === "string") {
+        out.push({
+          role: "assistant",
+          content: [msg.compaction, { type: "text", text: msg.text || "(no response)" }],
+        });
+        continue;
+      }
       // Defensive: Anthropic rejects empty/whitespace text. The cleanup pass
       // removes failed turns; if one slips through, use a real word.
       out.push({ role: "assistant", content: msg.text || "(no response)" });
@@ -1691,6 +1705,11 @@ async function generateAssistant() {
           applyManuscriptUpdate(event);
         } else if (event.type === "done") {
           assistantMsg.usage = event.usage;
+          // If the API compacted this turn, keep its summary block on this
+          // message so buildApiMessages can thread it back next turn (and the
+          // older history it folded isn't re-summarized from scratch). Persists
+          // via stripTransient (no leading underscore).
+          if (event.compaction) assistantMsg.compaction = event.compaction;
           // Let the typewriter drain any remaining buffer, then finalize.
           assistantMsg._streamDone = true;
           startTypewriter(assistantMsg);
