@@ -1709,7 +1709,12 @@ async function generateAssistant() {
           // message so buildApiMessages can thread it back next turn (and the
           // older history it folded isn't re-summarized from scratch). Persists
           // via stripTransient (no leading underscore).
-          if (event.compaction) assistantMsg.compaction = event.compaction;
+          if (event.compaction) {
+            assistantMsg.compaction = event.compaction;
+            // A gentle, persistent note pinned to the top of his reply (at: 0),
+            // so she can see the moment older turns were folded into memory.
+            assistantMsg.toolEvents.push({ compaction: true, at: 0 });
+          }
           // Let the typewriter drain any remaining buffer, then finalize.
           assistantMsg._streamDone = true;
           startTypewriter(assistantMsg);
@@ -2464,7 +2469,11 @@ function mkActionBtn(icon, title, onClick) {
 function toolEventChip(ev) {
   const note = document.createElement("div");
   note.className = "tool-event";
-  if (ev.notice) {
+  if (ev.compaction) {
+    note.textContent =
+      "💭 Earlier parts of this conversation were gently folded into memory, "
+      + "so you two can keep going without starting over.";
+  } else if (ev.notice) {
     note.textContent = `ℹ️ ${ev.text}`;
   } else if (ev.manuscript) {
     note.textContent = ev.ok
