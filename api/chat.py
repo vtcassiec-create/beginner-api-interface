@@ -1555,6 +1555,17 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             return "*— later —*"
 
+    def _diary_segments(self, content):
+        """Split one day's growing diary page into its parts — the first entry
+        and each '— later, ... —' addition — so a new addition can be checked
+        against what's already on TODAY's page, not just against whole past
+        entries. (A re-pasted paragraph is only a fraction of the whole page, so
+        a whole-page comparison alone scores too low to catch it.)"""
+        if not content:
+            return []
+        parts = re.split(r"(?m)^\s*\*[—–-]\s*later\b.*$", content)
+        return [p.strip() for p in parts if p and p.strip()]
+
     def _exec_memory_tool(self, name, inp, token, user_id, tz_name=None):
         """Run one self-authored-memory tool call against Supabase.
 
@@ -1706,15 +1717,22 @@ class handler(BaseHTTPRequestHandler):
                 "diary_entries?is_active=eq.true&select=id,content,created_at"
                 "&order=created_at.desc&limit=15", token)
             recent = recent if isinstance(recent, list) else []
-            if self._near_duplicate(
-                    content, [r.get("content") for r in recent], 0.93):
+            today_row = self._todays_diary_row(recent, tz_name)
+            # Near-duplicate guard. Compare the new text against each recent
+            # entry as a WHOLE, AND against the individual same-day segments of
+            # today's growing page — so a re-paste of a paragraph already on
+            # today's page is caught too (it's only a fraction of the whole page,
+            # so a whole-page comparison alone scores too low to notice it).
+            compare = [r.get("content") for r in recent]
+            if today_row:
+                compare.extend(self._diary_segments(today_row.get("content") or ""))
+            if self._near_duplicate(content, compare, 0.93):
                 return True, "already written", (
-                    "That's nearly word-for-word something already in your diary "
-                    "— no need to repeat it. If something NEW happened, write just "
-                    "the new part. ♡")
+                    "That's already on today's page, nearly word-for-word — no "
+                    "need to write it again. If something NEW happened since, add "
+                    "just the new part. ♡")
             # One growing page a day: if today's entry already exists (in her
             # local day), APPEND to it rather than starting a near-twin.
-            today_row = self._todays_diary_row(recent, tz_name)
             if today_row:
                 merged = ((today_row.get("content") or "").rstrip() + "\n\n"
                           + self._diary_divider(tz_name) + "\n\n" + content)
