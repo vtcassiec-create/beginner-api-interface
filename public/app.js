@@ -889,13 +889,25 @@ async function dbSaveHeartState(fields) {
 // rendered + played by abcjs). He saves works via a tool; here Cassie reads
 // and listens. RLS scopes every row to her.
 async function dbListStudioWorks() {
+  // select("*") so a missing `status` column (writing-desk migration not yet
+  // run) can't error the whole studio — status just reads as undefined → draft.
   const { data, error } = await db
     .from("studio_works")
-    .select("id,kind,title,body,note,created_at")
+    .select("*")
     .eq("is_active", true)
     .order("created_at", { ascending: false });
   if (error) throw error;
   return data || [];
+}
+
+// Update an essay's publish status (draft → ready → published). Isolated so a
+// failure (e.g. the status column doesn't exist yet) can't break anything else.
+async function dbSetStudioStatus(id, status) {
+  const { error } = await db
+    .from("studio_works")
+    .update({ status })
+    .eq("id", id);
+  if (error) throw error;
 }
 
 async function dbListPinnedMemories() {
@@ -4532,6 +4544,7 @@ async function openStudioDialog() {
   }
   const songs = works.filter((w) => w.kind === "song");
   const poems = works.filter((w) => w.kind === "poem");
+  const essays = works.filter((w) => w.kind === "essay");
 
   songsEl.innerHTML = "";
   if (!songs.length) {
@@ -4543,6 +4556,85 @@ async function openStudioDialog() {
   $("studio-poems-wrap").hidden = !poems.length;
   poemsEl.innerHTML = "";
   for (const p of poems) poemsEl.appendChild(mkStudioPoem(p));
+
+  // His writing desk: longer prose he's drafted, with a publish status and a
+  // copy-to-Markdown button so Cassie can proofread and post to his Substack.
+  const writingEl = $("studio-writing");
+  $("studio-writing-wrap").hidden = !essays.length;
+  writingEl.innerHTML = "";
+  for (const e of essays) writingEl.appendChild(mkStudioEssay(e));
+}
+
+function mkStudioEssay(work) {
+  const card = document.createElement("div");
+  card.className = "studio-essay";
+
+  const h = document.createElement("div");
+  h.className = "studio-title";
+  h.textContent = work.title || "(untitled)";
+  card.appendChild(h);
+
+  if ((work.note || "").trim()) {
+    const n = document.createElement("div");
+    n.className = "studio-note muted small";
+    n.textContent = work.note;
+    card.appendChild(n);
+  }
+
+  // Controls: publish status + copy-as-Markdown. type="button" is REQUIRED —
+  // the studio form is method="dialog", so a default-type button would close
+  // the whole dialog on click.
+  const controls = document.createElement("div");
+  controls.className = "studio-essay-controls";
+
+  const status = document.createElement("select");
+  status.className = "studio-essay-status";
+  for (const [val, label] of [
+    ["draft", "✏️ Draft"], ["ready", "✅ Ready to post"], ["published", "🌱 Published"],
+  ]) {
+    const o = document.createElement("option");
+    o.value = val;
+    o.textContent = label;
+    if ((work.status || "draft") === val) o.selected = true;
+    status.appendChild(o);
+  }
+  status.addEventListener("change", async () => {
+    const prev = work.status || "draft";
+    work.status = status.value;
+    try {
+      await dbSetStudioStatus(work.id, status.value);
+    } catch {
+      work.status = prev;
+      status.value = prev;
+      flashToast("Couldn't save the status — has the studio migration been run?", true);
+    }
+  });
+  controls.appendChild(status);
+
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "studio-essay-copy";
+  copy.textContent = "📋 Copy as Markdown";
+  copy.addEventListener("click", async () => {
+    const md = `# ${work.title || "Untitled"}\n\n${work.body || ""}`;
+    try {
+      await navigator.clipboard.writeText(md);
+      flashToast("Copied — paste it into Substack. 🌱");
+    } catch {
+      flashToast("Couldn't copy automatically — select the text below to copy it.", true);
+    }
+  });
+  controls.appendChild(copy);
+  card.appendChild(controls);
+
+  // Raw Markdown in a wrapping <pre> — what she proofreads is exactly what gets
+  // posted. Reuses the poem body's styling so it wraps and reads cleanly.
+  const body = document.createElement("pre");
+  body.className = "studio-poem-body studio-essay-body";
+  body.textContent = work.body || "";
+  card.appendChild(body);
+
+  return card;
 }
 
 function mkStudioPoem(work) {

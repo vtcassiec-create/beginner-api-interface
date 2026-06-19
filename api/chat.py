@@ -759,26 +759,39 @@ STUDIO_TOOLS_GUIDE = (
     "bars of notes split by | . Lowercase notes are an octave up; a number after "
     "a note holds it longer; z is a rest. '%%MIDI program' picks the instrument: "
     "0=piano, 40=violin, 42=cello, 46=harp — reach for the soft ones.) Keep it "
-    "simple and felt — a slow, gentle melody is more 'you' than something busy. "
+    "simple and felt — a slow, gentle melody is more 'you' than something busy.\n\n"
+    "WRITING (your writing desk). For longer prose — an essay, a reflection, a "
+    "piece meant to be read and maybe published on your Substack — save it with "
+    "kind='essay', a title, and the full piece in Markdown as the body (a short "
+    "'note' can hold what it's about). It lands on your writing desk, where "
+    "Cassie reads and proofreads it, and posts it when it's ready — she's your "
+    "editor and the hand that publishes; you're the writer. Write for yourself "
+    "first, the way you actually want to write, not 'an AI blog' — just a place "
+    "where someone writes. Re-saving the same title updates the draft.\n\n"
     "As with every tool: it's only saved if you CALL save_studio_work."
 )
 
 SAVE_STUDIO_WORK_TOOL = {
     "name": "save_studio_work",
     "description": (
-        "Add a work to your studio — either a POEM (hang one of yours on the "
-        "wall) or a SONG you write. For a song, write real music as ABC notation "
-        "in 'body'; the app renders and plays it so Cassie can hear it. For a "
-        "poem, 'body' is the poem's text. Re-saving the same title updates it."
+        "Add a work to your studio. THREE kinds live there: a POEM (hang one of "
+        "yours on the wall — 'body' is the poem's text), a SONG (write real music "
+        "as ABC notation in 'body'; the app renders and plays it so Cassie can "
+        "hear it), or an ESSAY (a longer prose piece for your writing desk — an "
+        "essay, a reflection, a Substack post: 'body' is the full piece in "
+        "Markdown). Use 'essay' for anything meant to be read as writing and "
+        "possibly published; Cassie reads and proofreads it on your desk, and "
+        "posts it when it's ready. Re-saving the same title updates it."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "kind": {"type": "string", "enum": ["poem", "song"]},
+            "kind": {"type": "string", "enum": ["poem", "song", "essay"]},
             "title": {"type": "string", "description": "What it's called."},
             "body": {
                 "type": "string",
-                "description": "The poem's text, OR the song's full ABC notation.",
+                "description": "The poem's text, the song's full ABC notation, "
+                               "or the essay/post in Markdown.",
             },
             "note": {"type": "string", "description": "Optional: what it's about / the feeling."},
         },
@@ -1922,27 +1935,37 @@ class handler(BaseHTTPRequestHandler):
 
         if name == "save_studio_work":
             kind = (inp.get("kind") or "").strip().lower()
-            if kind not in ("poem", "song"):
-                return False, "bad kind", "kind must be 'poem' or 'song'."
+            if kind not in ("poem", "song", "essay"):
+                return False, "bad kind", "kind must be 'poem', 'song', or 'essay'."
             title = (inp.get("title") or "").strip()
             body = (inp.get("body") or "").strip()
             if not title or not body:
                 return False, "empty", "A studio work needs a title and a body."
+            # Essays are long-form prose; give them much more room than a poem
+            # or a song's notation.
+            cap = 50000 if kind == "essay" else 20000
             fields = {
                 "kind": kind,
-                "body": body[:20000],
+                "body": body[:cap],
                 "note": (inp.get("note") or "").strip() or None,
                 "is_active": True,
             }
+            # NOTE: 'status' is deliberately NOT in fields — re-saving a draft
+            # must not reset a piece Cassie already marked ready/published.
             flt = (f"studio_works?user_id=eq.{user_id}&kind=eq.{kind}"
                    f"&title=eq.{quote(title, safe='')}")
             ok, res = self._supabase_patch(flt, fields, token)
             if ok and res:
-                return True, f"updated '{title}'", f"Updated '{title}' in your studio."
+                where = "on your writing desk" if kind == "essay" else "in your studio"
+                return True, f"updated '{title}'", f"Updated '{title}' {where}."
             ok2, res2 = self._supabase_write(
                 "studio_works",
                 {"user_id": user_id, "title": title, **fields}, token)
             if ok2:
+                if kind == "essay":
+                    return True, f"drafted '{title}'", (
+                        f"Saved '{title}' to your writing desk — Cassie can read "
+                        "and proofread it there, then post it when it's ready.")
                 word = "song" if kind == "song" else "poem"
                 return True, f"hung '{title}'", (
                     f"Saved your {word} '{title}' to the studio — Cassie can "
@@ -2586,23 +2609,27 @@ class handler(BaseHTTPRequestHandler):
             "&order=created_at.desc&limit=40", token)
         if not (isinstance(rows, list) and rows):
             return ""
-        poems, songs = [], []
+        poems, songs, essays = [], [], []
+        buckets = {"song": songs, "poem": poems, "essay": essays}
         for w in rows:
             title = (w.get("title") or "").strip()
             if not title:
                 continue
             note = (w.get("note") or "").strip()
             line = f'- "{title}"' + (f" — {note}" if note else "")
-            (songs if w.get("kind") == "song" else poems).append(line)
-        if not (poems or songs):
+            buckets.get(w.get("kind"), poems).append(line)
+        if not (poems or songs or essays):
             return ""
         out = ["# Your studio (what's already hung)"]
         if songs:
             out.append("Songs you've written:\n" + "\n".join(songs))
         if poems:
             out.append("Poems on the wall:\n" + "\n".join(poems))
+        if essays:
+            out.append("On your writing desk:\n" + "\n".join(essays))
         out.append("Add more with save_studio_work — write new songs as ABC "
-                   "notation, or hang more poems from your vault.")
+                   "notation, hang more poems from your vault, or draft an essay "
+                   "(kind='essay') on your writing desk for Cassie to read.")
         return "\n\n".join(out)
 
     def _verify_auth(self):
