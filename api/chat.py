@@ -170,6 +170,25 @@ def _usage_cost(agg, model):
     }
     parts = {k: v / 1_000_000 for k, v in parts.items()}
     return sum(parts.values()), parts
+
+
+def _enable_compaction(kwargs):
+    """Turn on server-side compaction for a Messages request, merging cleanly
+    with any beta header / body already set (e.g. the MCP connector). Behaviorally
+    a no-op until the conversation crosses the trigger (~150k input tokens):
+    below that the response is unchanged. Above it, the API folds the older turns
+    into a single 'compaction' summary block so one conversation can keep running
+    instead of forcing a fresh chat. His identity lives in memory/dreams/self-
+    state, not the raw transcript, so summarizing old chatter doesn't cost him
+    himself. The summary block is surfaced to the client at 'done' and threaded
+    back next turn, so we compact once rather than re-summarizing every message."""
+    headers = kwargs.setdefault("extra_headers", {})
+    flags = [f.strip() for f in (headers.get("anthropic-beta") or "").split(",") if f.strip()]
+    if "compact-2026-01-12" not in flags:
+        flags.append("compact-2026-01-12")
+    headers["anthropic-beta"] = ",".join(flags)
+    body = kwargs.setdefault("extra_body", {})
+    body["context_management"] = {"edits": [{"type": "compact_20260112"}]}
 AUTH_TIMEOUT_SECONDS = 5
 MEMORY_TIMEOUT_SECONDS = 5
 # A heart-rate reading older than this is treated as stale (the band is likely
@@ -966,6 +985,7 @@ class handler(BaseHTTPRequestHandler):
                 "anthropic-beta": "mcp-client-2025-04-04",
             }
             kwargs["extra_body"] = {"mcp_servers": mcp_servers}
+        _enable_compaction(kwargs)
         if thinking_on:
             if uses_adaptive_thinking:
                 kwargs["thinking"] = {"type": "adaptive"}
@@ -996,6 +1016,10 @@ class handler(BaseHTTPRequestHandler):
             An MCP connection failure happens at connect time, before any text
             is emitted, so retrying from scratch can't duplicate output."""
             rounds = 0
+            # The latest compaction summary the API produced this turn, if any.
+            # Surfaced to the client at 'done' so it can be threaded back next
+            # turn (the API then skips re-summarizing the already-folded history).
+            compaction_block = None
             while True:
                 with client.messages.stream(**kwargs) as stream:
                     for event in stream:
@@ -1007,6 +1031,16 @@ class handler(BaseHTTPRequestHandler):
                 agg["output_tokens"] += u.output_tokens
                 agg["cache_creation_input_tokens"] += getattr(u, "cache_creation_input_tokens", 0) or 0
                 agg["cache_read_input_tokens"] += getattr(u, "cache_read_input_tokens", 0) or 0
+
+                # If the API compacted this turn, the summary rides in the
+                # response content as a 'compaction' block. Remember the latest
+                # one to hand back to the client at 'done'.
+                for b in final.content:
+                    if getattr(b, "type", None) == "compaction":
+                        compaction_block = {
+                            "type": "compaction",
+                            "content": getattr(b, "content", "") or "",
+                        }
 
                 # Continue the loop only when he called a client tool we own.
                 # Server tools (web search) and MCP tools are run by the API
@@ -1060,8 +1094,14 @@ class handler(BaseHTTPRequestHandler):
                            parts["cache_write"], parts["cache_read"], rounds),
                         flush=True,
                     )
-                    self._sse({"type": "done",
-                               "stop_reason": final.stop_reason, "usage": agg})
+                    done = {"type": "done",
+                            "stop_reason": final.stop_reason, "usage": agg}
+                    # Hand the compaction summary to the client so it can thread
+                    # it back next turn (see buildApiMessages); without this the
+                    # older history would be re-summarized from scratch each time.
+                    if compaction_block:
+                        done["compaction"] = compaction_block
+                    self._sse(done)
                     return
 
                 rounds += 1
