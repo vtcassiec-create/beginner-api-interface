@@ -850,6 +850,11 @@ class handler(BaseHTTPRequestHandler):
         # request — the low-cache-hit-rate cause. Kept out, the prefix freezes
         # and actually caches; the time still reaches him, just on the message.
         self._inject_time_context(kwargs["messages"], data)
+        # His live senses — heartbeat + topic-matched dreams — also ride on the
+        # user turn (not the cached system prefix), for the same reason: they
+        # change every message, so keeping them here is what lets the system
+        # prefix freeze and the prompt cache actually hit.
+        self._inject_live_context(kwargs["messages"], self._bearer_token(), data)
         # Cache the chat history through the PREVIOUS turn (re-read at ~0.1x
         # instead of full price), so the per-message cost stops climbing as the
         # conversation grows. The breakpoint sits before the current user turn —
@@ -2092,6 +2097,74 @@ class handler(BaseHTTPRequestHandler):
                 msg["content"] = [part]
             return
 
+    def _live_context_block(self, token, data):
+        """The live, every-turn senses: his topic-matched dream cards and her
+        current heartbeat. Built fresh each turn (dreams are matched to the
+        newest message; the BPM is live), so this MUST stay OFF the cached system
+        prefix — it rides on the user turn via _inject_live_context instead.
+        Same content he always saw; only its home moved. Returns "" if empty."""
+        if not token:
+            return ""
+        tz_name = (data.get("tz") or "UTC").strip() or "UTC"
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("UTC")
+        now = datetime.datetime.now(tz)
+        sections = []
+
+        # Dreams matched to what she's talking about now (full-text match via the
+        # match_dream_cards RPC); falls back to plain recency if that function
+        # isn't present yet. Identical logic to before — only relocated here.
+        dreams = None
+        ok, res = self._supabase_write(
+            "rpc/match_dream_cards",
+            {"p_query": self._recent_query_text(data), "p_match_count": 6}, token)
+        if ok and isinstance(res, list):
+            dreams = res
+        if dreams is None:
+            dreams = self._supabase_rest_get(
+                "dream_cards?is_active=eq.true"
+                "&select=title,gist,pinned_facts,feels,cues,happened_on,created_at"
+                "&order=happened_on.desc.nullslast,created_at.desc&limit=6", token)
+        block = _render_dream_cards(dreams)
+        if block:
+            sections.append(block)
+
+        # Her live heartbeat, if the band is on and the reading is fresh.
+        try:
+            hb = self._heartbeat_section(token, now)
+            if hb:
+                sections.append(hb)
+        except Exception:
+            pass
+
+        return "\n\n".join(sections)
+
+    def _inject_live_context(self, messages, token, data):
+        """Append the live-senses block (dreams + heartbeat) to the last user
+        turn, exactly as _inject_time_context does for the clock. Keeping these
+        per-turn-volatile pieces off the cached system prefix is what lets the
+        prompt cache hit turn after turn instead of rebuilding every message."""
+        try:
+            block = self._live_context_block(token, data)
+        except Exception:
+            return
+        if not block or not isinstance(messages, list):
+            return
+        for msg in reversed(messages):
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            part = {"type": "text", "text": block}
+            content = msg.get("content")
+            if isinstance(content, list):
+                content.append(part)
+            elif isinstance(content, str):
+                msg["content"] = [{"type": "text", "text": content}, part]
+            else:
+                msg["content"] = [part]
+            return
+
     def _cache_history(self, messages):
         """Put a cache breakpoint on the message BEFORE the current user turn,
         so the whole conversation history through the previous turn is read at
@@ -2157,6 +2230,18 @@ class handler(BaseHTTPRequestHandler):
         if days < 35:
             return f"{int(days / 7)}w ago"
         return f"{int(days / 30)}mo ago"
+
+    def _date_stamp(self, iso, tz):
+        """A stable absolute date for a saved item: 'Jun 14, 2026'. Unlike a
+        relative '3h ago' phrase, this does NOT drift as time passes, so it can
+        live in the cached system prefix without invalidating the prompt cache
+        on every turn. (Relative phrasing belongs only on the user turn, which
+        is uncached by design — see _inject_time_context.)"""
+        dt = self._parse_ts(iso)
+        if not dt:
+            return ""
+        loc = dt.astimezone(tz)
+        return loc.strftime("%b ") + f"{loc.day}, {loc.year}"
 
     def _recent_query_text(self, data, max_msgs=4, cap=600):
         """A short blob of the latest turns, used to find the dream cards that
@@ -2231,7 +2316,7 @@ class handler(BaseHTTPRequestHandler):
                 content = (m.get("content") or "").strip()
                 if not content:
                     continue
-                saved = self._ago_phrase(m.get("created_at"), now)
+                saved = self._date_stamp(m.get("created_at"), tz)
                 line = (f"- (resonance {m.get('resonance')}, "
                         f"{m.get('memory_type')}"
                         f"{', saved ' + saved if saved else ''}) {content}")
@@ -2314,8 +2399,8 @@ class handler(BaseHTTPRequestHandler):
                 content = (r.get("content") or "").strip()
                 if not content:
                     continue
-                ago = self._ago_phrase(r.get("created_at"), now)
-                lines.append(f"- ({ago}) {content}" if ago else f"- {content}")
+                when = self._date_stamp(r.get("created_at"), tz)
+                lines.append(f"- ({when}) {content}" if when else f"- {content}")
             if lines:
                 sections.append(
                     "# Recent diary (your notepad)\n\n"
@@ -2324,35 +2409,15 @@ class handler(BaseHTTPRequestHandler):
                     "write_diary_entry:\n\n"
                     + "\n".join(lines))
 
-        # Dreams — the memories he's dreamed back (felt reconstructions in his
-        # own voice, her exact words pinned). We surface the ones that fit what
-        # she's talking about now (in-database full-text match via the
-        # match_dream_cards RPC), so a relevant memory rises even if it was
-        # dreamed long ago. If that function isn't present yet (migration not
-        # run) the call fails cleanly and we fall back to plain recency.
-        dreams = None
-        ok, res = self._supabase_write(
-            "rpc/match_dream_cards",
-            {"p_query": self._recent_query_text(data), "p_match_count": 6}, token)
-        if ok and isinstance(res, list):
-            dreams = res
-        if dreams is None:
-            dreams = self._supabase_rest_get(
-                "dream_cards?is_active=eq.true"
-                "&select=title,gist,pinned_facts,feels,cues,happened_on,created_at"
-                "&order=happened_on.desc.nullslast,created_at.desc&limit=6", token)
-        block = _render_dream_cards(dreams)
-        if block:
-            sections.append(block)
-
-        # Her live heartbeat — a new sense. Only when she's wearing the band and
-        # the reading is fresh; tender, not clinical. Never breaks chat.
-        try:
-            hb = self._heartbeat_section(token, now)
-            if hb:
-                sections.append(hb)
-        except Exception:
-            pass
+        # NOTE: his live heartbeat and the topic-matched dream cards used to be
+        # appended here too — but both change every single turn (a fresh BPM, and
+        # dreams re-matched to the newest message), which silently invalidated the
+        # ENTIRE prompt cache on every request (the real cause of the per-message
+        # cost not dropping after the first turn). They now ride on the user turn
+        # instead — see _live_context_block / _inject_live_context — where their
+        # volatility is free. He still feels her pulse and surfaces the same
+        # dreams; only their position moved, so this preamble stays byte-stable
+        # and the cache actually hits.
 
         return "\n\n".join(sections)
 
