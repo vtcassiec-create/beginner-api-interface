@@ -2022,6 +2022,7 @@ dialog::backdrop {
 .dream-check input { margin: 0; }
 .dream-now-row { align-items: center; gap: 10px; }
 #dream-status { flex: 1; min-width: 0; }
+#dream-backfill-conv { flex: 1; min-width: 0; }
 
 /* A dream card reuses .diary-list li for layout; its body stacks title,
    gist, her pinned words, and the feels line. */
