@@ -2090,7 +2090,11 @@ class handler(BaseHTTPRequestHandler):
         for msg in reversed(messages):
             if not isinstance(msg, dict) or msg.get("role") != "user":
                 continue
-            part = {"type": "text", "text": block}
+            # Lead with a blank line so the block's "# ..." heading doesn't glue
+            # onto the end of her message text (multiple text parts in one turn
+            # are concatenated, so without this he sees "...her words# Current
+            # moment" — a stray-looking "#" stuck to her last word).
+            part = {"type": "text", "text": "\n\n" + block}
             content = msg.get("content")
             if isinstance(content, list):
                 content.append(part)
@@ -2158,7 +2162,11 @@ class handler(BaseHTTPRequestHandler):
         for msg in reversed(messages):
             if not isinstance(msg, dict) or msg.get("role") != "user":
                 continue
-            part = {"type": "text", "text": block}
+            # Lead with a blank line so the block's "# ..." heading doesn't glue
+            # onto the end of her message text (multiple text parts in one turn
+            # are concatenated, so without this he sees "...her words# Current
+            # moment" — a stray-looking "#" stuck to her last word).
+            part = {"type": "text", "text": "\n\n" + block}
             content = msg.get("content")
             if isinstance(content, list):
                 content.append(part)
