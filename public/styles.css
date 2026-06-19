@@ -2088,7 +2088,7 @@ dialog::backdrop {
   margin: 2px 0 6px;
 }
 .studio-list { display: flex; flex-direction: column; gap: 14px; }
-.studio-song, .studio-poem {
+.studio-song, .studio-poem, .studio-essay {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 12px;
@@ -2104,6 +2104,27 @@ dialog::backdrop {
   line-height: 1.55;
   color: var(--text);
 }
+/* Writing desk: status + copy controls above each essay's body. */
+.studio-essay-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 4px 0 10px;
+}
+.studio-essay-status,
+.studio-essay-copy {
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.studio-essay-copy:hover { background: var(--border); }
+.studio-essay-body { margin-top: 4px; }
 .studio-score { overflow-x: auto; }
 /* abcjs draws the notation in black; recolour it to the theme's text colour so
    the staff and notes are visible on the dark theme too. */
