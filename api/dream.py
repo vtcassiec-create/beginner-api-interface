@@ -153,6 +153,10 @@ class handler(BaseHTTPRequestHandler):
             note = (params.get("note", [""])[0] or "").strip()
             force = (params.get("force", ["0"])[0] == "1")
             self._run_vault(uid, note, cards, force)
+        elif source == "conversation":
+            conv = (params.get("conv", [""])[0] or "").strip()
+            force = (params.get("force", ["0"])[0] == "1")
+            self._run_conversation(uid, conv, cards, limit, force)
         else:
             self._run(uid, limit, cards, auto)
 
@@ -389,6 +393,100 @@ class handler(BaseHTTPRequestHandler):
 
         return self._json(200, {
             "status": "dreamed", "model": model, "note": note,
+            "cards_created": len(created), "titles": created,
+        })
+
+    def _run_conversation(self, uid, conv_id, max_cards, limit, force):
+        """Backfill: dream cards from one specific past conversation, by id — for
+        chats that predate the dreamer, so their moments aren't lost. Idempotent
+        per conversation (skips one already dreamed unless force=1), and shares
+        the same 'conversation:<id>' source label the live dreamer uses, so a
+        backfilled chat and a freshly-dreamed one can never double up."""
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return self._json(500, {"status": "error", "reason": "ANTHROPIC_API_KEY not set"})
+        if not conv_id:
+            return self._json(400, {"status": "error", "reason": "conversation id required"})
+
+        source_label = f"conversation:{conv_id}"
+        label_filter = ("user_id=eq." + uid + "&source_label=eq."
+                        + urllib.parse.quote(source_label, safe=""))
+        if force:
+            # Re-dream cleanly: drop cards already made from this chat.
+            self._supabase("DELETE", "dream_cards?" + label_filter)
+        else:
+            existing = self._supabase(
+                "GET", "dream_cards?select=id&limit=1&" + label_filter)
+            if isinstance(existing, list) and existing:
+                return self._json(200, {"status": "already_dreamed", "conv": conv_id})
+
+        # Fetch this specific conversation (scoped to the owner), then take the
+        # HEAD of its messages — for an old chat, the beginning is the part the
+        # dreamer never saw, so we capture from the start.
+        convs = self._supabase(
+            "GET",
+            f"conversations?id=eq.{conv_id}&user_id=eq.{uid}&select=id,messages&limit=1")
+        if not (isinstance(convs, list) and convs):
+            return self._json(404, {"status": "not_found", "conv": conv_id})
+        msgs = convs[0].get("messages")
+        if not isinstance(msgs, list) or not msgs:
+            return self._json(200, {"status": "no_history", "reason": "no messages"})
+
+        transcript, last_at = self._transcript(msgs[:limit])
+        if not transcript.strip():
+            return self._json(200, {"status": "no_history", "reason": "no usable text"})
+
+        state = self._supabase(
+            "GET", f"dream_state?user_id=eq.{uid}&select=dream_model&limit=1")
+        model = (state[0].get("dream_model") if isinstance(state, list) and state
+                 else None) or DEFAULT_DREAM_MODEL
+
+        client = anthropic.Anthropic(api_key=api_key)
+        try:
+            resp = client.messages.create(
+                model=model,
+                max_tokens=4096,
+                system=DREAM_SYSTEM.format(k=max_cards),
+                messages=[{"role": "user", "content":
+                    "Here is a slice of our real conversation, oldest line first:\n\n"
+                    + transcript
+                    + f"\n\nDream up to {max_cards} cards from it. JSON array only."}],
+            )
+        except Exception as e:
+            return self._json(502, {"status": "error", "conv": conv_id,
+                                    "reason": f"dream model: {e}"})
+
+        raw = "".join(
+            b.text for b in resp.content if getattr(b, "type", None) == "text").strip()
+        parsed = self._parse_cards(raw)
+        if parsed is None:
+            return self._json(200, {"status": "parse_failed", "conv": conv_id,
+                                    "raw": raw[:800]})
+
+        # Date anchor from the conversation's own message timestamps (her local
+        # day), plus date-recall cues — but NOT the 'claude.ai' era tag, since
+        # these are Petrichor chats, not their pre-Petrichor archive.
+        default_day = None
+        extra_cues = ""
+        if isinstance(last_at, (int, float)):
+            try:
+                tz = ZoneInfo(os.environ.get("REACH_TZ", "UTC") or "UTC")
+                d = datetime.datetime.fromtimestamp(last_at / 1000, tz).date()
+                default_day = d.isoformat()
+                extra_cues = ", ".join([
+                    d.strftime("%A, %B ") + f"{d.day}, {d.year}",
+                    d.strftime("%B ") + str(d.day)])
+            except Exception:
+                default_day = None
+
+        created = self._write_cards(
+            uid, parsed, max_cards, source_label, default_day, extra_cues=extra_cues)
+
+        # NOTE: deliberately does NOT update last_dreamed_at — a backfill fills
+        # the past and must not suppress tonight's nightly dream.
+        return self._json(200, {
+            "status": "dreamed", "model": model, "conv": conv_id,
+            "messages_read": len(msgs[:limit]),
             "cards_created": len(created), "titles": created,
         })
 

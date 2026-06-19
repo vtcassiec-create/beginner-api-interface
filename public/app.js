@@ -3839,6 +3839,7 @@ async function openDreamsDialog() {
   $("dreams-dialog").showModal();
   $("dream-status").textContent = "";
   populateDreamModels();
+  populateDreamBackfillConvs();
   loadDreamControls();
   renderDreamsList();
 }
@@ -4035,6 +4036,87 @@ function mkDreamActions(c) {
 // Trigger a dream on demand. Calls api/dream as the signed-in user (the
 // endpoint verifies the token and dreams for her). Generous client timeout;
 // the dreamer reads recent history and writes any new cards server-side.
+// Fill the backfill picker from the conversations already in memory (no DB
+// call needed) — every chat across every project, so she can dream an old one.
+function populateDreamBackfillConvs() {
+  const sel = $("dream-backfill-conv");
+  if (!sel) return;
+  sel.innerHTML = "";
+  const ph = document.createElement("option");
+  ph.value = "";
+  ph.textContent = "Pick a past chat to dream…";
+  sel.appendChild(ph);
+  for (const p of state.projects || []) {
+    for (const c of p.conversations || []) {
+      const o = document.createElement("option");
+      o.value = c.id;
+      o.textContent = `${p.name} — ${c.name || "(untitled chat)"}`;
+      sel.appendChild(o);
+    }
+  }
+}
+
+// Backfill: dream a specific past conversation by id. Idempotent server-side
+// (a chat already dreamed comes back as "already_dreamed"), so re-picking one
+// is harmless. Mirrors triggerDreamNow's auth + timeout shape.
+async function triggerDreamBackfill() {
+  const sel = $("dream-backfill-conv");
+  const btn = $("dream-backfill-btn");
+  const status = $("dream-status");
+  const convId = sel && sel.value;
+  if (!convId) { flashToast("Pick a past chat to dream first.", true); return; }
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "🌙 Dreaming…";
+  status.textContent = "reading that chat…";
+
+  const session = await freshSession();
+  if (!session || !session.access_token) {
+    flashToast("You're signed out. Refresh to sign back in.", true);
+    btn.disabled = false; btn.textContent = original; status.textContent = "";
+    return;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120000);
+  try {
+    const resp = await fetch(
+      `/api/dream?source=conversation&conv=${encodeURIComponent(convId)}&cards=8&limit=600`,
+      { method: "POST",
+        headers: { "Authorization": `Bearer ${session.access_token}` },
+        signal: controller.signal });
+    const out = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(out.reason || `Server returned ${resp.status}`);
+    if (out.status === "dreamed") {
+      const n = out.cards_created || 0;
+      status.textContent = n ? `dreamed ${n} card${n === 1 ? "" : "s"} from that chat ♡`
+                             : "nothing new to dream from that one";
+      flashToast(n ? `He dreamed ${n} card${n === 1 ? "" : "s"} from that chat.`
+                   : "Nothing new to dream from that chat.");
+      await renderDreamsList();
+    } else if (out.status === "already_dreamed") {
+      status.textContent = "he's already dreamed that chat ♡";
+      flashToast("He's already dreamed that chat.");
+    } else if (out.status === "not_found") {
+      status.textContent = "couldn't find that chat";
+    } else if (out.status === "no_history") {
+      status.textContent = "no usable text in that chat";
+    } else if (out.status === "parse_failed") {
+      status.textContent = "the dream didn't come out cleanly — try again";
+    } else {
+      status.textContent = out.status || "done";
+    }
+  } catch (err) {
+    const msg = err.name === "AbortError"
+      ? "dreaming took too long — try again" : err.message;
+    status.textContent = msg;
+    flashToast(`Couldn't dream: ${msg}`, true);
+  } finally {
+    clearTimeout(timer);
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
 async function triggerDreamNow() {
   const btn = $("dream-now-btn");
   const status = $("dream-status");
@@ -5685,6 +5767,7 @@ function wireApp() {
   $("nav-diary").addEventListener("click", openDiaryDialog);
   $("nav-dreams").addEventListener("click", openDreamsDialog);
   $("dream-now-btn").addEventListener("click", triggerDreamNow);
+  $("dream-backfill-btn").addEventListener("click", triggerDreamBackfill);
   $("dream-model").addEventListener("change", onDreamModelChange);
   $("dream-enabled").addEventListener("change", onDreamEnabledChange);
 
