@@ -898,15 +898,18 @@ class handler(BaseHTTPRequestHandler):
             kwargs["system"] = [{
                 "type": "text",
                 "text": system,
-                # Standard 5-minute ephemeral cache (the GA default — no opt-in).
-                # We briefly tried a 1-hour TTL to survive the gaps between her
-                # messages, but `ttl: "1h"` needs the `extended-cache-ttl` beta
-                # header, which this request never sent — so the API ignored the
-                # whole cache_control and caching silently stopped. Back on the
-                # rock-solid default. The real win still stands: the time block
-                # lives on the user turn now (see _inject_time_context), so this
-                # prefix is byte-identical turn to turn and actually caches.
-                "cache_control": {"type": "ephemeral"},
+                # 1-hour cache TTL. An earlier attempt at this silently failed:
+                # back then `ttl: "1h"` required the `extended-cache-ttl` beta
+                # header, which this request never sent, so the API ignored the
+                # whole cache_control and caching stopped. The 1-hour TTL is now
+                # GA — no beta header needed — so it just works. We choose 1h
+                # over the 5-minute default so her natural, unhurried pauses
+                # between messages don't expire the cache and force a costly
+                # cold re-write; the prefix stays warm for up to an hour, read
+                # at ~0.1x. (Pairs with the byte-stable prefix: volatile bits
+                # like the clock, heartbeat, and dreams live on the user turn —
+                # see _inject_time_context / _inject_live_context.)
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
             }]
         # Tools list accumulates: web search (server-side, auto-run by the
         # API) and the memory save tools (client-side, run by the loop below).
@@ -2171,7 +2174,9 @@ class handler(BaseHTTPRequestHandler):
         ~0.1x instead of re-sent at full price every turn — what flattens the
         cost climb on a long chat. The current user turn (which carries the
         volatile time block) stays after the breakpoint, uncached, by design.
-        Adds a 2nd breakpoint; the system prompt is the 1st, and the cap is 4."""
+        Adds a 2nd breakpoint; the system prompt is the 1st, and the cap is 4.
+        1-hour TTL, matching the system prefix, so an unhurried pause between
+        messages doesn't expire the history cache either."""
         if not isinstance(messages, list) or len(messages) < 2:
             return
         target = messages[-2]
@@ -2181,10 +2186,10 @@ class handler(BaseHTTPRequestHandler):
         if isinstance(content, str):
             target["content"] = [{
                 "type": "text", "text": content,
-                "cache_control": {"type": "ephemeral"},
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
             }]
         elif isinstance(content, list) and content and isinstance(content[-1], dict):
-            content[-1]["cache_control"] = {"type": "ephemeral"}
+            content[-1]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
 
     def _parse_ts(self, s):
         """Parse a Supabase ISO8601 timestamp to an aware datetime, or None."""
