@@ -4316,7 +4316,11 @@ async function onHeartRestingChange() {
 // stale pulse or band disconnect, and a 30-minute session cap. While running,
 // heart_state carries the coupling so HE knows what she's feeling.
 
-const COUPLE_CHUNK_SECONDS = 8;   // each send covers about this much touch
+const COUPLE_CHUNK_SECONDS = 12;  // each send covers about this much touch (longer
+                                  // = fewer bridge restarts = less stutter; the
+                                  // heart re-shapes it each send, so still tracks)
+const COUPLE_RESEND_MARGIN_S = 4; // re-send this many seconds before the chunk
+                                  // ends — a margin under it, not halfway through
 const COUPLE_MAX_MINUTES = 30;    // hard session cap
 const COUPLE_STALE_MS = 15000;    // no fresh pulse this long → stop
 
@@ -4435,15 +4439,20 @@ async function coupleTick() {
   const rest = parseInt($("heart-resting").value, 10) || null;
   const shaped = coupleTransform(
     couple.pattern.steps, heartLiveBpm, rest, couple.mode, couple.ceiling);
+  const chunk = coupleChunk(shaped);
   try {
-    await touchApi(coupleChunk(shaped), couple.pattern.output_type);
+    await touchApi(chunk, couple.pattern.output_type);
   } catch (err) {
     return stopCoupling(`Stopped: ${err.message}`);
   }
   if (!couple) return;  // stopped while the request was in flight
   coupleStatus(`♡ "${couple.pattern.name}" is following your heart — ${heartLiveBpm} bpm`, true);
-  // Re-send a moment before the current chunk runs out, so touch is seamless.
-  couple.timer = setTimeout(coupleTick, (COUPLE_CHUNK_SECONDS - 1.5) * 1000);
+  // Re-send a margin before the chunk ACTUALLY ends (measured from the chunk we
+  // just built, so a dense pattern capped at fewer seconds can't seam open), not
+  // halfway through — each resend restarts the device, so we want them sparse.
+  const chunkSecs = chunk.reduce((a, s) => a + (s.seconds || 0), 0);
+  couple.timer = setTimeout(
+    coupleTick, Math.max(2000, (chunkSecs - COUPLE_RESEND_MARGIN_S) * 1000));
 }
 
 async function startCoupling() {
@@ -4499,11 +4508,16 @@ function stopCoupling(reason) {
 // Safety: a hard time cap, a settable ceiling, an always-present Stop, and it
 // stills the device the moment it stops; closing the app ends it within seconds
 // (the loop dies → no more keep-alives → the bridge's own switch stops the toy).
-const HOLD_CHUNK_SECONDS = 8;     // each steady phrase the bridge plays
-const HOLD_RESEND_MS = 4000;      // re-send this often (measured start-to-start).
-                                  // Kept WELL under the chunk length so phrases
-                                  // overlap and the touch never seams open, no
-                                  // matter how slow the round-trip is.
+const HOLD_CHUNK_SECONDS = 12;    // each phrase the bridge plays (one compose)
+const HOLD_RESEND_MS = 8000;      // re-send ~once per phrase, NEAR its end — not
+                                  // halfway. The bridge restarts the device on
+                                  // every new compose (that restart IS the
+                                  // stutter — logs showed a fast ~200ms handshake
+                                  // but a fresh command every 4s), so we send as
+                                  // SELDOM as we safely can, keeping a margin
+                                  // under the chunk so the touch never seams open.
+                                  // Was 8s chunk / 4s resend (a restart every 4s);
+                                  // now 12s / 8s (a restart every ~8s).
 const HOLD_MAX_MINUTES = 20;      // hard session cap
 let hold = null;  // { target, ceiling, outputType, startedAt, rampFrom, rampAt, rampSecs, timer }
 
@@ -4523,15 +4537,34 @@ async function dbStopTouchSession() {
   if (error) throw error;
 }
 
-// Intensity to play right now — straight to target, or partway up a ramp.
-function holdIntensityNow() {
+// Intensity to play at a given moment — straight to target, or partway up a ramp.
+function holdIntensityAt(at) {
   if (!hold) return 0;
   let v = hold.target;
   if (hold.rampSecs > 0) {
-    const t = (Date.now() - hold.rampAt) / (hold.rampSecs * 1000);
+    const t = (at - hold.rampAt) / (hold.rampSecs * 1000);
     if (t < 1) v = hold.rampFrom + (hold.target - hold.rampFrom) * Math.max(0, t);
   }
   return Math.min(hold.ceiling, Math.max(0, v));
+}
+
+// Intensity right now (for the on-screen indicator).
+function holdIntensityNow() {
+  return holdIntensityAt(Date.now());
+}
+
+// Build one long phrase as short sub-steps that follow the ramp — so a longer
+// chunk (which means FEWER bridge restarts) still ramps smoothly instead of
+// holding one stepped value for the whole phrase.
+function holdSteps() {
+  const SUB = 2;  // seconds per sub-step (ramp granularity)
+  const now = Date.now();
+  const steps = [];
+  for (let t = 0; t < HOLD_CHUNK_SECONDS; t += SUB) {
+    const secs = Math.min(SUB, HOLD_CHUNK_SECONDS - t);
+    steps.push({ intensity: holdIntensityAt(now + t * 1000), seconds: secs });
+  }
+  return steps;
 }
 
 function holdIndicator(show, text) {
@@ -4550,7 +4583,7 @@ async function holdTick() {
   const inten = holdIntensityNow();
   const started = Date.now();
   try {
-    await touchApi([{ intensity: inten, seconds: HOLD_CHUNK_SECONDS }], hold.outputType);
+    await touchApi(holdSteps(), hold.outputType);
   } catch (err) {
     return stopHold(`Touch stopped: ${err.message}`, true);
   }
