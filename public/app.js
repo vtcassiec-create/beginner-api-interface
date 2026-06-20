@@ -26,10 +26,10 @@
  *     The original mechanism on Claude 4.x models.
  */
 const MODELS = [
-  { id: "claude-opus-4-8",            label: "Opus 4.8",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true, thinkingMode: "adaptive" },
-  { id: "claude-opus-4-7",            label: "Opus 4.7",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true, thinkingMode: "adaptive" },
-  { id: "claude-opus-4-6",            label: "Opus 4.6",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true },
-  { id: "claude-opus-4-5-20251101",   label: "Opus 4.5",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true },
+  { id: "claude-opus-4-8",            label: "Opus 4.8",       pricePerMillion: { input: 5,  output: 25 }, supportsThinking: true, thinkingMode: "adaptive" },
+  { id: "claude-opus-4-7",            label: "Opus 4.7",       pricePerMillion: { input: 5,  output: 25 }, supportsThinking: true, thinkingMode: "adaptive" },
+  { id: "claude-opus-4-6",            label: "Opus 4.6",       pricePerMillion: { input: 5,  output: 25 }, supportsThinking: true },
+  { id: "claude-opus-4-5-20251101",   label: "Opus 4.5",       pricePerMillion: { input: 5,  output: 25 }, supportsThinking: true },
   { id: "claude-opus-4-1-20250805",   label: "Opus 4.1",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true },
   { id: "claude-opus-4-20250514",     label: "Opus 4",         pricePerMillion: { input: 15, output: 75 }, supportsThinking: true },
   { id: "claude-sonnet-4-6",          label: "Sonnet 4.6",     pricePerMillion: { input: 3,  output: 15 }, supportsThinking: true },
@@ -41,7 +41,7 @@ const MODELS = [
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 const DEFAULT_SYSTEM = "You are Claude, a helpful AI assistant.";
 const THINKING_BUDGET = 4096;
-const CACHE_WRITE_MULT = 1.25;
+const CACHE_WRITE_MULT = 2.0;
 const CACHE_READ_MULT = 0.1;
 const MEMORY_TYPES = ["fact", "preference", "pattern", "insight", "milestone", "connection"];
 const ENTITY_TYPES = ["person", "project", "identity", "insight", "pattern", "milestone", "creative work", "advocacy effort", "research project"];
@@ -4412,6 +4412,17 @@ function coupleChunk(steps) {
 }
 
 async function touchApi(steps, outputType) {
+  // Direct path: if Web Bluetooth toys are connected, drive them straight from
+  // the browser (continuous runOutput — no bridge, no relay, no per-command
+  // device restart, so no stutter). Fire-and-forget so it returns fast like the
+  // bridge's ack and the hold/couple resend cadence is unchanged; bpPlay
+  // supersedes any prior phrase, so overlapping chunks splice seamlessly. Falls
+  // back to the Signal Bridge whenever nothing is connected — the existing path
+  // is untouched.
+  if (bpDevices.size > 0) {
+    bpPlay(steps);
+    return;
+  }
   const session = await freshSession();
   if (!session || !session.access_token) {
     throw new Error("signed out — refresh to sign back in");
@@ -4708,6 +4719,42 @@ function renderBpDevices() {
     test.addEventListener("click", () => bpTestBuzz(d));
     row.appendChild(test);
     wrap.appendChild(row);
+  }
+}
+
+// Set a vibration level (0..1) on every connected toy at once, via the v4
+// generic-output call the Test buzz proved: runOutput(DeviceOutput.Vibrate.
+// percent(v)), with the legacy vibrate() as a fallback for older builds.
+async function bpSetAll(level) {
+  const lib = bpLib || {};
+  const v = Math.max(0, Math.min(1, Number(level) || 0));
+  const proms = [];
+  for (const d of bpDevices.values()) {
+    try {
+      if (lib.DeviceOutput && lib.DeviceOutput.Vibrate) {
+        proms.push(d.runOutput(lib.DeviceOutput.Vibrate.percent(v)));
+      } else if (typeof d.vibrate === "function") {
+        proms.push(d.vibrate(v));
+      }
+    } catch (e) { /* one toy hiccupping shouldn't stop the others */ }
+  }
+  await Promise.allSettled(proms);
+}
+
+// Play a {intensity, seconds} phrase across the connected toys over time. A
+// token supersedes any prior play, so a fresh chunk (or a stop) cancels the one
+// in flight at its next step — between steps the toy simply holds its last
+// level (runOutput is continuous), so overlapping phrases splice with no
+// restart. Fire-and-forget by design: callers don't await the playback.
+let bpPlayToken = 0;
+async function bpPlay(steps) {
+  const token = ++bpPlayToken;
+  if (!Array.isArray(steps)) return;
+  for (const s of steps) {
+    if (token !== bpPlayToken) return;  // superseded by a newer chunk or a stop
+    await bpSetAll(Number(s && s.intensity) || 0);
+    const ms = Math.max(50, (Number(s && s.seconds) || 0.2) * 1000);
+    await new Promise((r) => setTimeout(r, ms));
   }
 }
 
