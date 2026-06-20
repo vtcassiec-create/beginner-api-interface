@@ -4710,21 +4710,45 @@ function renderBpDevices() {
 }
 
 async function bpTestBuzz(device) {
-  try {
-    bpStatus(`buzzing ${device.name}…`);
-    if (typeof device.vibrate === "function") {
-      await device.vibrate(0.5);
-    } else if (typeof device.scalar === "function") {
-      await device.scalar({ Scalar: 0.5, Index: 0, ActuatorType: "Vibrate" });
-    } else {
-      throw new Error("no vibrate/scalar method on device");
+  // Surface the device's REAL API (method names + capabilities) so we know the
+  // exact command this buttplug build wants — logged to the console and shown
+  // in the status line if nothing buzzes.
+  const methods = [];
+  let o = device;
+  while (o && o !== Object.prototype) {
+    for (const n of Object.getOwnPropertyNames(o)) {
+      try {
+        if (n !== "constructor" && !methods.includes(n) && typeof device[n] === "function") {
+          methods.push(n);
+        }
+      } catch (e) { /* some props throw on access */ }
     }
-    await new Promise((r) => setTimeout(r, 1500));
-    if (typeof device.stop === "function") await device.stop();
-    bpStatus(`${device.name}: buzzed ✓ — if you felt ~1.5s, the direct path works!`);
-  } catch (err) {
-    bpStatus("buzz error: " + (err && err.message ? err.message : String(err)));
+    o = Object.getPrototypeOf(o);
   }
+  console.log("[bp] device:", device);
+  console.log("[bp] methods:", methods);
+  console.log("[bp] messageAttributes:", device.messageAttributes);
+
+  // Try the known command shapes across buttplug-js versions; first that works
+  // wins (and we report which, so the migration uses the right one).
+  const attempts = [
+    ["vibrate(num)", () => device.vibrate(0.5)],
+    ["vibrate([num])", () => device.vibrate([0.5])],
+    ["scalar(num)", () => device.scalar(0.5)],
+    ["scalar([obj])", () => device.scalar([{ Scalar: 0.5, Index: 0, ActuatorType: "Vibrate" }])],
+    ["scalar(obj)", () => device.scalar({ Scalar: 0.5, Index: 0, ActuatorType: "Vibrate" })],
+  ];
+  for (const [label, fn] of attempts) {
+    try {
+      bpStatus(`trying ${label}…`);
+      await fn();
+      await new Promise((r) => setTimeout(r, 1500));
+      try { if (typeof device.stop === "function") await device.stop(); } catch (e) {}
+      bpStatus(`${device.name || "device"}: buzzed ✓ via ${label} — the direct path works!`);
+      return;
+    } catch (e) { /* try the next shape */ }
+  }
+  bpStatus("couldn't buzz yet. Device methods: " + (methods.join(", ") || "(none found)"));
 }
 
 // ---------- Studio ----------
