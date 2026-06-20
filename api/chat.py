@@ -2422,10 +2422,16 @@ class handler(BaseHTTPRequestHandler):
         # DB; treated as False so this never breaks.
         mems = self._supabase_rpc("surface_core_memories", token)
         if mems:
-            # Re-sort defensively in case the order is ignored: pinned first.
+            # Re-sort defensively in case the order is ignored: pinned first,
+            # then resonance. The trailing created_at is an IMMUTABLE tiebreaker
+            # so memories of equal resonance always render in the same order —
+            # without it, the surface_count this RPC bumps can shuffle equal-
+            # resonance rows between turns, changing the prompt bytes and cold-
+            # busting the cache (a 24c full re-write) even with nothing saved.
             mems = sorted(
                 mems,
-                key=lambda m: (bool(m.get("pinned")), m.get("resonance") or 0),
+                key=lambda m: (bool(m.get("pinned")), m.get("resonance") or 0,
+                               str(m.get("created_at") or "")),
                 reverse=True)
             eternal, shared = [], []
             for m in mems:
@@ -2459,6 +2465,12 @@ class handler(BaseHTTPRequestHandler):
         # access_count on exactly those.
         ents = self._supabase_rpc("surface_memory_entities", token)
         if ents:
+            # Render in a fixed, immutable order (by name) so the access_count
+            # this RPC bumps can't reorder this block between turns. It's sorted
+            # ONLY by access_count server-side, with no stable tiebreaker, so
+            # the bumped counts reshuffle it turn to turn — the structural cache
+            # miss behind the ~24c "every other message" turns.
+            ents = sorted(ents, key=lambda e: (e.get("name") or ""))
             lines = []
             for e in ents:
                 obs = e.get("observations") or []
