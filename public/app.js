@@ -4646,6 +4646,7 @@ async function stopHold(reason, writeRow) {
 // hold or coupling currently work. This is a spike to prove the direct path
 // before we migrate the loops to it (and retire the droplet).
 let bpClient = null;
+let bpLib = null;              // the buttplug module (for OutputType / DeviceOutput)
 const bpDevices = new Map();   // device.index -> ButtplugClientDevice
 
 function bpStatus(text) {
@@ -4666,6 +4667,7 @@ async function bpConnect() {
     // engine straight from a CDN as ES modules.
     const buttplug = await import("https://esm.sh/buttplug");
     const wasm = await import("https://esm.sh/buttplug-wasm");
+    bpLib = buttplug;  // keep the module so Test buzz can build output commands
 
     if (!bpClient) {
       bpStatus("starting the engine…");
@@ -4729,15 +4731,27 @@ async function bpTestBuzz(device) {
   console.log("[bp] methods:", methods);
   console.log("[bp] messageAttributes:", device.messageAttributes);
 
-  // Try the known command shapes across buttplug-js versions; first that works
-  // wins (and we report which, so the migration uses the right one).
-  const attempts = [
+  // This buttplug build uses the v4 generic-output API (runOutput + a
+  // DeviceOutputCommand), not the old vibrate()/scalar() — so lead with that,
+  // then fall back to the legacy shapes for older builds. First that works
+  // wins, and we report which, so the migration uses the right call.
+  const lib = bpLib || {};
+  const attempts = [];
+  if (lib.DeviceOutput && lib.DeviceOutput.Vibrate) {
+    attempts.push(["runOutput(DeviceOutput.Vibrate.percent)",
+      () => device.runOutput(lib.DeviceOutput.Vibrate.percent(0.5))]);
+  }
+  if (lib.DeviceOutputCommand && lib.OutputType) {
+    attempts.push(["runOutput(createPercent Vibrate)",
+      () => device.runOutput(lib.DeviceOutputCommand.createPercent(lib.OutputType.Vibrate, 0.5))]);
+  }
+  attempts.push(
     ["vibrate(num)", () => device.vibrate(0.5)],
     ["vibrate([num])", () => device.vibrate([0.5])],
     ["scalar(num)", () => device.scalar(0.5)],
     ["scalar([obj])", () => device.scalar([{ Scalar: 0.5, Index: 0, ActuatorType: "Vibrate" }])],
     ["scalar(obj)", () => device.scalar({ Scalar: 0.5, Index: 0, ActuatorType: "Vibrate" })],
-  ];
+  );
   for (const [label, fn] of attempts) {
     try {
       bpStatus(`trying ${label}…`);

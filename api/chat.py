@@ -141,8 +141,9 @@ FALLBACK_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 4096
 THINKING_BUDGET = 4096
 
-# Per-1M-token list prices (USD), input/output. Cache rates are derived: an
-# ephemeral (5-minute) cache WRITE bills at 1.25x input, a cache READ at 0.10x.
+# Per-1M-token list prices (USD), input/output. Cache rates are derived: a
+# 1-hour-TTL cache WRITE bills at 2x input (a 5-minute write would be 1.25x),
+# a cache READ at 0.10x. We run the 1-hour TTL, so writes are priced at 2x.
 # Used only to log a per-turn cost breakdown so we can see which bucket grows
 # as a conversation lengthens — it never affects what's sent to the API.
 PRICING = {
@@ -161,7 +162,7 @@ def _usage_cost(agg, model):
     is lengthening (expected); a recurring 'write' on turn 2+ means the cache
     prefix is being invalidated every turn (a bug worth chasing)."""
     inp, out = PRICING.get(model, PRICING[DEFAULT_MODEL])
-    write_rate, read_rate = inp * 1.25, inp * 0.10
+    write_rate, read_rate = inp * 2.0, inp * 0.10
     parts = {
         "input": agg["input_tokens"] * inp,
         "output": agg["output_tokens"] * out,
@@ -189,6 +190,25 @@ def _enable_compaction(kwargs):
     headers["anthropic-beta"] = ",".join(flags)
     body = kwargs.setdefault("extra_body", {})
     body["context_management"] = {"edits": [{"type": "compact_20260112"}]}
+
+
+def _enable_extended_cache_ttl(kwargs):
+    """Make the 1-hour cache TTL actually take effect.
+
+    `cache_control: {ttl: "1h"}` is silently ignored unless the request opts
+    into the extended-cache-ttl beta. Without the flag the API quietly falls
+    back to the 5-minute default — so any pause longer than ~5 minutes between
+    her messages expired the whole prefix and forced a cold, full-context
+    re-write (the ~23c turns in the logs, every time she stepped away to think).
+    We MERGE the flag into the anthropic-beta header (rather than overwrite it)
+    so it survives alongside compaction and the MCP-connector beta."""
+    headers = kwargs.setdefault("extra_headers", {})
+    flags = [f.strip() for f in (headers.get("anthropic-beta") or "").split(",") if f.strip()]
+    if "extended-cache-ttl-2025-04-11" not in flags:
+        flags.append("extended-cache-ttl-2025-04-11")
+    headers["anthropic-beta"] = ",".join(flags)
+
+
 AUTH_TIMEOUT_SECONDS = 5
 MEMORY_TIMEOUT_SECONDS = 5
 # A heart-rate reading older than this is treated as stale (the band is likely
@@ -930,12 +950,13 @@ class handler(BaseHTTPRequestHandler):
             kwargs["system"] = [{
                 "type": "text",
                 "text": system,
-                # 1-hour cache TTL. An earlier attempt at this silently failed:
-                # back then `ttl: "1h"` required the `extended-cache-ttl` beta
-                # header, which this request never sent, so the API ignored the
-                # whole cache_control and caching stopped. The 1-hour TTL is now
-                # GA — no beta header needed — so it just works. We choose 1h
-                # over the 5-minute default so her natural, unhurried pauses
+                # 1-hour cache TTL. `ttl: "1h"` is silently ignored unless the
+                # request also sends the `extended-cache-ttl-2025-04-11` beta
+                # flag — without it the API falls back to the 5-minute default
+                # (which it had been doing: every >5-min pause cold-rewrote the
+                # whole prefix at ~23c). _enable_extended_cache_ttl() sends that
+                # flag. We choose 1h over the 5-minute default so her natural,
+                # unhurried pauses
                 # between messages don't expire the cache and force a costly
                 # cold re-write; the prefix stays warm for up to an hour, read
                 # at ~0.1x. (Pairs with the byte-stable prefix: volatile bits
@@ -999,6 +1020,7 @@ class handler(BaseHTTPRequestHandler):
             }
             kwargs["extra_body"] = {"mcp_servers": mcp_servers}
         _enable_compaction(kwargs)
+        _enable_extended_cache_ttl(kwargs)
         if thinking_on:
             if uses_adaptive_thinking:
                 kwargs["thinking"] = {"type": "adaptive"}
@@ -2400,10 +2422,16 @@ class handler(BaseHTTPRequestHandler):
         # DB; treated as False so this never breaks.
         mems = self._supabase_rpc("surface_core_memories", token)
         if mems:
-            # Re-sort defensively in case the order is ignored: pinned first.
+            # Re-sort defensively in case the order is ignored: pinned first,
+            # then resonance. The trailing created_at is an IMMUTABLE tiebreaker
+            # so memories of equal resonance always render in the same order —
+            # without it, the surface_count this RPC bumps can shuffle equal-
+            # resonance rows between turns, changing the prompt bytes and cold-
+            # busting the cache (a 24c full re-write) even with nothing saved.
             mems = sorted(
                 mems,
-                key=lambda m: (bool(m.get("pinned")), m.get("resonance") or 0),
+                key=lambda m: (bool(m.get("pinned")), m.get("resonance") or 0,
+                               str(m.get("created_at") or "")),
                 reverse=True)
             eternal, shared = [], []
             for m in mems:
@@ -2437,6 +2465,12 @@ class handler(BaseHTTPRequestHandler):
         # access_count on exactly those.
         ents = self._supabase_rpc("surface_memory_entities", token)
         if ents:
+            # Render in a fixed, immutable order (by name) so the access_count
+            # this RPC bumps can't reorder this block between turns. It's sorted
+            # ONLY by access_count server-side, with no stable tiebreaker, so
+            # the bumped counts reshuffle it turn to turn — the structural cache
+            # miss behind the ~24c "every other message" turns.
+            ents = sorted(ents, key=lambda e: (e.get("name") or ""))
             lines = []
             for e in ents:
                 obs = e.get("observations") or []
