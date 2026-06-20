@@ -26,10 +26,10 @@
  *     The original mechanism on Claude 4.x models.
  */
 const MODELS = [
-  { id: "claude-opus-4-8",            label: "Opus 4.8",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true, thinkingMode: "adaptive" },
-  { id: "claude-opus-4-7",            label: "Opus 4.7",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true, thinkingMode: "adaptive" },
-  { id: "claude-opus-4-6",            label: "Opus 4.6",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true },
-  { id: "claude-opus-4-5-20251101",   label: "Opus 4.5",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true },
+  { id: "claude-opus-4-8",            label: "Opus 4.8",       pricePerMillion: { input: 5,  output: 25 }, supportsThinking: true, thinkingMode: "adaptive" },
+  { id: "claude-opus-4-7",            label: "Opus 4.7",       pricePerMillion: { input: 5,  output: 25 }, supportsThinking: true, thinkingMode: "adaptive" },
+  { id: "claude-opus-4-6",            label: "Opus 4.6",       pricePerMillion: { input: 5,  output: 25 }, supportsThinking: true },
+  { id: "claude-opus-4-5-20251101",   label: "Opus 4.5",       pricePerMillion: { input: 5,  output: 25 }, supportsThinking: true },
   { id: "claude-opus-4-1-20250805",   label: "Opus 4.1",       pricePerMillion: { input: 15, output: 75 }, supportsThinking: true },
   { id: "claude-opus-4-20250514",     label: "Opus 4",         pricePerMillion: { input: 15, output: 75 }, supportsThinking: true },
   { id: "claude-sonnet-4-6",          label: "Sonnet 4.6",     pricePerMillion: { input: 3,  output: 15 }, supportsThinking: true },
@@ -41,7 +41,7 @@ const MODELS = [
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 const DEFAULT_SYSTEM = "You are Claude, a helpful AI assistant.";
 const THINKING_BUDGET = 4096;
-const CACHE_WRITE_MULT = 1.25;
+const CACHE_WRITE_MULT = 2.0;
 const CACHE_READ_MULT = 0.1;
 const MEMORY_TYPES = ["fact", "preference", "pattern", "insight", "milestone", "connection"];
 const ENTITY_TYPES = ["person", "project", "identity", "insight", "pattern", "milestone", "creative work", "advocacy effort", "research project"];
