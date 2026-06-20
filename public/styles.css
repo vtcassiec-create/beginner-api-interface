@@ -2020,6 +2020,8 @@ dialog::backdrop {
   cursor: pointer;
 }
 .dream-check input { margin: 0; }
+.bp-devices { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+.bp-device { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .dream-now-row { align-items: center; gap: 10px; }
 #dream-status { flex: 1; min-width: 0; }
 #dream-backfill-conv { flex: 1; min-width: 0; }

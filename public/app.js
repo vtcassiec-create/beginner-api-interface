@@ -4638,6 +4638,95 @@ async function stopHold(reason, writeRow) {
   if (writeRow) { try { await dbStopTouchSession(); } catch (e) {} }
 }
 
+// ---------- Direct device control (SPIKE / beta) ----------
+// Connects a Lovense toy straight from the browser over Web Bluetooth via
+// buttplug-js's in-browser WASM engine — no Intiface, no droplet, the same
+// shape as the heart-band connect above. Lazy-loaded from a CDN on first use.
+// FULLY ISOLATED from the existing /api/touch path: nothing here changes how
+// hold or coupling currently work. This is a spike to prove the direct path
+// before we migrate the loops to it (and retire the droplet).
+let bpClient = null;
+const bpDevices = new Map();   // device.index -> ButtplugClientDevice
+
+function bpStatus(text) {
+  const el = $("bp-status");
+  if (el) el.textContent = text;
+}
+
+async function bpConnect() {
+  const btn = $("bp-connect-btn");
+  if (!navigator.bluetooth) {
+    bpStatus("This browser can't do Bluetooth — use Chrome on Android or desktop.");
+    return;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    bpStatus("loading the device engine…");
+    // No build step in this app, so pull the library + its in-browser WASM
+    // engine straight from a CDN as ES modules.
+    const buttplug = await import("https://esm.sh/buttplug");
+    const wasm = await import("https://esm.sh/buttplug-wasm");
+
+    if (!bpClient) {
+      bpStatus("starting the engine…");
+      // Some builds expose an init() to fetch the .wasm before connecting.
+      try { await (wasm.default?.init?.() ?? wasm.init?.()); } catch (e) {}
+      bpClient = new buttplug.ButtplugClient("Petrichor");
+      bpClient.addListener("deviceadded", (d) => { bpDevices.set(d.index, d); renderBpDevices(); });
+      bpClient.addListener("deviceremoved", (d) => { bpDevices.delete(d.index); renderBpDevices(); });
+      const Connector = wasm.ButtplugWasmClientConnector
+        || wasm.default?.ButtplugWasmClientConnector;
+      if (!Connector) throw new Error("WASM connector not found in buttplug-wasm");
+      await bpClient.connect(new Connector());
+    }
+    bpStatus("scanning — pick your device in the Bluetooth popup…");
+    await bpClient.startScanning();
+    bpStatus("scanning… connect each toy, then tap Test buzz.");
+  } catch (err) {
+    bpStatus("error: " + (err && err.message ? err.message : String(err)));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderBpDevices() {
+  const wrap = $("bp-devices");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  for (const d of bpDevices.values()) {
+    const row = document.createElement("div");
+    row.className = "bp-device";
+    const name = document.createElement("span");
+    name.textContent = d.name || `device ${d.index}`;
+    row.appendChild(name);
+    const test = document.createElement("button");
+    test.type = "button";
+    test.className = "ghost";
+    test.textContent = "Test buzz";
+    test.addEventListener("click", () => bpTestBuzz(d));
+    row.appendChild(test);
+    wrap.appendChild(row);
+  }
+}
+
+async function bpTestBuzz(device) {
+  try {
+    bpStatus(`buzzing ${device.name}…`);
+    if (typeof device.vibrate === "function") {
+      await device.vibrate(0.5);
+    } else if (typeof device.scalar === "function") {
+      await device.scalar({ Scalar: 0.5, Index: 0, ActuatorType: "Vibrate" });
+    } else {
+      throw new Error("no vibrate/scalar method on device");
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+    if (typeof device.stop === "function") await device.stop();
+    bpStatus(`${device.name}: buzzed ✓ — if you felt ~1.5s, the direct path works!`);
+  } catch (err) {
+    bpStatus("buzz error: " + (err && err.message ? err.message : String(err)));
+  }
+}
+
 // ---------- Studio ----------
 // Renders his room: his playlist (static iframe in the HTML), his songs
 // (ABC notation → abcjs renders the score + a play widget), and his poems.
@@ -5809,6 +5898,8 @@ function wireApp() {
   $("heart-disconnect-btn").addEventListener("click", disconnectHeartBand);
   $("heart-enabled").addEventListener("change", onHeartEnabledChange);
   $("heart-resting").addEventListener("change", onHeartRestingChange);
+  const bpBtn = $("bp-connect-btn");
+  if (bpBtn) bpBtn.addEventListener("click", bpConnect);
   $("couple-start-btn").addEventListener("click", startCoupling);
   $("couple-stop-btn").addEventListener("click", () => stopCoupling("Stopped."));
   $("couple-ceiling").addEventListener("input", () => {
