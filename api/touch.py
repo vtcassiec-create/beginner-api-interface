@@ -33,6 +33,7 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlsplit
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 
@@ -117,8 +118,14 @@ class handler(BaseHTTPRequestHandler):
     def _bridge_compose(self, url, token, steps, output_type):
         """Initialize an MCP session against the bridge and call `compose`.
         A fresh short-lived session per request keeps this stateless (Vercel
-        functions share nothing between invocations anyway)."""
+        functions share nothing between invocations anyway).
+
+        Times each phase and logs a [touch] line: when this handshake takes
+        longer than the loop's overlap margin, chunks land late and the touch
+        stutters at the seams — so this is how we see whether the seam is a
+        latency gap (and which phase costs the most)."""
         session_id = None
+        t0 = time.monotonic()
 
         init = self._mcp_post(url, token, session_id, {
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -131,6 +138,7 @@ class handler(BaseHTTPRequestHandler):
         session_id = init.get("_session_id") or session_id
         if "error" in init:
             raise _BridgeError(f"initialize: {init['error'].get('message', 'failed')}")
+        t_init = time.monotonic()
 
         # The initialized notification (no id, no response expected).
         try:
@@ -139,6 +147,7 @@ class handler(BaseHTTPRequestHandler):
             }, expect_response=False)
         except Exception:
             pass  # some servers don't care; the call below is the real test
+        t_note = time.monotonic()
 
         result = self._mcp_post(url, token, session_id, {
             "jsonrpc": "2.0", "id": 2, "method": "tools/call",
@@ -147,6 +156,15 @@ class handler(BaseHTTPRequestHandler):
                 "arguments": {"steps": steps, "output_type": output_type},
             },
         })
+        t_done = time.monotonic()
+        chunk_s = sum(float(s.get("seconds", 0) or 0) for s in steps)
+        print(
+            "[touch] bridge_ms=%d (init=%d note=%d compose=%d) chunk_s=%.1f steps=%d out=%s"
+            % ((t_done - t0) * 1000, (t_init - t0) * 1000,
+               (t_note - t_init) * 1000, (t_done - t_note) * 1000,
+               chunk_s, len(steps), output_type),
+            flush=True,
+        )
         if "error" in result:
             raise _BridgeError(f"compose: {result['error'].get('message', 'failed')}")
         res = result.get("result") or {}
