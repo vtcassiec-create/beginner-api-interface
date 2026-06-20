@@ -4316,10 +4316,10 @@ async function onHeartRestingChange() {
 // stale pulse or band disconnect, and a 30-minute session cap. While running,
 // heart_state carries the coupling so HE knows what she's feeling.
 
-const COUPLE_CHUNK_SECONDS = 12;  // each send covers about this much touch (longer
+const COUPLE_CHUNK_SECONDS = 18;  // each send covers about this much touch (longer
                                   // = fewer bridge restarts = less stutter; the
                                   // heart re-shapes it each send, so still tracks)
-const COUPLE_RESEND_MARGIN_S = 4; // re-send this many seconds before the chunk
+const COUPLE_RESEND_MARGIN_S = 5; // re-send this many seconds before the chunk
                                   // ends — a margin under it, not halfway through
 const COUPLE_MAX_MINUTES = 30;    // hard session cap
 const COUPLE_STALE_MS = 15000;    // no fresh pulse this long → stop
@@ -4508,8 +4508,8 @@ function stopCoupling(reason) {
 // Safety: a hard time cap, a settable ceiling, an always-present Stop, and it
 // stills the device the moment it stops; closing the app ends it within seconds
 // (the loop dies → no more keep-alives → the bridge's own switch stops the toy).
-const HOLD_CHUNK_SECONDS = 12;    // each phrase the bridge plays (one compose)
-const HOLD_RESEND_MS = 8000;      // re-send ~once per phrase, NEAR its end — not
+const HOLD_CHUNK_SECONDS = 18;    // each phrase the bridge plays (one compose)
+const HOLD_RESEND_MS = 13000;     // re-send ~once per phrase, NEAR its end — not
                                   // halfway. The bridge restarts the device on
                                   // every new compose (that restart IS the
                                   // stutter — logs showed a fast ~200ms handshake
