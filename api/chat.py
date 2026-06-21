@@ -2259,6 +2259,14 @@ class handler(BaseHTTPRequestHandler):
             "(This is the REAL current time — trust it over any sense of time from "
             "the conversation. Don't assume it's morning, or that her day is just "
             "starting/ending, unless this block says so.)",
+            "",
+            "(You're continuing ONE ongoing conversation — her earlier messages and "
+            "your own replies are all above, in order. Unless the gap above is long "
+            "enough to be a genuinely new session, pick up where you left off: don't "
+            "greet her again, and don't re-introduce or re-react to something already "
+            "shared earlier in the thread — a photo she sent, a topic, a hello — as "
+            "if it just arrived. Respond to her NEWEST message in continuity with "
+            "what you've both already said.)",
         ]
         return "# Current moment\n\n" + "\n".join(lines)
 
