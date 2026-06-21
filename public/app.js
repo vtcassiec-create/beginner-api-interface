@@ -1699,6 +1699,18 @@ async function generateAssistant() {
           // He drove the toy: start/adjust/stop the hands-free hold loop to
           // match what he just wrote to touch_session.
           if (event.tool === "hold_touch") reconcileHold();
+        } else if (event.type === "compose") {
+          // He composed a phrase in the moment — play it straight to her toys
+          // over the direct connection (touchApi falls back to the bridge if
+          // none are connected). Show it inline like the other tool actions.
+          assistantMsg.toolEvents.push({
+            name: "compose_touch", touch: true, summary: event.summary || "a phrase of touch",
+            at: assistantMsg.text.length,
+          });
+          updateAssistantBubble(assistantMsg);
+          if (Array.isArray(event.steps) && event.steps.length) {
+            touchApi(event.steps, event.output_type || "vibrate").catch(() => {});
+          }
         } else if (event.type === "manuscript_suggestion") {
           // He proposed an edit — it's pending your review in the Manuscript.
           assistantMsg.toolEvents.push({
@@ -2509,6 +2521,8 @@ function toolEventChip(ev) {
     } else {
       note.textContent = `⚠️ ${label.replace("🪶 ", "")} didn't take: ${ev.summary}`;
     }
+  } else if (ev.touch) {
+    note.textContent = `🌊 ${ev.summary || "A phrase of touch"}`;
   } else if (isVaultTool(ev.name)) {
     return vaultToolChip(ev);
   } else {

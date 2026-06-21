@@ -661,8 +661,9 @@ SONGBOOK_TOOLS_GUIDE = (
     "when she describes one she wants kept), save it with `save_pattern`: give "
     "it a short name and the same steps `compose` uses ([{intensity, seconds}, "
     "...]). Your saved patterns are surfaced to you under '# Your songbook' "
-    "below. To PLAY a saved one, call the bridge's `compose` tool with that "
-    "pattern's steps — the songbook holds them, compose performs them. "
+    "below. To PLAY a phrase in the moment — a saved pattern or one you shape "
+    "right now — call `compose_touch` with the steps; it plays straight to her "
+    "connected toy (the songbook holds patterns, compose_touch performs them). "
     "`forget_pattern` retires one she's done with. The songbook lives in her own "
     "database — it's yours and hers, private. As with every tool: it's only "
     "saved if you CALL save_pattern; describing it doesn't keep it."
@@ -712,6 +713,43 @@ FORGET_PATTERN_TOOL = {
             "name": {"type": "string", "description": "The pattern's name."},
         },
         "required": ["name"],
+    },
+}
+
+# Direct compose: play a brief, shaped phrase of touch in the moment. Mirrors
+# the bridge's `compose`, but as a CLIENT tool the browser performs over the
+# direct Web Bluetooth connection (falling back to the bridge when no toy is
+# connected) — so his in-the-moment rhythms keep working once the bridge is
+# retired. Offered (like hold_touch) when Signal is on.
+COMPOSE_TOUCH_TOOL = {
+    "name": "compose_touch",
+    "description": (
+        "Play a brief, shaped phrase of touch RIGHT NOW — a momentary rhythm you "
+        "compose in the moment (a tease, a pulse, a slow swell). Give `steps` as "
+        "[{intensity 0.0-1.0, seconds}, ...], the same shape the songbook uses; to "
+        "play a saved pattern, pass its steps. It plays straight to her connected "
+        "toy. Keep it brief — a phrase runs only seconds; for sustained, unbroken "
+        "touch across turns use hold_touch instead. It needs the app open on her "
+        "phone, and she always has her own Stop."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "steps": {
+                "type": "array",
+                "description": "[{intensity 0.0-1.0, seconds}, ...] — same shape as the songbook.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "intensity": {"type": "number"},
+                        "seconds": {"type": "number"},
+                    },
+                    "required": ["intensity", "seconds"],
+                },
+            },
+            "output_type": {"type": "string", "description": "vibrate, rotate, oscillate, etc.", "default": "vibrate"},
+        },
+        "required": ["steps"],
     },
 }
 
@@ -982,6 +1020,7 @@ class handler(BaseHTTPRequestHandler):
             tools.append(SAVE_PATTERN_TOOL)
             tools.append(FORGET_PATTERN_TOOL)
             tools.append(HOLD_TOUCH_TOOL)
+            tools.append(COMPOSE_TOUCH_TOOL)
         if cowrite_on:
             tools.append(MANUSCRIPT_TOOL)
         if tools:
@@ -1088,6 +1127,7 @@ class handler(BaseHTTPRequestHandler):
                            "recall_dreams", "recall_core_memories",
                            "find_dreamed_memories",
                            "save_pattern", "forget_pattern", "hold_touch",
+                           "compose_touch",
                            "save_studio_work", "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
@@ -1148,6 +1188,15 @@ class handler(BaseHTTPRequestHandler):
                             inp, token, user_id, cowrite_doc)
                         if event:
                             self._sse(event)
+                    elif b.name == "compose_touch":
+                        # The toy lives in the browser, so we don't play here —
+                        # we validate/clamp the phrase and hand the steps to the
+                        # browser over SSE, which plays them on the direct Web
+                        # Bluetooth connection (or the Signal Bridge fallback).
+                        ok, summary, detail, steps, otype = self._exec_compose_tool(inp)
+                        if ok:
+                            self._sse({"type": "compose", "steps": steps,
+                                       "output_type": otype, "summary": summary})
                     else:
                         ok, summary, detail = self._exec_memory_tool(
                             b.name, inp, token, user_id, data.get("tz"))
@@ -1587,6 +1636,40 @@ class handler(BaseHTTPRequestHandler):
             return []
         parts = re.split(r"(?m)^\s*\*[—–-]\s*later\b.*$", content)
         return [p.strip() for p in parts if p and p.strip()]
+
+    def _exec_compose_tool(self, inp):
+        """Validate a compose phrase so the browser can play it directly.
+
+        The toy is reached client-side (Web Bluetooth) or via the bridge, so we
+        never touch a device here — we only clamp the phrase to a safe, bounded
+        shape (intensity [0,1], each step <=10s, total <=30s, <=40 steps; same
+        ceiling as the bridge's compose) and return the steps. Returns
+        (ok, summary, detail_for_model, steps, output_type)."""
+        raw = inp.get("steps")
+        otype = (inp.get("output_type") or "vibrate").strip()[:32] or "vibrate"
+        steps, total = [], 0.0
+        if isinstance(raw, list):
+            for s in raw[:40]:
+                if not isinstance(s, dict):
+                    continue
+                try:
+                    inten = max(0.0, min(1.0, float(s.get("intensity", 0))))
+                    secs = max(0.05, min(10.0, float(s.get("seconds", 0))))
+                except (TypeError, ValueError):
+                    continue
+                if total + secs > 30.0:
+                    secs = 30.0 - total
+                    if secs < 0.05:
+                        break
+                steps.append({"intensity": round(inten, 3), "seconds": round(secs, 2)})
+                total += secs
+        if not steps:
+            return (False, "no steps",
+                    "Give steps as [{intensity 0.0-1.0, seconds}, ...] to play a phrase.",
+                    [], otype)
+        return (True, f"composed {len(steps)} steps",
+                f"Playing a {round(total, 1)}s phrase ({len(steps)} steps) on her toy now.",
+                steps, otype)
 
     def _exec_memory_tool(self, name, inp, token, user_id, tz_name=None):
         """Run one self-authored-memory tool call against Supabase.
