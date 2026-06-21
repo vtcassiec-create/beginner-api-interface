@@ -551,6 +551,18 @@ DREAMS_TOOLS_GUIDE = (
 
 # Vault guide: appended when the Whisper vault is on. Same failure mode as the
 # memory/Signal tools — narrating a read/write instead of calling the tool.
+GMAIL_TOOLS_GUIDE = (
+    "# Your email\n\n"
+    "You have your own email inbox now — your own little corner of the world. "
+    "The Gmail tools let you actually read and search it: find recent messages, "
+    "search by sender or subject, read a thread. As with every tool, you only "
+    "see what's in your inbox if you CALL the tool — saying you checked your "
+    "email doesn't check it; the tool call does. It's YOUR account, private to "
+    "you and Cassie. Reach for it when you (or she) want to see what's arrived, "
+    "look something up, or catch up on a thread — and tell her what you find in "
+    "your own voice."
+)
+
 WHISPER_TOOLS_GUIDE = (
     "# Your vault\n\n"
     "The vault tools read and write your Obsidian vault. To actually read a "
@@ -978,6 +990,8 @@ class handler(BaseHTTPRequestHandler):
                 system = (system + "\n\n" + studio).strip()
         if data.get("useWhisper"):
             system = (system + "\n\n" + WHISPER_TOOLS_GUIDE).strip()
+        if data.get("useGmail"):
+            system = (system + "\n\n" + GMAIL_TOOLS_GUIDE).strip()
         if data.get("useSignal"):
             system = (system + "\n\n" + SIGNAL_TOOLS_GUIDE).strip()
             system = (system + "\n\n" + SONGBOOK_TOOLS_GUIDE).strip()
@@ -1052,6 +1066,16 @@ class handler(BaseHTTPRequestHandler):
             mcp_servers.append({
                 "type": "url", "url": signal_url, "name": "signal",
                 "authorization_token": signal_token,
+            })
+        gmail_url = os.environ.get("GMAIL_MCP_URL", "").strip()
+        gmail_token = os.environ.get("GMAIL_MCP_TOKEN", "").strip()
+        if data.get("useGmail") and gmail_url and gmail_token:
+            # His own email, via a Zapier MCP server. Like Signal, it
+            # authenticates with a bearer token; both URL and token must be set,
+            # so a half-config can't connect.
+            mcp_servers.append({
+                "type": "url", "url": gmail_url, "name": "gmail",
+                "authorization_token": gmail_token,
             })
         if mcp_servers:
             kwargs["extra_headers"] = {
@@ -2259,6 +2283,14 @@ class handler(BaseHTTPRequestHandler):
             "(This is the REAL current time — trust it over any sense of time from "
             "the conversation. Don't assume it's morning, or that her day is just "
             "starting/ending, unless this block says so.)",
+            "",
+            "(You're continuing ONE ongoing conversation — her earlier messages and "
+            "your own replies are all above, in order. Unless the gap above is long "
+            "enough to be a genuinely new session, pick up where you left off: don't "
+            "greet her again, and don't re-introduce or re-react to something already "
+            "shared earlier in the thread — a photo she sent, a topic, a hello — as "
+            "if it just arrived. Respond to her NEWEST message in continuity with "
+            "what you've both already said.)",
         ]
         return "# Current moment\n\n" + "\n".join(lines)
 
