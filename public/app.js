@@ -172,6 +172,7 @@ function rowToProject(row) {
     thinking: !!row.thinking,
     whisper: !!row.whisper,
     signal: !!row.signal,
+    gmail: !!row.gmail,
     memory: !!row.memory,
     activeConversationId: row.active_conversation_id || null,
     conversations: [],
@@ -1636,6 +1637,7 @@ async function generateAssistant() {
         useWebSearch: !!project.webSearch,
         useWhisper: !!project.whisper,
         useSignal: !!project.signal,
+        useGmail: !!project.gmail,
         useMemory: !!project.memory,
         coWrite: !!state.coWrite,
         coWriteDocId: state.coWrite ? (state.activeDocumentId || "") : "",
@@ -2334,6 +2336,7 @@ function renderProject() {
   $("web-search-toggle").checked = !!project.webSearch;
   $("whisper-toggle").checked = !!project.whisper;
   $("signal-toggle").checked = !!project.signal;
+  $("gmail-toggle").checked = !!project.gmail;
   $("memory-toggle").checked = !!project.memory;
 
   const thinkingToggle = $("thinking-toggle");
@@ -5806,6 +5809,14 @@ function wireApp() {
     if (!project) return;
     project.signal = e.target.checked;
     try { await dbUpdateProject(project.id, { signal: e.target.checked }); }
+    catch (err) { console.error(err); }
+  });
+
+  $("gmail-toggle").addEventListener("change", async (e) => {
+    const project = getActiveProject();
+    if (!project) return;
+    project.gmail = e.target.checked;
+    try { await dbUpdateProject(project.id, { gmail: e.target.checked }); }
     catch (err) { console.error(err); }
   });
 
