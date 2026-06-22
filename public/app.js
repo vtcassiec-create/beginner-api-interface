@@ -1711,7 +1711,9 @@ async function generateAssistant() {
           });
           updateAssistantBubble(assistantMsg);
           if (Array.isArray(event.steps) && event.steps.length) {
-            touchApi(event.steps, event.output_type || "vibrate").catch(() => {});
+            touchApi(event.steps, event.output_type || "vibrate").catch((err) => {
+              flashToast(err && err.message ? err.message : "Couldn't play that — connect your toy first.", true);
+            });
           }
         } else if (event.type === "manuscript_suggestion") {
           // He proposed an edit — it's pending your review in the Manuscript.
@@ -4429,31 +4431,18 @@ function coupleChunk(steps) {
 }
 
 async function touchApi(steps, outputType) {
-  // Direct path: if Web Bluetooth toys are connected, drive them straight from
-  // the browser (continuous runOutput — no bridge, no relay, no per-command
-  // device restart, so no stutter). Fire-and-forget so it returns fast like the
-  // bridge's ack and the hold/couple resend cadence is unchanged; bpPlay
-  // supersedes any prior phrase, so overlapping chunks splice seamlessly. Falls
-  // back to the Signal Bridge whenever nothing is connected — the existing path
-  // is untouched.
+  // Touch plays STRAIGHT to her connected toys over Web Bluetooth — continuous
+  // runOutput, no relay, no per-command device restart (so no stutter). Fire-
+  // and-forget so it returns fast and the hold/couple resend cadence is
+  // unchanged; bpPlay supersedes any prior phrase, so overlapping chunks splice
+  // seamlessly. The Signal Bridge is retired: if no toy is connected there's
+  // nowhere to play, so we say so plainly rather than reach for a dead relay.
   if (bpDevices.size > 0) {
     bpPlay(steps);
     return;
   }
-  const session = await freshSession();
-  if (!session || !session.access_token) {
-    throw new Error("signed out — refresh to sign back in");
-  }
-  const resp = await fetch("/api/touch", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
-    },
-    body: JSON.stringify({ steps, output_type: outputType || "vibrate" }),
-  });
-  const out = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(out.error || `server returned ${resp.status}`);
+  throw new Error(
+    "No toy connected — open the Heart room's Direct device panel and connect it.");
 }
 
 async function coupleTick() {

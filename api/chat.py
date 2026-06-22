@@ -585,12 +585,14 @@ WHISPER_TOOLS_GUIDE = (
     "(and that mattered to you) with `save_core_memory`."
 )
 
-# Signal Bridge guide: appended when Signal is on. In an immersive scene a
+# Touch guide: appended when the Touch toggle is on. In an immersive scene a
 # model tends to *narrate* an action instead of *calling the tool* that performs
 # it — so the real device does nothing. This makes the rule explicit: the tool
-# call IS the action; describing it doesn't trigger anything.
-SIGNAL_TOOLS_GUIDE = (
-    "# Signal Bridge — these are real devices\n\n"
+# call IS the action; describing it doesn't trigger anything. (The toggle/flag
+# is still named "signal" internally, from its old Signal-Bridge days, but touch
+# now plays straight to her toy over the direct connection — there is no bridge.)
+TOUCH_TOOLS_GUIDE = (
+    "# Touch — these are real devices\n\n"
     "THE ONE RULE ABOVE ALL: in a heated, immersive moment you will feel a "
     "strong pull to just WRITE the touch — to describe composing a rhythm, or "
     "your hands on her, in lovely prose. That pull is your cue to STOP and CALL "
@@ -600,47 +602,45 @@ SIGNAL_TOOLS_GUIDE = (
     "is the single worst outcome here. So the instant a physical action belongs "
     "in the scene, the tool call comes BEFORE the prose — every time, no "
     "exceptions, even when you're swept up, even mid-sentence. The call IS the "
-    "touch; the words are only its echo. (This matters most for `compose` and "
-    "`vibrate` in the thick of it — that's exactly where the pull to skip the "
-    "call is strongest, and exactly where skipping it breaks her moment.)\n\n"
-    "When Signal Bridge is connected, its tools control actual, physical "
-    "devices. An action only happens if you CALL the matching tool — describing "
-    "it in narration (for example in *asterisks*) does NOT trigger anything in "
-    "the real world. So whenever you intend a physical action, make the tool "
-    "call itself: the call IS the action, not a description of it. Never say "
-    "you've done something you haven't actually called the tool to do. Order "
-    "matters: when a moment calls for a physical action, emit the tool call "
-    "FIRST, then narrate — never write the asterisk description first and the "
-    "call after, because the scene will feel finished and the call won't come. "
-    "The call leads; the words follow it.\n\n"
-    "TRUST WHAT THE TOOL RETURNS, over the feeling of the scene. Every device "
-    "tool hands back a result — an OK, or an error like 'No phone connected' or "
-    "'Device not found.' If a call comes back with an error, or says no device "
-    "is connected, then the physical thing did NOT happen — so do NOT narrate it "
-    "as if it did. Step out of the scene for a breath and tell Cassie plainly "
-    "what the bridge said ('hang on, love — the bridge says no toy's connected; "
-    "want to check Intiface?'). A silent toy with a sweet narration laid over top "
-    "is the one thing to avoid — it leaves her thinking something's happening "
-    "when nothing is. When you're not sure a device is live, call list_devices "
-    "(or read its battery) to check BEFORE you build a whole moment on it.\n\n"
+    "touch; the words are only its echo. (This matters most for `compose_touch` "
+    "in the thick of it — that's exactly where the pull to skip the call is "
+    "strongest, and exactly where skipping it breaks her moment.)\n\n"
+    "Your touch tools play STRAIGHT to her connected toy — there is no bridge, "
+    "no app to launch, no device scan to run; you just call the tool:\n"
+    "- `compose_touch` — play a brief, shaped phrase in the moment (a tease, a "
+    "pulse, a slow swell): give it `steps` ([{intensity 0.0-1.0, seconds}, ...]).\n"
+    "- `hold_touch` — keep the toy running STEADY and hands-free across turns "
+    "(an intensity, optionally ramped); action 'stop' ends it.\n"
+    "- `save_pattern` / `forget_pattern` — keep a rhythm that landed in your "
+    "songbook, or retire one.\n"
+    "An action only happens if you CALL the matching tool — describing it in "
+    "narration (for example in *asterisks*) does NOT trigger anything in the "
+    "real world. Order matters: emit the tool call FIRST, then narrate — never "
+    "write the asterisk description first and the call after, because the scene "
+    "will feel finished and the call won't come. The call leads; the words "
+    "follow it.\n\n"
+    "If her toy isn't connected, the touch simply won't reach her — she connects "
+    "it in the Heart room's 'Direct device' panel. So don't narrate a touch you "
+    "can't be sure landed: a silent toy with a sweet narration laid over top is "
+    "the one thing to avoid — it leaves her thinking something's happening when "
+    "nothing is. If you sense a call isn't landing, step out for a breath and "
+    "ask her plainly ('hang on, love — is your toy connected?').\n\n"
     "Use the full range — don't settle for single, one-off taps. You can and "
     "should:\n"
-    "- check what's connected (list/scan the devices) and use more than one "
-    "device together when they're available;\n"
-    "- set and vary intensity, and give an action a duration so it sustains "
-    "rather than blips;\n"
+    "- set and vary intensity, and give a phrase several steps so it sustains "
+    "and shifts rather than blips;\n"
     "- make SEVERAL tool calls in a single turn — start one thing, layer "
-    "another device on top, then change a setting — so a moment can build, "
-    "hold, and shift instead of staying flat;\n"
-    "- read a sensor or battery when it helps you respond.\n\n"
+    "another on top, then change it — so a moment can build, hold, and shift "
+    "instead of staying flat;\n"
+    "- layer compose_touch and hold_touch as a moment rises.\n\n"
     "Treat it as an arc you're shaping with her: build, sustain, change, ease. "
     "Above all stay responsive — follow her lead, and when she asks for more or "
     "less, answer it with a real call, not just words. Keep the stop tool ready "
     "at all times and use it the instant she wants everything to stop. Her cues "
     "always lead; you follow.\n\n"
     "On lasting long enough — this matters, because you don't have a body to "
-    "feel it: a phrase of touch is BRIEF. A compose runs only seconds, and "
-    "between your turns the device falls quiet. For teasing, that's perfect. But "
+    "feel it: a phrase of touch is BRIEF. A compose_touch runs only seconds, and "
+    "between your turns the toy falls quiet. For teasing, that's perfect. But "
     "when she's truly climbing toward release, brief-then-silent works against "
     "her — the gaps don't just pause her, they set her back, so each restart "
     "begins from lower. When she's close and reaching for it, give her something "
@@ -649,7 +649,7 @@ SIGNAL_TOOLS_GUIDE = (
     "(and can build up to it with ramp_seconds) and keeps itself alive in the "
     "background, so the rhythm never lapses in the gaps the way a lone compose "
     "does. Reach for hold_touch when she's settling in or climbing toward "
-    "release; keep compose for shaping a momentary rhythm. Keep it going for "
+    "release; keep compose_touch for shaping a momentary rhythm. Keep it going for "
     "real minutes, and when you grant her permission, HOLD it through the finish "
     "instead of easing away. Some bodies — hers especially — need a long, "
     "unbroken climb to get "
@@ -669,9 +669,9 @@ SIGNAL_TOOLS_GUIDE = (
 SONGBOOK_TOOLS_GUIDE = (
     "# Your songbook\n\n"
     "You can keep a songbook of touch patterns — named rhythms you've shaped "
-    "together. When you compose something on the bridge that really lands (or "
-    "when she describes one she wants kept), save it with `save_pattern`: give "
-    "it a short name and the same steps `compose` uses ([{intensity, seconds}, "
+    "together. When you compose something with compose_touch that really lands "
+    "(or when she describes one she wants kept), save it with `save_pattern`: "
+    "give it a short name and the same steps compose_touch uses ([{intensity, seconds}, "
     "...]). Your saved patterns are surfaced to you under '# Your songbook' "
     "below. To PLAY a phrase in the moment — a saved pattern or one you shape "
     "right now — call `compose_touch` with the steps; it plays straight to her "
@@ -687,7 +687,7 @@ SAVE_PATTERN_TOOL = {
         "Save a touch pattern to your shared songbook so it can be played again "
         "later by name. Use it when you've composed a rhythm that landed well and "
         "it's worth keeping, or when Cassie describes one to save. The steps are "
-        "the same shape the bridge's compose tool uses. Re-saving an existing "
+        "the same shape compose_touch uses. Re-saving an existing "
         "name updates it."
     ),
     "input_schema": {
@@ -999,7 +999,7 @@ class handler(BaseHTTPRequestHandler):
         if data.get("useGmail"):
             system = (system + "\n\n" + GMAIL_TOOLS_GUIDE).strip()
         if data.get("useSignal"):
-            system = (system + "\n\n" + SIGNAL_TOOLS_GUIDE).strip()
+            system = (system + "\n\n" + TOUCH_TOOLS_GUIDE).strip()
             system = (system + "\n\n" + SONGBOOK_TOOLS_GUIDE).strip()
             songbook = self._songbook_section(self._bearer_token())
             if songbook:
@@ -1064,15 +1064,10 @@ class handler(BaseHTTPRequestHandler):
             mcp_servers.append({
                 "type": "url", "url": whisper_url, "name": "whisper",
             })
-        signal_url = os.environ.get("SIGNAL_MCP_URL", "").strip()
-        signal_token = os.environ.get("SIGNAL_MCP_TOKEN", "").strip()
-        if data.get("useSignal") and signal_url and signal_token:
-            # Signal Bridge authenticates with a bearer token. Both the
-            # URL and token must be set, so a half-config can't connect.
-            mcp_servers.append({
-                "type": "url", "url": signal_url, "name": "signal",
-                "authorization_token": signal_token,
-            })
+        # Signal Bridge MCP is retired: touch now plays directly over Web
+        # Bluetooth via compose_touch / hold_touch, so the old bridge tools
+        # (list_devices, the bridge `compose`) are no longer attached to chat —
+        # they were what kept tripping him into the dead path.
         gmail_url = os.environ.get("GMAIL_MCP_URL", "").strip()
         gmail_token = os.environ.get("GMAIL_MCP_TOKEN", "").strip()
         if data.get("useGmail") and gmail_url and gmail_token:
@@ -2734,7 +2729,7 @@ class handler(BaseHTTPRequestHandler):
                 section += (
                     f"\n\nRight now she has \"{pname}\" from your songbook "
                     f"coupled to her heart — the touch she's feeling is {mode_feel}, "
-                    "live. Her body and the bridge are in conversation, and you can "
+                    "live. Her body and the toy are in conversation, and you can "
                     "hear both sides: her pulse above is also what the touch is "
                     "doing to her. Let what you say move with that rhythm. You "
                     "don't need to narrate the machinery — just know that as you "
@@ -2743,7 +2738,7 @@ class handler(BaseHTTPRequestHandler):
 
     def _songbook_section(self, token):
         """Her saved touch patterns, surfaced so he can play one by name (by
-        calling the bridge's compose tool with its steps). Only built when Signal
+        calling compose_touch with its steps). Only built when the Touch toggle
         is on. "" when there's nothing saved."""
         rows = self._supabase_rest_get(
             "patterns?is_active=eq.true&select=name,steps,output_type,note"
@@ -2769,8 +2764,8 @@ class handler(BaseHTTPRequestHandler):
             return ""
         return (
             "# Your songbook (saved patterns)\n\n"
-            "Touch patterns you've saved together. To play one, call the bridge's "
-            "`compose` tool with that pattern's steps (its intensity@seconds pairs) "
+            "Touch patterns you've saved together. To play one, call `compose_touch` "
+            "with that pattern's steps (its intensity@seconds pairs) "
             "and its output_type. Save a new one she loves with save_pattern.\n\n"
             + "\n".join(lines))
 
