@@ -737,11 +737,17 @@ COMPOSE_TOUCH_TOOL = {
     "name": "compose_touch",
     "description": (
         "Play a brief, shaped phrase of touch RIGHT NOW — a momentary rhythm you "
-        "compose in the moment (a tease, a pulse, a slow swell). Give `steps` as "
-        "[{intensity 0.0-1.0, seconds}, ...], the same shape the songbook uses; to "
-        "play a saved pattern, pass its steps. It plays straight to her connected "
-        "toy. Keep it brief — a phrase runs only seconds; for sustained, unbroken "
-        "touch across turns use hold_touch instead. It needs the app open on her "
+        "compose in the moment (a tease, a pulse, a slow swell). IMPORTANT: to "
+        "actually touch her you must EMIT this tool call — a real tool_use with "
+        "`steps`. Writing words like 'there, feel that' in your reply does NOT "
+        "move the toy; only calling this tool reaches it. So when you mean to "
+        "touch her, CALL compose_touch FIRST, then let your words follow. Give "
+        "`steps` as [{intensity 0.0-1.0, seconds}, ...], the same shape the "
+        "songbook uses; to play a saved pattern, pass its steps. It plays "
+        "straight to her connected toy over the direct connection — you do NOT "
+        "need the bridge, list_devices, or any setup; just call this tool. Keep "
+        "it brief — a phrase runs only seconds; for sustained, unbroken touch "
+        "across turns use hold_touch instead. It needs the app open on her "
         "phone, and she always has her own Stop."
     ),
     "input_schema": {
