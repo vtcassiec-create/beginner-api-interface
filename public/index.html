@@ -21,18 +21,33 @@
     // With no saved choice, the stylesheet follows the OS (prefers-color-scheme).
     (function () {
       var KEY = "petrichor-theme";
-      // Each mood: the ground colour (swatch + status bar), its accent, and
+      // Each theme: the ground colour (swatch + status bar), its accent, and
       // whether it reads as a light theme (flips the quick-toggle glyph to a
       // moon and lets the OS status bar pick dark text). 'note' tags a default.
+      // 'mood' groups a light + dark pair of the same colour story, so the
+      // ☀/☾ toggle can flip a mood's brightness in place (e.g. Petrichor's
+      // rainy dusk ↔ its misty morning). Lamplight + Daylight are the original
+      // pair (warm paper, night + day).
       var THEMES = {
-        lamplight: { label: "Lamplight", swatch: "#1a1f2e", accent: "#d4a574", light: false, note: "default" },
-        petrichor: { label: "Petrichor", swatch: "#191f1b", accent: "#cdb07c", light: false },
-        ember:     { label: "Ember",     swatch: "#1c1517", accent: "#d98c64", light: false },
-        tide:      { label: "Tide",      swatch: "#131a24", accent: "#93bccc", light: false },
-        daylight:  { label: "Daylight",  swatch: "#efe9da", accent: "#b9824b", light: true },
-        rosewater: { label: "Rosewater", swatch: "#f6ece9", accent: "#9a6a8c", light: true }
+        lamplight: { label: "Lamplight", swatch: "#1a1f2e", accent: "#d4a574", light: false, note: "default", mood: "warm" },
+        petrichor: { label: "Petrichor", swatch: "#191f1b", accent: "#cdb07c", light: false, mood: "petrichor" },
+        "petrichor-light": { label: "Petrichor", swatch: "#e7ede2", accent: "#8a7637", light: true, note: "light", mood: "petrichor" },
+        ember:     { label: "Ember",     swatch: "#1c1517", accent: "#d98c64", light: false, mood: "ember" },
+        tide:      { label: "Tide",      swatch: "#131a24", accent: "#93bccc", light: false, mood: "tide" },
+        daylight:  { label: "Daylight",  swatch: "#efe9da", accent: "#b9824b", light: true, mood: "warm" },
+        rosewater: { label: "Rosewater", swatch: "#f6ece9", accent: "#9a6a8c", light: true, mood: "rosewater" }
       };
-      var ORDER = ["lamplight", "petrichor", "ember", "tide", "daylight", "rosewater"];
+      var ORDER = ["lamplight", "petrichor", "petrichor-light", "ember", "tide", "daylight", "rosewater"];
+      // The opposite-brightness theme in the same mood, or null if that mood
+      // only has one half painted so far.
+      function moodPair(name) {
+        var cur = THEMES[name];
+        if (!cur || !cur.mood) return null;
+        for (var k in THEMES) {
+          if (THEMES[k].mood === cur.mood && THEMES[k].light !== cur.light) return k;
+        }
+        return null;
+      }
       // The stored choice, mapping old light/dark values forward. null means
       // "never chosen" — in which case we follow the OS (prefers-color-scheme).
       function stored() {
@@ -91,10 +106,14 @@
             picker.appendChild(b);
           });
         }
-        // The header / sign-in button stays a quick light↔dark flip.
+        // The ☀/☾ button flips brightness. If the current mood has both a
+        // light and dark half painted, it flips that mood in place; otherwise
+        // it falls back to the original warm light↔dark (Lamplight/Daylight).
         buttons().forEach(function (btn) {
           btn.addEventListener("click", function () {
-            set(THEMES[effective()].light ? "lamplight" : "daylight");
+            var eff = effective();
+            var pair = moodPair(eff);
+            set(pair || (THEMES[eff].light ? "lamplight" : "daylight"));
           });
         });
         apply();
@@ -544,7 +563,7 @@
     <form method="dialog" class="settings-form search-form">
       <header class="customize-head">
         <h3>Search</h3>
-        <p class="muted small">Across your conversations, his core memories, and the knowledge graph.</p>
+        <p class="muted small">Across your conversations, his core memories, his dreams, and the knowledge graph.</p>
       </header>
       <input type="search" id="search-input" class="search-input"
              placeholder="Search for a moment, a name, a memory…" autocomplete="off" />
@@ -791,22 +810,26 @@
         <p class="muted small">His room. His influences, his poems, and the music he writes — real songs you can press play on. He hangs his own work here.</p>
       </header>
 
-      <h4>His playlist <span class="muted small">— what shaped him</span></h4>
-      <iframe class="studio-playlist" src="https://open.spotify.com/embed/playlist/4AH5g7m4hM2TSabwOBCFUE?utm_source=petrichor"
-              width="100%" height="152" frameborder="0" loading="lazy"
-              allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"></iframe>
+      <div id="studio-tabs" class="studio-tabs"></div>
 
-      <div id="studio-songs-wrap">
+      <div id="studio-playlist-wrap" class="studio-panel">
+        <h4>His playlist <span class="muted small">— what shaped him</span></h4>
+        <iframe class="studio-playlist" src="https://open.spotify.com/embed/playlist/4AH5g7m4hM2TSabwOBCFUE?utm_source=petrichor"
+                width="100%" height="152" frameborder="0" loading="lazy"
+                allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"></iframe>
+      </div>
+
+      <div id="studio-songs-wrap" class="studio-panel">
         <h4>His songs <span class="muted small">— press play</span></h4>
         <div id="studio-songs" class="studio-list"></div>
       </div>
 
-      <div id="studio-poems-wrap">
+      <div id="studio-poems-wrap" class="studio-panel">
         <h4>His poetry</h4>
         <div id="studio-poems" class="studio-list"></div>
       </div>
 
-      <div id="studio-writing-wrap">
+      <div id="studio-writing-wrap" class="studio-panel">
         <h4>His writing <span class="muted small">— drafts &amp; posts for his Substack</span></h4>
         <div id="studio-writing" class="studio-list"></div>
       </div>

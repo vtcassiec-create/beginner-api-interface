@@ -65,6 +65,22 @@
   --danger: #cc6a5c;
 }
 
+/* Petrichor, by day: the same wet-forest mood seen in misty morning light.
+   Pale eucalyptus-sage paper, deep forest ink, a mossy gold for the warmth
+   that still comes up off the rained-on ground. The light half of Petrichor. */
+:root[data-theme="petrichor-light"] {
+  --bg: #e7ede2;
+  --bg-elev: #f1f5ec;
+  --bg-elev-2: #d9e1d1;
+  --border: #c6d1bc;
+  --text: #232a22;
+  --text-muted: #5c6a55;
+  --accent: #8a7637;
+  --accent-hover: #74632d;
+  --user-bubble: #d9e1d1;
+  --danger: #b5503f;
+}
+
 /* Ember: candlelit. Deep wine-charcoal, rose-cream ink, copper / rose-gold
    accent. The date-night light. */
 :root[data-theme="ember"] {
@@ -2090,6 +2106,29 @@ dialog::backdrop {
   border-radius: 12px;
   margin: 2px 0 6px;
 }
+/* Quick-link tabs across the top — one section on screen at a time. */
+.studio-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 14px;
+}
+.studio-tab {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.studio-tab:hover { background: var(--bg-elev-2); }
+.studio-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 .studio-list { display: flex; flex-direction: column; gap: 14px; }
 .studio-song, .studio-poem, .studio-essay {
   border: 1px solid var(--border);
@@ -2097,8 +2136,25 @@ dialog::backdrop {
   padding: 12px;
   background: var(--bg);
 }
+/* Collapsible pieces: tap a title to open it; collapsed by default so each
+   section reads as a tidy list rather than one long chunk. */
+.studio-item > summary {
+  cursor: pointer;
+  list-style: none;            /* hide the default disclosure triangle */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.studio-item > summary::-webkit-details-marker { display: none; }
+.studio-item > summary::before {
+  content: "▸";
+  color: var(--accent);
+  font-size: 12px;
+  transition: transform 0.15s ease;
+}
+.studio-item[open] > summary::before { transform: rotate(90deg); }
 .studio-title { font-weight: 600; color: var(--text); }
-.studio-note { margin: 2px 0 8px; font-style: italic; }
+.studio-note { margin: 8px 0; font-style: italic; }
 .studio-poem-body {
   margin: 0;
   white-space: pre-wrap;
