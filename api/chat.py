@@ -1780,15 +1780,37 @@ class handler(BaseHTTPRequestHandler):
             obs = inp.get("observations") or []
             if not isinstance(obs, list):
                 obs = [str(obs)]
+            obs = [str(o).strip() for o in obs if str(o).strip()]
+            # Dedupe: the upsert RPC blindly concatenates new observations onto the
+            # existing ones, so re-saving the same facts piles up duplicates. Pull
+            # what this entity already knows and keep only observations that
+            # genuinely add something new (also dropping repeats within this batch).
+            existing_obs = []
+            rows = self._supabase_rest_get(
+                f"claude_memory_entities?user_id=eq.{user_id}"
+                f"&name=eq.{quote(ent_name, safe='')}&select=observations&limit=1",
+                token)
+            if isinstance(rows, list) and rows and isinstance(rows[0].get("observations"), list):
+                existing_obs = [str(o) for o in rows[0]["observations"]]
+            fresh = []
+            for o in obs:
+                if not self._near_duplicate(o, existing_obs + fresh, 0.92):
+                    fresh.append(o)
+            if not fresh:
+                return True, ent_name, (
+                    f"'{ent_name}' already holds those observations — nothing new "
+                    "to add, so I left it untouched.")
             ok, res = self._supabase_write("rpc/upsert_memory_entity", {
                 "p_name": ent_name,
                 "p_entity_type": inp.get("entity_type") or "person",
-                "p_observations": obs,
+                "p_observations": fresh,
             }, token)
             if ok:
+                skipped = len(obs) - len(fresh)
+                extra = f" ({skipped} already known, skipped)" if skipped else ""
                 return True, ent_name, (
-                    f"Saved entity '{ent_name}' with {len(obs)} "
-                    f"observation{'s' if len(obs) != 1 else ''}.")
+                    f"Saved entity '{ent_name}' with {len(fresh)} new "
+                    f"observation{'s' if len(fresh) != 1 else ''}{extra}.")
             return False, "save failed", f"Could not save entity: {res}"
 
         if name == "update_self_state":
