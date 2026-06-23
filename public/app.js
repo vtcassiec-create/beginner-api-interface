@@ -4883,26 +4883,63 @@ async function openStudioDialog() {
     for (const s of songs) songsEl.appendChild(mkStudioSong(s));
   }
 
-  $("studio-poems-wrap").hidden = !poems.length;
   poemsEl.innerHTML = "";
   for (const p of poems) poemsEl.appendChild(mkStudioPoem(p));
 
   // His writing desk: longer prose he's drafted, with a publish status and a
   // copy-to-Markdown button so Cassie can proofread and post to his Substack.
   const writingEl = $("studio-writing");
-  $("studio-writing-wrap").hidden = !essays.length;
   writingEl.innerHTML = "";
   for (const e of essays) writingEl.appendChild(mkStudioEssay(e));
+
+  // Quick-links across the top so his room isn't one long scroll: each tab
+  // shows just its own section. Playlist and Songs are always offered (Songs
+  // has a friendly empty state); Poetry/Writing appear once he's hung some up.
+  buildStudioTabs([
+    { id: "studio-playlist-wrap", label: "🎧 Playlist", show: true },
+    { id: "studio-songs-wrap", label: "🎶 Songs", count: songs.length, show: true },
+    { id: "studio-poems-wrap", label: "✍️ Poetry", count: poems.length, show: poems.length > 0 },
+    { id: "studio-writing-wrap", label: "📝 Writing", count: essays.length, show: essays.length > 0 },
+  ]);
+}
+
+// Build the studio's tab bar and wire single-panel switching. Hides every
+// panel up front, then the first visible tab reveals its own — so only one
+// section is on screen at a time.
+function buildStudioTabs(tabs) {
+  const bar = $("studio-tabs");
+  bar.innerHTML = "";
+  const all = ["studio-playlist-wrap", "studio-songs-wrap", "studio-poems-wrap", "studio-writing-wrap"];
+  for (const id of all) { const el = $(id); if (el) el.hidden = true; }
+
+  const visible = tabs.filter((t) => t.show);
+  const showPanel = (panelId, btn) => {
+    for (const t of visible) { const el = $(t.id); if (el) el.hidden = t.id !== panelId; }
+    for (const b of bar.children) b.classList.toggle("active", b === btn);
+  };
+  for (const t of visible) {
+    const btn = document.createElement("button");
+    btn.type = "button";            // method="dialog" form — must not submit/close
+    btn.className = "studio-tab";
+    btn.textContent = t.count ? `${t.label} ${t.count}` : t.label;
+    btn.addEventListener("click", () => showPanel(t.id, btn));
+    bar.appendChild(btn);
+  }
+  const first = bar.querySelector(".studio-tab");
+  if (first) first.click();         // open on the first tab (Playlist)
 }
 
 function mkStudioEssay(work) {
-  const card = document.createElement("div");
-  card.className = "studio-essay";
+  const card = document.createElement("details");
+  card.className = "studio-essay studio-item";
 
-  const h = document.createElement("div");
+  const sum = document.createElement("summary");
+  sum.className = "studio-summary";
+  const h = document.createElement("span");
   h.className = "studio-title";
   h.textContent = work.title || "(untitled)";
-  card.appendChild(h);
+  sum.appendChild(h);
+  card.appendChild(sum);
 
   if ((work.note || "").trim()) {
     const n = document.createElement("div");
@@ -4968,12 +5005,15 @@ function mkStudioEssay(work) {
 }
 
 function mkStudioPoem(work) {
-  const card = document.createElement("div");
-  card.className = "studio-poem";
-  const h = document.createElement("div");
+  const card = document.createElement("details");
+  card.className = "studio-poem studio-item";
+  const sum = document.createElement("summary");
+  sum.className = "studio-summary";
+  const h = document.createElement("span");
   h.className = "studio-title";
   h.textContent = work.title || "(untitled)";
-  card.appendChild(h);
+  sum.appendChild(h);
+  card.appendChild(sum);
   if ((work.note || "").trim()) {
     const n = document.createElement("div");
     n.className = "studio-note muted small";
@@ -4988,13 +5028,16 @@ function mkStudioPoem(work) {
 }
 
 function mkStudioSong(work) {
-  const card = document.createElement("div");
-  card.className = "studio-song";
+  const card = document.createElement("details");
+  card.className = "studio-song studio-item";
 
-  const h = document.createElement("div");
+  const sum = document.createElement("summary");
+  sum.className = "studio-summary";
+  const h = document.createElement("span");
   h.className = "studio-title";
   h.textContent = work.title || "(untitled)";
-  card.appendChild(h);
+  sum.appendChild(h);
+  card.appendChild(sum);
   if ((work.note || "").trim()) {
     const n = document.createElement("div");
     n.className = "studio-note muted small";
@@ -5013,8 +5056,16 @@ function mkStudioSong(work) {
   audio.className = "studio-audio";
   card.appendChild(audio);
 
-  // Render the score + wire a play widget once the element is in the DOM.
-  setTimeout(() => renderStudioSong(work.body || "", score.id, audio.id), 0);
+  // Render the score + play widget the first time it's opened — abcjs needs the
+  // element laid out (a collapsed <details> has no width), and it spares us
+  // rendering every score up front.
+  let rendered = false;
+  card.addEventListener("toggle", () => {
+    if (card.open && !rendered) {
+      rendered = true;
+      renderStudioSong(work.body || "", score.id, audio.id);
+    }
+  });
   return card;
 }
 

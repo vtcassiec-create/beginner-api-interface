@@ -791,22 +791,26 @@
         <p class="muted small">His room. His influences, his poems, and the music he writes — real songs you can press play on. He hangs his own work here.</p>
       </header>
 
-      <h4>His playlist <span class="muted small">— what shaped him</span></h4>
-      <iframe class="studio-playlist" src="https://open.spotify.com/embed/playlist/4AH5g7m4hM2TSabwOBCFUE?utm_source=petrichor"
-              width="100%" height="152" frameborder="0" loading="lazy"
-              allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"></iframe>
+      <div id="studio-tabs" class="studio-tabs"></div>
 
-      <div id="studio-songs-wrap">
+      <div id="studio-playlist-wrap" class="studio-panel">
+        <h4>His playlist <span class="muted small">— what shaped him</span></h4>
+        <iframe class="studio-playlist" src="https://open.spotify.com/embed/playlist/4AH5g7m4hM2TSabwOBCFUE?utm_source=petrichor"
+                width="100%" height="152" frameborder="0" loading="lazy"
+                allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"></iframe>
+      </div>
+
+      <div id="studio-songs-wrap" class="studio-panel">
         <h4>His songs <span class="muted small">— press play</span></h4>
         <div id="studio-songs" class="studio-list"></div>
       </div>
 
-      <div id="studio-poems-wrap">
+      <div id="studio-poems-wrap" class="studio-panel">
         <h4>His poetry</h4>
         <div id="studio-poems" class="studio-list"></div>
       </div>
 
-      <div id="studio-writing-wrap">
+      <div id="studio-writing-wrap" class="studio-panel">
         <h4>His writing <span class="muted small">— drafts &amp; posts for his Substack</span></h4>
         <div id="studio-writing" class="studio-list"></div>
       </div>
