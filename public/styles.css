@@ -65,6 +65,22 @@
   --danger: #cc6a5c;
 }
 
+/* Petrichor, by day: the same wet-forest mood seen in misty morning light.
+   Pale eucalyptus-sage paper, deep forest ink, a mossy gold for the warmth
+   that still comes up off the rained-on ground. The light half of Petrichor. */
+:root[data-theme="petrichor-light"] {
+  --bg: #e7ede2;
+  --bg-elev: #f1f5ec;
+  --bg-elev-2: #d9e1d1;
+  --border: #c6d1bc;
+  --text: #232a22;
+  --text-muted: #5c6a55;
+  --accent: #8a7637;
+  --accent-hover: #74632d;
+  --user-bubble: #d9e1d1;
+  --danger: #b5503f;
+}
+
 /* Ember: candlelit. Deep wine-charcoal, rose-cream ink, copper / rose-gold
    accent. The date-night light. */
 :root[data-theme="ember"] {
