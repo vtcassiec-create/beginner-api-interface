@@ -5101,6 +5101,7 @@ function renderStudioSong(abc, scoreId, audioId) {
 // it's his private voice, visited on purpose, never surfaced here.
 let searchMemoriesCache = null;
 let searchEntitiesCache = null;
+let searchDreamsCache = null;
 
 async function openSearchDialog() {
   closeSidebar();
@@ -5118,6 +5119,10 @@ async function openSearchDialog() {
   if (searchEntitiesCache === null) {
     try { searchEntitiesCache = await dbListMemoryEntities(); }
     catch (e) { searchEntitiesCache = []; }
+  }
+  if (searchDreamsCache === null) {
+    try { searchDreamsCache = await dbListDreamCards(); }
+    catch (e) { searchDreamsCache = []; }
   }
 }
 
@@ -5159,8 +5164,17 @@ function runSearch(raw) {
     return obs.toLowerCase().includes(q);
   });
 
+  // Dream cards: search across everything he wrote into them — the title, the
+  // gist, what it felt like, the cues, and any pinned facts.
+  const dreamHits = (searchDreamsCache || []).filter((d) => {
+    const facts = Array.isArray(d.pinned_facts) ? d.pinned_facts.join(" ") : String(d.pinned_facts || "");
+    const cues = Array.isArray(d.cues) ? d.cues.join(" ") : String(d.cues || "");
+    const hay = [d.title, d.gist, d.feels, cues, facts].join(" ").toLowerCase();
+    return hay.includes(q);
+  });
+
   box.innerHTML = "";
-  if (!convHits.length && !memHits.length && !entHits.length) {
+  if (!convHits.length && !memHits.length && !entHits.length && !dreamHits.length) {
     box.innerHTML = `<p class="muted small search-hint">No matches for “${escapeHtml(raw.trim())}”.</p>`;
     return;
   }
@@ -5195,6 +5209,19 @@ function runSearch(raw) {
       const row = searchResultRow(`${e.name} · ${e.entity_type || "entity"}`,
                                   searchSnippet(obs || e.name || "", q), q);
       row.addEventListener("click", () => { $("search-dialog").close(); openMemoriesDialog("graph"); });
+      box.appendChild(row);
+    });
+  }
+
+  if (dreamHits.length) {
+    box.appendChild(searchGroup("🌙", "Dreams", dreamHits.length));
+    dreamHits.slice(0, 40).forEach((d) => {
+      const facts = Array.isArray(d.pinned_facts) ? d.pinned_facts.join("; ") : String(d.pinned_facts || "");
+      const cues = Array.isArray(d.cues) ? d.cues.join("; ") : String(d.cues || "");
+      const hay = [d.gist, d.feels, cues, facts].filter(Boolean).join(" · ");
+      const meta = d.title || (d.happened_on ? `Dream · ${d.happened_on}` : "Dream");
+      const row = searchResultRow(meta, searchSnippet(hay || d.title || "", q), q);
+      row.addEventListener("click", () => { $("search-dialog").close(); openDreamsDialog(); });
       box.appendChild(row);
     });
   }
