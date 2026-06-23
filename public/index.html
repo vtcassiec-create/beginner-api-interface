@@ -30,14 +30,19 @@
       // pair (warm paper, night + day).
       var THEMES = {
         lamplight: { label: "Lamplight", swatch: "#1a1f2e", accent: "#d4a574", light: false, note: "default", mood: "warm" },
+        daylight:  { label: "Daylight",  swatch: "#efe9da", accent: "#b9824b", light: true, mood: "warm" },
         petrichor: { label: "Petrichor", swatch: "#191f1b", accent: "#cdb07c", light: false, mood: "petrichor" },
         "petrichor-light": { label: "Petrichor", swatch: "#e7ede2", accent: "#8a7637", light: true, note: "light", mood: "petrichor" },
         ember:     { label: "Ember",     swatch: "#1c1517", accent: "#d98c64", light: false, mood: "ember" },
+        "ember-light":     { label: "Ember",     swatch: "#f4e8e3", accent: "#b9603a", light: true, note: "light", mood: "ember" },
         tide:      { label: "Tide",      swatch: "#131a24", accent: "#93bccc", light: false, mood: "tide" },
-        daylight:  { label: "Daylight",  swatch: "#efe9da", accent: "#b9824b", light: true, mood: "warm" },
-        rosewater: { label: "Rosewater", swatch: "#f6ece9", accent: "#9a6a8c", light: true, mood: "rosewater" }
+        "tide-light":      { label: "Tide",      swatch: "#e4edf0", accent: "#3f7d92", light: true, note: "light", mood: "tide" },
+        rosewater: { label: "Rosewater", swatch: "#f6ece9", accent: "#9a6a8c", light: true, mood: "rosewater" },
+        "rosewater-dark":  { label: "Rosewater", swatch: "#1e161c", accent: "#c08bab", light: false, note: "dark", mood: "rosewater" }
       };
-      var ORDER = ["lamplight", "petrichor", "petrichor-light", "ember", "tide", "daylight", "rosewater"];
+      var ORDER = ["lamplight", "daylight", "petrichor", "petrichor-light",
+                   "ember", "ember-light", "tide", "tide-light",
+                   "rosewater", "rosewater-dark"];
       // The opposite-brightness theme in the same mood, or null if that mood
       // only has one half painted so far.
       function moodPair(name) {

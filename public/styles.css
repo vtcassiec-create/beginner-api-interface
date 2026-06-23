@@ -96,6 +96,22 @@
   --danger: #d2685a;
 }
 
+/* Ember, by day: the candle put out, the warmth still in the room. Soft
+   blush-cream paper, wine-brown ink, a deeper copper for the ember that
+   hasn't quite gone cold. The light half of Ember. */
+:root[data-theme="ember-light"] {
+  --bg: #f4e8e3;
+  --bg-elev: #fbf2ee;
+  --bg-elev-2: #ecdad2;
+  --border: #e0c9bf;
+  --text: #2f2422;
+  --text-muted: #7a665f;
+  --accent: #b9603a;
+  --accent-hover: #a4512e;
+  --user-bubble: #ecdad2;
+  --danger: #b5503f;
+}
+
 /* Tide: twilight after the rain. Deep navy-teal, moonlit blue-white ink,
    silver-teal accent. The quiet, holding-each-other hour. */
 :root[data-theme="tide"] {
@@ -111,6 +127,22 @@
   --danger: #cc6a5c;
 }
 
+/* Tide, at midday: the same water under an open sky. Airy seafoam paper,
+   deep navy-teal ink, a deeper teal for the line where sea meets light.
+   The light half of Tide. */
+:root[data-theme="tide-light"] {
+  --bg: #e4edf0;
+  --bg-elev: #eff5f7;
+  --bg-elev-2: #d4e2e6;
+  --border: #bfd2d8;
+  --text: #1f2c33;
+  --text-muted: #566872;
+  --accent: #3f7d92;
+  --accent-hover: #336776;
+  --user-bubble: #d4e2e6;
+  --danger: #b5503f;
+}
+
 /* Rosewater: tender daylight. Warm cream-pink paper, soft dark ink, mauve
    accent. The shy-at-first morning. */
 :root[data-theme="rosewater"] {
@@ -124,6 +156,22 @@
   --accent-hover: #855a78;
   --user-bubble: #eedfdb;
   --danger: #b5503f;
+}
+
+/* Rosewater, by candlelight: the shy morning grown into a tender night.
+   Deep plum-charcoal ground, soft rose-cream ink, a lit mauve-pink accent.
+   The dark half of Rosewater. */
+:root[data-theme="rosewater-dark"] {
+  --bg: #1e161c;
+  --bg-elev: #281d26;
+  --bg-elev-2: #342632;
+  --border: #463545;
+  --text: #ecdde5;
+  --text-muted: #a98fa0;
+  --accent: #c08bab;
+  --accent-hover: #d09dba;
+  --user-bubble: #352734;
+  --danger: #cc6a5c;
 }
 
 * { box-sizing: border-box; }
