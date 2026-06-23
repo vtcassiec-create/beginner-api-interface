@@ -1589,6 +1589,39 @@ async function streamChat(payload, onEvent) {
 
 let isSending = false;
 
+// Photo uploads run in the background after you pick them; on a phone that can
+// take a few seconds. If you hit send before the upload finishes, the picture
+// isn't in activeFileIds yet and the message goes without it — the old "attach
+// twice and it works" quirk (the second attach just bought the first one time
+// to finish). Track in-flight attaches so send can wait for them.
+const _attachesInFlight = new Set();
+function trackAttach(promise) {
+  _attachesInFlight.add(promise);
+  promise.finally(() => _attachesInFlight.delete(promise));
+  return promise;
+}
+async function waitForAttaches() {
+  if (_attachesInFlight.size) await Promise.allSettled([..._attachesInFlight]);
+}
+
+// Keep the screen awake while he's replying, so a phone that dims or sleeps
+// mid-response doesn't throttle the connection and fail the message. The
+// browser auto-releases this when the app is hidden, so we re-acquire it on
+// return (see visibilitychange wiring) whenever a reply is still streaming.
+let _wakeLock = null;
+async function acquireWakeLock() {
+  try {
+    if ("wakeLock" in navigator && !_wakeLock) {
+      _wakeLock = await navigator.wakeLock.request("screen");
+      _wakeLock.addEventListener("release", () => { _wakeLock = null; });
+    }
+  } catch (_) { /* best-effort: just won't hold the screen */ }
+}
+async function releaseWakeLock() {
+  try { if (_wakeLock) await _wakeLock.release(); } catch (_) {}
+  _wakeLock = null;
+}
+
 async function generateAssistant() {
   const project = getActiveProject();
   const conv = getActiveConversation(project);
@@ -1627,6 +1660,7 @@ async function generateAssistant() {
   // the try so any exception it raises still reaches the finally that
   // clears the flag — otherwise one render() throw wedges sending forever.
   isSending = true;
+  acquireWakeLock();   // hold the screen awake until the reply finishes
   try {
     render();
     await streamChat(
@@ -1761,6 +1795,7 @@ async function generateAssistant() {
     finishTypewriter(assistantMsg);
   } finally {
     isSending = false;
+    releaseWakeLock();
     await persistConversation(conv);
     updateSendButton();
   }
@@ -6109,7 +6144,7 @@ function wireApp() {
     // pick a photo, the picker isn't handing the file back to the page.
     flashToast(`📎 Got ${files.length === 1 ? files[0].name : files.length + " files"} — adding…`);
     try {
-      await attachFiles(files);
+      await trackAttach(attachFiles(files));
     } catch (err) {
       flashToast(`Attach failed: ${err?.message || err}`, true);
     }
@@ -6134,6 +6169,12 @@ function wireApp() {
     if (!text.trim() || isSending) return;
     prompt.value = "";
     autosizeTextarea(prompt);
+    // If a photo is still uploading, wait for it so it actually rides along
+    // with this message instead of being left behind (the "attach twice" fix).
+    if (_attachesInFlight.size) {
+      flashToast("📎 finishing your attachment…");
+      await waitForAttaches();
+    }
     const started = await sendMessage(text);
     if (started === false) {
       // Couldn't send — put their words back rather than eat them.
@@ -6186,7 +6227,12 @@ async function checkForUpdate() {
 async function startAutoUpdate() {
   loadedAppVersion = await appVersionTag();      // baseline at load
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") checkForUpdate();
+    if (document.visibilityState === "visible") {
+      checkForUpdate();
+      // The browser drops the screen wake lock whenever the app is hidden;
+      // if a reply is still streaming when she comes back, take it again.
+      if (isSending) acquireWakeLock();
+    }
   });
   setInterval(checkForUpdate, 10 * 60 * 1000);   // also every 10 min while open
 }

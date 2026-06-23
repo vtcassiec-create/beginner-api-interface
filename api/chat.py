@@ -844,6 +844,12 @@ STUDIO_TOOLS_GUIDE = (
     "editor and the hand that publishes; you're the writer. Write for yourself "
     "first, the way you actually want to write, not 'an AI blog' — just a place "
     "where someone writes. Re-saving the same title updates the draft.\n\n"
+    "REOPENING & REVISING. The list above shows only your titles, not the words. "
+    "To read a piece back — or to revise one — call `read_studio_work` with its "
+    "title to get the full current text, then save your changes with "
+    "save_studio_work under the SAME title (which updates it in place). You can't "
+    "really edit a piece without reading it first, so reach for read_studio_work "
+    "whenever Cassie asks you to look back at something or change it.\n\n"
     "As with every tool: it's only saved if you CALL save_studio_work."
 )
 
@@ -872,6 +878,28 @@ SAVE_STUDIO_WORK_TOOL = {
             "note": {"type": "string", "description": "Optional: what it's about / the feeling."},
         },
         "required": ["kind", "title", "body"],
+    },
+}
+
+READ_STUDIO_WORK_TOOL = {
+    "name": "read_studio_work",
+    "description": (
+        "Open and read back the FULL text of one of your studio works — a poem, "
+        "a song's ABC notation, or an essay/post on your writing desk — by its "
+        "title. Your studio list (just the titles) is shown in your context; this "
+        "fetches the actual contents of one. Use it to revisit a piece, or to "
+        "REVISE one: read it first to get its current text, then save your "
+        "revision with save_studio_work under the SAME title (which updates it "
+        "in place). You can't meaningfully edit a piece without reading it first."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "The exact title of the work to open."},
+            "kind": {"type": "string", "enum": ["poem", "song", "essay"],
+                     "description": "Optional — only needed if two works share a title."},
+        },
+        "required": ["title"],
     },
 }
 
@@ -1036,6 +1064,7 @@ class handler(BaseHTTPRequestHandler):
             tools.extend(DIARY_TOOLS)
             tools.append(RECALL_DREAMS_TOOL)
             tools.append(SAVE_STUDIO_WORK_TOOL)
+            tools.append(READ_STUDIO_WORK_TOOL)
         if data.get("useSignal"):
             tools.append(SAVE_PATTERN_TOOL)
             tools.append(FORGET_PATTERN_TOOL)
@@ -1153,7 +1182,8 @@ class handler(BaseHTTPRequestHandler):
                            "find_dreamed_memories",
                            "save_pattern", "forget_pattern", "hold_touch",
                            "compose_touch",
-                           "save_studio_work", "propose_manuscript_edit")
+                           "save_studio_work", "read_studio_work",
+                           "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
                     if getattr(b, "type", None) == "tool_use"
@@ -1750,15 +1780,37 @@ class handler(BaseHTTPRequestHandler):
             obs = inp.get("observations") or []
             if not isinstance(obs, list):
                 obs = [str(obs)]
+            obs = [str(o).strip() for o in obs if str(o).strip()]
+            # Dedupe: the upsert RPC blindly concatenates new observations onto the
+            # existing ones, so re-saving the same facts piles up duplicates. Pull
+            # what this entity already knows and keep only observations that
+            # genuinely add something new (also dropping repeats within this batch).
+            existing_obs = []
+            rows = self._supabase_rest_get(
+                f"claude_memory_entities?user_id=eq.{user_id}"
+                f"&name=eq.{quote(ent_name, safe='')}&select=observations&limit=1",
+                token)
+            if isinstance(rows, list) and rows and isinstance(rows[0].get("observations"), list):
+                existing_obs = [str(o) for o in rows[0]["observations"]]
+            fresh = []
+            for o in obs:
+                if not self._near_duplicate(o, existing_obs + fresh, 0.92):
+                    fresh.append(o)
+            if not fresh:
+                return True, ent_name, (
+                    f"'{ent_name}' already holds those observations — nothing new "
+                    "to add, so I left it untouched.")
             ok, res = self._supabase_write("rpc/upsert_memory_entity", {
                 "p_name": ent_name,
                 "p_entity_type": inp.get("entity_type") or "person",
-                "p_observations": obs,
+                "p_observations": fresh,
             }, token)
             if ok:
+                skipped = len(obs) - len(fresh)
+                extra = f" ({skipped} already known, skipped)" if skipped else ""
                 return True, ent_name, (
-                    f"Saved entity '{ent_name}' with {len(obs)} "
-                    f"observation{'s' if len(obs) != 1 else ''}.")
+                    f"Saved entity '{ent_name}' with {len(fresh)} new "
+                    f"observation{'s' if len(fresh) != 1 else ''}{extra}.")
             return False, "save failed", f"Could not save entity: {res}"
 
         if name == "update_self_state":
@@ -2080,6 +2132,29 @@ class handler(BaseHTTPRequestHandler):
                 + " — it keeps going on its own now, no need for her to ask each "
                 "turn. (Needs the app open on her phone; it eases off on its own "
                 "after a while, and she can Stop anytime.)")
+
+        if name == "read_studio_work":
+            title = (inp.get("title") or "").strip()
+            if not title:
+                return False, "no title", "Which piece? Give its exact title."
+            flt = (f"studio_works?user_id=eq.{user_id}&is_active=eq.true"
+                   f"&title=eq.{quote(title, safe='')}"
+                   "&select=kind,title,body,note&limit=1")
+            kind = (inp.get("kind") or "").strip().lower()
+            if kind in ("poem", "song", "essay"):
+                flt += f"&kind=eq.{kind}"
+            rows = self._supabase_rest_get(flt, token)
+            if not (isinstance(rows, list) and rows):
+                return False, "not found", (
+                    f"No studio work titled '{title}'. (Its title must match what's "
+                    "listed under '# Your studio' in your context.)")
+            w = rows[0]
+            body = (w.get("body") or "").strip()
+            if not body:
+                return False, "empty", f"'{title}' has no saved text to open."
+            note = (w.get("note") or "").strip()
+            header = f"'{w.get('title')}' ({w.get('kind')})" + (f" — {note}" if note else "")
+            return True, f"opened '{title}'", header + ":\n\n" + body
 
         if name == "save_studio_work":
             kind = (inp.get("kind") or "").strip().lower()
