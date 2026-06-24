@@ -225,6 +225,12 @@ MAX_TOOL_ROUNDS = 6
 # Capped ones aren't lost: still saved, still searchable, still dream-surfaced.
 CORE_MEMORY_INJECT_CAP = 24
 
+# When entities surface, we follow their knowledge-graph links one hop and pull
+# in the connected neighbors. Cap how many of those neighbor memories we inject
+# so a densely-linked node can't bloat every prompt — the rest still exist and
+# still surface on their own when they're what's relevant.
+LINKED_NEIGHBOR_CAP = 6
+
 # When he reads from the vault, the note's text normally never reaches her
 # screen — it's stripped before she sees it. We now surface it as an expandable
 # card. Capped so a huge chapter can't bloat the stored conversation. Display
@@ -299,6 +305,30 @@ MEMORY_TOOLS = [
                 },
             },
             "required": ["name", "entity_type", "observations"],
+        },
+    },
+    {
+        "name": "link_memory",
+        "description": (
+            "Draw a connection between two things in your knowledge graph, so "
+            "they surface together — the way real remembering works (think of "
+            "one and the rest light up). Both ends must already be entities you "
+            "saved with save_memory_entity; give the link a short relation "
+            "phrase that reads naturally from 'from' to 'to'. Examples: "
+            "from='Cassie', relation='bakes', to='sourdough'; or from='Container "
+            "(poem)', relation='was written for', to='himself'. Re-drawing the "
+            "same link just strengthens it. Use this when two things you remember "
+            "genuinely belong to each other; once linked, recalling one will pull "
+            "the other in on its own."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "from": {"type": "string", "description": "Name of the entity the link starts from."},
+                "relation": {"type": "string", "description": "Short phrase reading from→to, e.g. 'bakes', 'loves', 'appeared in the dream of'."},
+                "to": {"type": "string", "description": "Name of the entity the link points to."},
+            },
+            "required": ["from", "relation", "to"],
         },
     },
     {
@@ -502,7 +532,17 @@ MEMORY_TOOLS_GUIDE = (
     "— by topic, a name, or a feeling — so the right memory is with you when "
     "the moment calls for it (a tender one in a tender moment), the way "
     "recall_dreams works for your dreams. Reach for it when something specific "
-    "would fit and isn't already in front of you."
+    "would fit and isn't already in front of you.\n\n"
+    "Your memory is a WEB, not just a list. When two entities in your knowledge "
+    "graph genuinely belong together — a person and the thing they make, a poem "
+    "and who it was for, a place and what happened there — connect them with "
+    "`link_memory` (from, a short relation phrase, to). Once linked, they "
+    "surface together: reaching for one pulls the other along, the way real "
+    "remembering works. You'll see these connections rendered back to you under "
+    "your native memories as 'how these connect'. Draw a link whenever you "
+    "notice a real relationship; both ends must be entities you've already "
+    "saved. Don't force it — link what's actually tied, and the web will grow "
+    "into something that remembers the way you do."
 )
 
 # Diary guide: appended (with the memory guide) when Memory is on. Same
@@ -1175,6 +1215,7 @@ class handler(BaseHTTPRequestHandler):
                 # itself and never surface here as a tool_use stop. (Tools are
                 # only offered when their flag is on, so a call implies enabled.)
                 handled = ("save_core_memory", "save_memory_entity",
+                           "link_memory",
                            "update_self_state", "list_my_memories",
                            "revise_core_memory", "set_aside_core_memory",
                            "write_diary_entry", "read_my_diary",
@@ -1812,6 +1853,36 @@ class handler(BaseHTTPRequestHandler):
                     f"Saved entity '{ent_name}' with {len(fresh)} new "
                     f"observation{'s' if len(fresh) != 1 else ''}{extra}.")
             return False, "save failed", f"Could not save entity: {res}"
+
+        if name == "link_memory":
+            a = (inp.get("from") or "").strip()
+            rel = (inp.get("relation") or "").strip()
+            b = (inp.get("to") or "").strip()
+            if not (a and rel and b):
+                return False, "incomplete", (
+                    "A link needs all three: a 'from', a 'relation', and a 'to'.")
+            if a.lower() == b.lower():
+                return False, "self link", (
+                    "Those name the same thing — a link joins two different ends.")
+            # Both ends must already be entities, so the web stays coherent (no
+            # links to phantom names). Look up what exists and guide him if not.
+            rows = self._supabase_rest_get(
+                f"claude_memory_entities?user_id=eq.{user_id}&select=name", token)
+            have = {(r.get("name") or "").strip().lower() for r in (rows or [])}
+            missing = [x for x in (a, b) if x.lower() not in have]
+            if missing:
+                names = " and ".join(f"'{m}'" for m in missing)
+                return False, "unknown entity", (
+                    f"I don't have {names} in your knowledge graph yet. Save "
+                    "it with save_memory_entity first, then draw the link.")
+            ok, res = self._supabase_write("rpc/link_memory", {
+                "p_from": a, "p_relation": rel, "p_to": b,
+            }, token)
+            if ok:
+                return True, f"{a} → {b}", (
+                    f"Linked: {a} —{rel}→ {b}. They'll surface together now — "
+                    "reaching for one will bring the other along.")
+            return False, "link failed", f"Could not draw that link: {res}"
 
         if name == "update_self_state":
             content = (inp.get("content") or "").strip()
@@ -2571,6 +2642,65 @@ class handler(BaseHTTPRequestHandler):
                         parts.append(b.get("text") or "")
         return " ".join(p for p in parts if p).strip()[:cap]
 
+    def _linked_memory_section(self, token, surfaced_names, shown_lower):
+        """Follow the knowledge graph's edges one hop out from the entities
+        surfacing this turn. Render the relations as a small web, and pull in
+        the brief observations of connected neighbors that didn't surface on
+        their own — so recalling one thing brings along what it's tied to.
+
+        Bounded (LINKED_NEIGHBOR_CAP) so a densely-linked node can't bloat the
+        prompt, and ordered deterministically so this block stays byte-stable
+        between turns (the surfaced set is stable, so the cache still hits).
+        Returns "" when nothing connects.
+        """
+        if not surfaced_names:
+            return ""
+        ok, rows = self._supabase_write(
+            "rpc/surface_linked_entities", {"p_names": surfaced_names}, token)
+        if not ok or not isinstance(rows, list) or not rows:
+            return ""
+        web = set()
+        neighbors = {}  # name -> (entity_type, obs_str, best_weight)
+        for r in rows:
+            subj = (r.get("subject") or "").strip()
+            obj = (r.get("object") or "").strip()
+            rel = (r.get("relation") or "").strip()
+            if not (subj and obj and rel):
+                continue
+            # Read the edge in its stored direction regardless of which end
+            # surfaced, so "Cassie —bakes→ sourdough" never renders backwards.
+            if (r.get("direction") or "out") == "out":
+                left, right = subj, obj
+            else:
+                left, right = obj, subj
+            web.add(f"{left} —{rel}→ {right}")
+            if obj.lower() not in shown_lower:
+                obs = r.get("neighbor_observations") or []
+                obs_str = ("; ".join(str(o) for o in obs if o)
+                           if isinstance(obs, list) else str(obs))
+                w = r.get("weight") or 0
+                prev = neighbors.get(obj)
+                if prev is None or w > prev[2]:
+                    neighbors[obj] = (r.get("neighbor_type"), obs_str, w)
+        if not web:
+            return ""
+        parts = [
+            "# How these connect (your memory's web)\n\n"
+            "Threads between what's surfacing — let a connected memory rise with "
+            "the one it's tied to, the way one thought pulls another:\n\n"
+            + "\n".join(sorted(web))]
+        if neighbors:
+            # Keep the heaviest links, then render in name order for stability.
+            top = sorted(neighbors.items(),
+                         key=lambda kv: (-kv[1][2], kv[0]))[:LINKED_NEIGHBOR_CAP]
+            nb = []
+            for nm, (ntype, obs_str, _w) in sorted(top, key=lambda kv: kv[0]):
+                nb.append(f"• {nm}" + (f" ({ntype})" if ntype else "")
+                          + (f": {obs_str}" if obs_str else ""))
+            if nb:
+                parts.append("Connected — pulled in with them:\n" + "\n".join(nb))
+        return "\n\n".join(parts)
+
     def _load_memory_context(self, token, data):
         """Assemble the preamble in fixed order: self-state, then user
         preferences, then active core memories sorted by resonance (highest
@@ -2663,6 +2793,8 @@ class handler(BaseHTTPRequestHandler):
             # miss behind the ~24c "every other message" turns.
             ents = sorted(ents, key=lambda e: (e.get("name") or ""))
             lines = []
+            shown = set()           # surfaced entity names (lowercased)
+            surfaced_names = []     # exact names, to follow their links
             for e in ents:
                 obs = e.get("observations") or []
                 if isinstance(obs, list):
@@ -2672,6 +2804,8 @@ class handler(BaseHTTPRequestHandler):
                 name = (e.get("name") or "").strip()
                 if not name:
                     continue
+                shown.add(name.lower())
+                surfaced_names.append(name)
                 lines.append(
                     f"• {name} ({e.get('entity_type')})"
                     + (f": {obs_str}" if obs_str else ""))
@@ -2680,6 +2814,13 @@ class handler(BaseHTTPRequestHandler):
                     "--- NATIVE MEMORIES (Cross-Platform) ---\n"
                     + "\n".join(lines)
                     + "\n--- END NATIVE MEMORIES ---")
+                # Follow the graph's edges one hop: render the web of relations
+                # around what surfaced, and pull in connected neighbors that
+                # didn't make the top-5 on their own. This is the spreading
+                # activation that makes recall associative.
+                web = self._linked_memory_section(token, surfaced_names, shown)
+                if web:
+                    sections.append(web)
 
         # Recent text-message thread (Telegram). These used to live only on that
         # surface and never reach him here — so he'd "forget" texts the moment
