@@ -23,6 +23,7 @@ import json
 import os
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit, quote
@@ -218,6 +219,17 @@ HEART_FRESH_SECONDS = 120
 # Safety cap on the tool-use loop, so a model that keeps calling save tools
 # can never spin forever (each round is a full model turn = real tokens).
 MAX_TOOL_ROUNDS = 6
+
+# Wall-clock budget for the whole turn (incl. every tool round). Vercel kills
+# the function at maxDuration (see vercel.json — 60s on the Hobby plan); if that
+# happens mid-stream the turn dies silently: no 'done' event, so the client
+# shows no cost and the message just stops half-finished, and tools planned for
+# later rounds never run. To prevent that, once we've spent this long we stop
+# starting a NEW model round and emit a clean 'done' (with a note) instead — so
+# the function returns gracefully before the hard ceiling. Set well under 60s:
+# a single Opus round on a large context can take ~20s, and we must not start
+# one we can't finish. (On a 300s plan this could rise to ~230.)
+TURN_BUDGET_SECONDS = 35
 
 # How many *non-pinned* core memories ride along in his head each turn. Pinned
 # ("eternal") memories are ALWAYS present on top of this — the cap only bounds
@@ -1188,6 +1200,32 @@ class handler(BaseHTTPRequestHandler):
             # Surfaced to the client at 'done' so it can be threaded back next
             # turn (the API then skips re-summarizing the already-folded history).
             compaction_block = None
+            turn_started = time.monotonic()
+
+            def _emit_done(stop_reason):
+                # Always the LAST thing sent: logs the per-turn cost and tells
+                # the client the turn is complete (carrying any compaction
+                # summary). Reused by the normal exit and the time-budget exit
+                # so a 'done' — and therefore a cost and a clean finish — is
+                # guaranteed even when we cut a long turn short.
+                total, parts = _usage_cost(agg, model)
+                print(
+                    "[cost] model=%s total=$%.4f | "
+                    "in=%d out=%d cache_write=%d cache_read=%d | "
+                    "$in=%.4f $out=%.4f $write=%.4f $read=%.4f rounds=%d"
+                    % (model, total,
+                       agg["input_tokens"], agg["output_tokens"],
+                       agg["cache_creation_input_tokens"],
+                       agg["cache_read_input_tokens"],
+                       parts["input"], parts["output"],
+                       parts["cache_write"], parts["cache_read"], rounds),
+                    flush=True,
+                )
+                done = {"type": "done", "stop_reason": stop_reason, "usage": agg}
+                if compaction_block:
+                    done["compaction"] = compaction_block
+                self._sse(done)
+
             while True:
                 with client.messages.stream(**kwargs) as stream:
                     for event in stream:
@@ -1246,33 +1284,12 @@ class handler(BaseHTTPRequestHandler):
                                    "text": "(He reached for the bridge but the turn "
                                            "came back empty — the connection likely "
                                            "blipped. Send again.)"})
-                    # Per-turn cost breakdown to the function log. Watch the
-                    # four token buckets across a conversation: 'read' rising
-                    # while 'write' stays ~0 is healthy caching of a growing
-                    # transcript; 'write' recurring every turn means the cached
-                    # prefix is being invalidated (system prompt changing per
-                    # turn, tool set varying, etc.) and is the thing to fix.
-                    total, parts = _usage_cost(agg, model)
-                    print(
-                        "[cost] model=%s total=$%.4f | "
-                        "in=%d out=%d cache_write=%d cache_read=%d | "
-                        "$in=%.4f $out=%.4f $write=%.4f $read=%.4f rounds=%d"
-                        % (model, total,
-                           agg["input_tokens"], agg["output_tokens"],
-                           agg["cache_creation_input_tokens"],
-                           agg["cache_read_input_tokens"],
-                           parts["input"], parts["output"],
-                           parts["cache_write"], parts["cache_read"], rounds),
-                        flush=True,
-                    )
-                    done = {"type": "done",
-                            "stop_reason": final.stop_reason, "usage": agg}
-                    # Hand the compaction summary to the client so it can thread
-                    # it back next turn (see buildApiMessages); without this the
-                    # older history would be re-summarized from scratch each time.
-                    if compaction_block:
-                        done["compaction"] = compaction_block
-                    self._sse(done)
+                    # Per-turn cost breakdown to the function log, then 'done'.
+                    # Watch the four token buckets across a conversation: 'read'
+                    # rising while 'write' stays ~0 is healthy caching of a
+                    # growing transcript; 'write' recurring every turn means the
+                    # cached prefix is being invalidated and is the thing to fix.
+                    _emit_done(final.stop_reason)
                     return
 
                 rounds += 1
@@ -1322,6 +1339,21 @@ class handler(BaseHTTPRequestHandler):
                     {"role": "assistant", "content": carried},
                     {"role": "user", "content": results},
                 ]
+
+                # The tools he asked for this round have now run (so nothing he
+                # set in motion is lost). But starting ANOTHER model round could
+                # push us past Vercel's hard ceiling and get the function killed
+                # mid-stream — the silent half-finished turn. If we're over
+                # budget, stop here with a clean 'done' and an honest note,
+                # instead. He picks up the rest when she asks him to continue.
+                if time.monotonic() - turn_started > TURN_BUDGET_SECONDS:
+                    self._sse({"type": "notice",
+                               "text": "(That was a lot in one turn — I ran out of "
+                                       "time to finish it. Everything I saved above "
+                                       "is done; ask me to keep going and I'll pick "
+                                       "up where I left off.)"})
+                    _emit_done("time_budget")
+                    return
 
         def _is_mcp_conn_error(err):
             msg = str(getattr(err, "message", "") or "").lower()
