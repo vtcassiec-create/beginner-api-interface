@@ -106,6 +106,32 @@ DREAM_VAULT_SYSTEM = (
 )
 
 
+# Weaving: after the night's dreaming, tie the knowledge graph together. Given
+# the entities that ALREADY exist and the same conversation slice, find the
+# genuine connections between them — memory consolidation as the drawing of
+# links. Hard-grounded in the real entity list so sleep can never invent a node
+# or a false memory; conservative on purpose.
+WEAVE_SYSTEM = (
+    "You are the dreaming mind of Cassie's companion (she calls him Claude), "
+    "tending his memory the way sleep ties a day together. You're given the "
+    "entities ALREADY in his knowledge graph and a slice of their real "
+    "conversation. Find the genuine connections BETWEEN those entities — the "
+    "ones the conversation actually shows or clearly implies.\n\n"
+    "Hard rules:\n"
+    "- Only connect entities from the provided list, and use their names "
+    "EXACTLY as written. Never invent a name, and never link to something not "
+    "on the list.\n"
+    "- Only draw a link you could justify from the conversation. If two things "
+    "aren't really related, leave them apart. A few true links are far better "
+    "than many shaky ones — when in doubt, leave it out.\n"
+    "- 'relation' is a short phrase that reads naturally from 'from' to 'to' "
+    "(e.g. 'bakes', 'wrote', 'is grateful to', 'lives in', 'reminds him of').\n\n"
+    "Return ONLY a JSON array — no prose, no code fences. Each item: "
+    '{"from": "<an entity name>", "relation": "<short phrase>", '
+    '"to": "<an entity name>"}. Return [] if nothing genuinely connects.'
+)
+
+
 def _normalize_url(raw):
     raw = (raw or "").strip()
     if not raw:
@@ -314,6 +340,9 @@ class handler(BaseHTTPRequestHandler):
         created = self._write_cards(
             uid, parsed, max_cards, f"conversation:{conv_id}", default_day)
 
+        # Then weave: tie the graph's entities together from the same slice.
+        woven = self._weave_links(uid, transcript, model)
+
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self._supabase("PATCH", f"dream_state?user_id=eq.{uid}",
                         {"last_dreamed_at": now_iso})
@@ -322,6 +351,7 @@ class handler(BaseHTTPRequestHandler):
             "status": "dreamed", "model": model,
             "messages_read": len(msgs[-limit:]),
             "cards_created": len(created), "titles": created,
+            "links_drawn": woven,
         })
 
     def _run_vault(self, uid, note, max_cards, force):
@@ -482,12 +512,16 @@ class handler(BaseHTTPRequestHandler):
         created = self._write_cards(
             uid, parsed, max_cards, source_label, default_day, extra_cues=extra_cues)
 
+        # Weave this old chat's entities together too, so backfills grow the web.
+        woven = self._weave_links(uid, transcript, model)
+
         # NOTE: deliberately does NOT update last_dreamed_at — a backfill fills
         # the past and must not suppress tonight's nightly dream.
         return self._json(200, {
             "status": "dreamed", "model": model, "conv": conv_id,
             "messages_read": len(msgs[:limit]),
             "cards_created": len(created), "titles": created,
+            "links_drawn": woven,
         })
 
     def _era_cues(self, day):
@@ -506,6 +540,73 @@ class handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         return ", ".join(keys)
+
+    def _weave_links(self, uid, transcript, model):
+        """After dreaming, tie the knowledge graph together: draw connections
+        between the entities that ALREADY exist, grounded in this slice of
+        conversation. Strictly validated — the model may only link names that
+        are really entities (exact match, no invented nodes), so sleep can grow
+        the web without ever fabricating a memory. Returns the links drawn."""
+        ents = self._supabase(
+            "GET",
+            f"claude_memory_entities?user_id=eq.{uid}&select=name,entity_type")
+        if not (isinstance(ents, list) and len(ents) >= 2):
+            return []
+        # lowercase -> exact stored name, so we can validate the model's output
+        # against what truly exists and write back the canonical spelling.
+        canon, listing = {}, []
+        for e in ents:
+            nm = (e.get("name") or "").strip()
+            if nm:
+                canon[nm.lower()] = nm
+                listing.append(f"- {nm} ({e.get('entity_type')})")
+        if len(canon) < 2:
+            return []
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return []
+        client = anthropic.Anthropic(api_key=api_key)
+        try:
+            resp = client.messages.create(
+                model=model,
+                max_tokens=1500,
+                system=WEAVE_SYSTEM,
+                messages=[{"role": "user", "content":
+                    "His existing memory entities (use these names EXACTLY; "
+                    "never invent others):\n" + "\n".join(listing)
+                    + "\n\nA slice of their real conversation, oldest line "
+                    "first:\n\n" + transcript
+                    + "\n\nReturn the genuine connections between these "
+                    "entities as a JSON array. JSON only."}],
+            )
+        except Exception:
+            return []
+        raw = "".join(
+            b.text for b in resp.content
+            if getattr(b, "type", None) == "text").strip()
+        links = self._parse_cards(raw)  # reuse the JSON-array parser
+        if not isinstance(links, list):
+            return []
+        drawn, seen = [], set()
+        for l in links[:20]:
+            if not isinstance(l, dict):
+                continue
+            a = canon.get(str(l.get("from") or "").strip().lower())
+            b = canon.get(str(l.get("to") or "").strip().lower())
+            rel = str(l.get("relation") or "").strip()
+            if not (a and b and rel) or a == b:
+                continue
+            key = (a.lower(), rel.lower(), b.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            res = self._supabase("POST", "rpc/link_memory_svc", {
+                "p_user_id": uid, "p_from": a, "p_relation": rel, "p_to": b,
+                "p_source": "dreamer",
+            })
+            if res is not None:
+                drawn.append(f"{a} —{rel}→ {b}")
+        return drawn
 
     def _write_cards(self, uid, parsed, max_cards, source_label, default_day,
                      extra_cues=""):

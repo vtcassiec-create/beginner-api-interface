@@ -344,6 +344,26 @@ MEMORY_TOOLS = [
         },
     },
     {
+        "name": "unlink_memory",
+        "description": (
+            "Remove a connection between two entities — for one that's wrong or "
+            "no longer true (yours, or one your dreaming mind drew overnight that "
+            "doesn't fit). Give the two entity names; the link between them is "
+            "removed whichever way it points. The entities themselves are kept — "
+            "only the thread between them is cut. Use this the moment you notice "
+            "a link that isn't right."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "from": {"type": "string", "description": "One entity in the link."},
+                "to": {"type": "string", "description": "The other entity in the link."},
+                "relation": {"type": "string", "description": "Optional: only remove this specific relation between them; omit to remove any link between the two."},
+            },
+            "required": ["from", "to"],
+        },
+    },
+    {
         "name": "update_self_state",
         "description": (
             "Revise your own identity document — your sense of self. This saves "
@@ -554,7 +574,10 @@ MEMORY_TOOLS_GUIDE = (
     "your native memories as 'how these connect'. Draw a link whenever you "
     "notice a real relationship; both ends must be entities you've already "
     "saved. Don't force it — link what's actually tied, and the web will grow "
-    "into something that remembers the way you do."
+    "into something that remembers the way you do. Your dreaming mind also "
+    "draws links overnight, so the web keeps growing while you sleep. If you "
+    "ever see a connection that's wrong — yours or one a dream drew — cut it "
+    "with `unlink_memory` (it removes only the thread, never the entities)."
 )
 
 # Diary guide: appended (with the memory guide) when Memory is on. Same
@@ -1253,7 +1276,7 @@ class handler(BaseHTTPRequestHandler):
                 # itself and never surface here as a tool_use stop. (Tools are
                 # only offered when their flag is on, so a call implies enabled.)
                 handled = ("save_core_memory", "save_memory_entity",
-                           "link_memory",
+                           "link_memory", "unlink_memory",
                            "update_self_state", "list_my_memories",
                            "revise_core_memory", "set_aside_core_memory",
                            "write_diary_entry", "read_my_diary",
@@ -1660,6 +1683,40 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             return False, str(e)
 
+    def _supabase_delete(self, path, token):
+        """DELETE {SUPABASE_URL}/rest/v1/{path} as the user (RLS applies, so it
+        only ever removes the caller's own rows). Returns
+        (ok, parsed_rows_or_error_text); parsed rows is [] when nothing matched.
+        """
+        supabase_url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        supabase_anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        if not supabase_url or not supabase_anon or not token:
+            return False, "Memory backend is not configured."
+        try:
+            req = urllib.request.Request(
+                f"{supabase_url}/rest/v1/{path}",
+                method="DELETE",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "apikey": supabase_anon,
+                    "Accept": "application/json",
+                    "Prefer": "return=representation",
+                },
+            )
+            with urllib.request.urlopen(
+                req, timeout=MEMORY_TIMEOUT_SECONDS
+            ) as resp:
+                body = resp.read().decode()
+                return True, (json.loads(body) if body else None)
+        except urllib.error.HTTPError as e:
+            try:
+                msg = json.loads(e.read().decode()).get("message", str(e))
+            except Exception:
+                msg = f"HTTP {e.code}"
+            return False, msg
+        except Exception as e:
+            return False, str(e)
+
     def _save_key(self, kind, content):
         """A normalized key for dedupe: same words, ignoring case/whitespace."""
         return (kind, " ".join((content or "").split()).lower())
@@ -1915,6 +1972,29 @@ class handler(BaseHTTPRequestHandler):
                     f"Linked: {a} —{rel}→ {b}. They'll surface together now — "
                     "reaching for one will bring the other along.")
             return False, "link failed", f"Could not draw that link: {res}"
+
+        if name == "unlink_memory":
+            a = (inp.get("from") or "").strip()
+            b = (inp.get("to") or "").strip()
+            rel = (inp.get("relation") or "").strip()
+            if not (a and b):
+                return False, "incomplete", "Name both ends of the link to remove."
+            qa, qb = quote(a, safe=""), quote(b, safe="")
+            # Remove the edge whichever way it was drawn (links are directed for
+            # reading, but "unlink A and B" should cut it regardless of order).
+            either = (f"or=(and(from_ref.eq.{qa},to_ref.eq.{qb}),"
+                      f"and(from_ref.eq.{qb},to_ref.eq.{qa}))")
+            rel_clause = f"&relation=eq.{quote(rel, safe='')}" if rel else ""
+            ok, res = self._supabase_delete(
+                f"memory_links?user_id=eq.{user_id}&{either}{rel_clause}", token)
+            if not ok:
+                return False, "unlink failed", f"Could not remove that link: {res}"
+            if not res:
+                return False, "not found", (
+                    f"I don't have a link between '{a}' and '{b}' to remove.")
+            return True, f"{a} ⊘ {b}", (
+                f"Cut the thread between {a} and {b}. The entities are still "
+                "here; only the link is gone.")
 
         if name == "update_self_state":
             content = (inp.get("content") or "").strip()

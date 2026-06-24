@@ -99,6 +99,52 @@ GRANT EXECUTE ON FUNCTION
   link_memory(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT) TO authenticated;
 
 -- =========================================================================
+-- Draw a link as the DREAMER (server-side, service role)
+--
+-- The nightly dreamer (api/dream.py) runs with the service key and has no
+-- auth.uid(), so it can't use link_memory() above (which derives the owner
+-- from the session). This variant takes the user id explicitly. SECURITY
+-- DEFINER so it can write the row; locked to service_role ONLY, so a signed-in
+-- user can never call it to forge a link in someone else's graph. Same
+-- insert-or-strengthen behaviour; tagged with its source ('dreamer').
+-- =========================================================================
+
+CREATE OR REPLACE FUNCTION link_memory_svc(
+  p_user_id    UUID,
+  p_from       TEXT,
+  p_relation   TEXT,
+  p_to         TEXT,
+  p_from_kind  TEXT DEFAULT 'entity',
+  p_to_kind    TEXT DEFAULT 'entity',
+  p_note       TEXT DEFAULT NULL,
+  p_source     TEXT DEFAULT 'dreamer'
+)
+RETURNS memory_links
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  result memory_links;
+BEGIN
+  INSERT INTO memory_links
+      (user_id, from_kind, from_ref, relation, to_kind, to_ref, note, source)
+    VALUES (p_user_id, p_from_kind, p_from, p_relation, p_to_kind, p_to,
+            p_note, COALESCE(p_source, 'dreamer'))
+  ON CONFLICT (user_id, from_kind, from_ref, relation, to_kind, to_ref)
+    DO UPDATE SET weight = memory_links.weight + 1,
+                  note   = COALESCE(EXCLUDED.note, memory_links.note)
+  RETURNING * INTO result;
+  RETURN result;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION
+  link_memory_svc(UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION
+  link_memory_svc(UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT) TO service_role;
+
+-- =========================================================================
 -- Surface one hop: given the entity names already surfacing this turn, return
 -- the entity↔entity edges that touch them, each with the NEIGHBOR's type and
 -- observations inlined — so a connected memory can ride in even when it didn't
