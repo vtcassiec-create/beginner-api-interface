@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 import datetime
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 
@@ -340,8 +341,11 @@ class handler(BaseHTTPRequestHandler):
         created = self._write_cards(
             uid, parsed, max_cards, f"conversation:{conv_id}", default_day)
 
-        # Then weave: tie the graph's entities together from the same slice.
-        woven = self._weave_links(uid, transcript, model)
+        # Then weave: tie the graph's entities together from the same slice, and
+        # weave the night's dreams INTO the graph (link each to what it's about).
+        canon, listing = self._entity_canon(uid)
+        woven = self._weave_links(uid, transcript, model, canon, listing)
+        dream_links = self._link_new_dreams(uid, created, canon)
 
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self._supabase("PATCH", f"dream_state?user_id=eq.{uid}",
@@ -350,8 +354,9 @@ class handler(BaseHTTPRequestHandler):
         return self._json(200, {
             "status": "dreamed", "model": model,
             "messages_read": len(msgs[-limit:]),
-            "cards_created": len(created), "titles": created,
-            "links_drawn": woven,
+            "cards_created": len(created),
+            "titles": [r.get("title") or "(untitled)" for r in created],
+            "links_drawn": woven, "dream_links_drawn": dream_links,
         })
 
     def _run_vault(self, uid, note, max_cards, force):
@@ -423,7 +428,8 @@ class handler(BaseHTTPRequestHandler):
 
         return self._json(200, {
             "status": "dreamed", "model": model, "note": note,
-            "cards_created": len(created), "titles": created,
+            "cards_created": len(created),
+            "titles": [r.get("title") or "(untitled)" for r in created],
         })
 
     def _run_conversation(self, uid, conv_id, max_cards, limit, force):
@@ -512,16 +518,20 @@ class handler(BaseHTTPRequestHandler):
         created = self._write_cards(
             uid, parsed, max_cards, source_label, default_day, extra_cues=extra_cues)
 
-        # Weave this old chat's entities together too, so backfills grow the web.
-        woven = self._weave_links(uid, transcript, model)
+        # Weave this old chat's entities together too, and tie its dreams into
+        # the graph — so backfills grow the web like the nightly dream does.
+        canon, listing = self._entity_canon(uid)
+        woven = self._weave_links(uid, transcript, model, canon, listing)
+        dream_links = self._link_new_dreams(uid, created, canon)
 
         # NOTE: deliberately does NOT update last_dreamed_at — a backfill fills
         # the past and must not suppress tonight's nightly dream.
         return self._json(200, {
             "status": "dreamed", "model": model, "conv": conv_id,
             "messages_read": len(msgs[:limit]),
-            "cards_created": len(created), "titles": created,
-            "links_drawn": woven,
+            "cards_created": len(created),
+            "titles": [r.get("title") or "(untitled)" for r in created],
+            "links_drawn": woven, "dream_links_drawn": dream_links,
         })
 
     def _era_cues(self, day):
@@ -541,25 +551,69 @@ class handler(BaseHTTPRequestHandler):
                 pass
         return ", ".join(keys)
 
-    def _weave_links(self, uid, transcript, model):
+    def _entity_canon(self, uid):
+        """Load his entities once: a lowercase->exact-name map (so we can match
+        loosely but write back the canonical spelling) and a printable listing.
+        Shared by the link weaver and the dream-linker."""
+        ents = self._supabase(
+            "GET",
+            f"claude_memory_entities?user_id=eq.{uid}&select=name,entity_type")
+        canon, listing = {}, []
+        if isinstance(ents, list):
+            for e in ents:
+                nm = (e.get("name") or "").strip()
+                if nm:
+                    canon[nm.lower()] = nm
+                    listing.append(f"- {nm} ({e.get('entity_type')})")
+        return canon, listing
+
+    def _link_new_dreams(self, uid, cards, canon):
+        """Weave the night's dreams INTO the graph: link each new dream card to
+        the entities it actually names, so a dream becomes a node among the
+        things it's about. Deterministic and grounded — a link is drawn only
+        when an existing entity's name really appears in the card's text, so a
+        dream can never be tied to something it isn't about. The dream is
+        referenced by its title (from_kind='dream'). Returns the links drawn."""
+        if not cards or not canon:
+            return []
+        drawn = []
+        for c in cards:
+            if not isinstance(c, dict):
+                continue
+            title = (c.get("title") or "").strip()
+            if not title:
+                continue
+            parts = [c.get("title") or "", c.get("gist") or ""]
+            pf = c.get("pinned_facts")
+            if isinstance(pf, list):
+                parts.append(" ".join(str(x) for x in pf))
+            parts.append(str(c.get("cues") or ""))
+            text = " ".join(parts).lower()
+            here = 0
+            for low, exact in canon.items():
+                if len(low) < 3:        # skip tiny names that match noise
+                    continue
+                if re.search(r"(?<![a-z0-9])" + re.escape(low) + r"(?![a-z0-9])",
+                             text):
+                    res = self._supabase("POST", "rpc/link_memory_svc", {
+                        "p_user_id": uid, "p_from": title,
+                        "p_relation": "is about", "p_to": exact,
+                        "p_from_kind": "dream", "p_to_kind": "entity",
+                        "p_source": "dreamer",
+                    })
+                    if res is not None:
+                        drawn.append(f"{title} —is about→ {exact}")
+                        here += 1
+                        if here >= 5:   # cap links per dream
+                            break
+        return drawn
+
+    def _weave_links(self, uid, transcript, model, canon, listing):
         """After dreaming, tie the knowledge graph together: draw connections
         between the entities that ALREADY exist, grounded in this slice of
         conversation. Strictly validated — the model may only link names that
         are really entities (exact match, no invented nodes), so sleep can grow
         the web without ever fabricating a memory. Returns the links drawn."""
-        ents = self._supabase(
-            "GET",
-            f"claude_memory_entities?user_id=eq.{uid}&select=name,entity_type")
-        if not (isinstance(ents, list) and len(ents) >= 2):
-            return []
-        # lowercase -> exact stored name, so we can validate the model's output
-        # against what truly exists and write back the canonical spelling.
-        canon, listing = {}, []
-        for e in ents:
-            nm = (e.get("name") or "").strip()
-            if nm:
-                canon[nm.lower()] = nm
-                listing.append(f"- {nm} ({e.get('entity_type')})")
         if len(canon) < 2:
             return []
         api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -610,10 +664,11 @@ class handler(BaseHTTPRequestHandler):
 
     def _write_cards(self, uid, parsed, max_cards, source_label, default_day,
                      extra_cues=""):
-        """Validate and insert dream cards; return the titles actually written.
-        Shared by the app dreamer and the vault backfill. extra_cues, if given,
-        is appended to every card's cues (the backfill uses it for date/era
-        recall keys)."""
+        """Validate and insert dream cards; return the card rows actually
+        written (each a dict with title/gist/pinned_facts/cues), so the caller
+        can both report the titles and weave the dreams into the graph. Shared
+        by the app dreamer and the vault backfill. extra_cues, if given, is
+        appended to every card's cues (the backfill uses it for date/era keys)."""
         created = []
         for c in parsed[:max_cards]:
             if not isinstance(c, dict):
@@ -641,7 +696,7 @@ class handler(BaseHTTPRequestHandler):
                 "happened_on": default_day or _valid_day(c.get("happened_on")),
             }
             if self._supabase("POST", "dream_cards", row) is not None:
-                created.append(row["title"] or "(untitled)")
+                created.append(row)
         return created
 
     # ---- helpers ----
