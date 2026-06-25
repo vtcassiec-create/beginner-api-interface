@@ -2244,6 +2244,46 @@ dialog::backdrop {
   border-radius: 999px;
 }
 
+/* ---- Connections (his memory's web) ---- */
+.connections-web { display: flex; flex-direction: column; gap: 14px; }
+.conn-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  background: var(--bg);
+}
+.conn-node {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.conn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0 3px 10px;
+  border-left: 2px solid var(--border);
+  margin-left: 4px;
+}
+.conn-edge {
+  flex: 1;
+  color: var(--text-muted);
+  line-height: 1.4;
+  word-break: break-word;
+}
+.conn-del {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+}
+.conn-del:hover { color: var(--danger); background: var(--bg-elev-2); }
+
 /* ---------- Story room ---------- */
 .story-form { min-width: min(540px, 90vw); }
 

@@ -588,6 +588,7 @@
         <button type="button" class="mem-tab-btn" data-tab="about-you">About You</button>
         <button type="button" class="mem-tab-btn" data-tab="core">Core Memories</button>
         <button type="button" class="mem-tab-btn" data-tab="graph">Knowledge Graph</button>
+        <button type="button" class="mem-tab-btn" data-tab="connections">Connections</button>
         <button type="button" class="mem-tab-btn" data-tab="forget">🔒 Forget</button>
       </div>
 
@@ -667,6 +668,12 @@
         <div class="mem-add-row">
           <button type="button" id="entity-add-btn" class="primary">Add entity</button>
         </div>
+      </div>
+
+      <div class="mem-tab" data-tab="connections">
+        <h4>Connections <span class="muted small">— his memory's web</span></h4>
+        <p class="muted small">The threads between the things he remembers. He draws them as he notices what belongs together, and his dreaming mind weaves more each night. Tap ✕ to cut one that isn't right.</p>
+        <div id="connections-web" class="connections-web"></div>
       </div>
 
       <div class="mem-tab" data-tab="forget">

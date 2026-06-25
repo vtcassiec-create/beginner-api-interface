@@ -976,6 +976,23 @@ async function dbDeleteMemoryEntity(id) {
   if (error) throw error;
 }
 
+// The edges of his knowledge graph — the links he (and his dreaming mind) draw
+// between entities. RLS scopes these to her, like everything else.
+async function dbListMemoryLinks() {
+  const { data, error } = await db
+    .from("memory_links")
+    .select("id,from_ref,relation,to_ref,weight,source,created_at")
+    .order("from_ref", { ascending: true })
+    .order("weight", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+async function dbDeleteMemoryLink(id) {
+  const { error } = await db.from("memory_links").delete().eq("id", id);
+  if (error) throw error;
+}
+
 async function dbGetUserPreferences() {
   const { data, error } = await db
     .from("user_preferences")
@@ -5418,6 +5435,82 @@ async function openMemoriesDialog(tab = "identity") {
   await loadIdentityAndPrefs();
   await renderMemoryList();
   await renderEntityList();
+  await renderConnections();
+}
+
+// His memory's web: every link between entities, grouped under the entity it
+// reaches out from, so it reads like a little constellation. Each thread shows
+// who drew it (✨ a dream, ✍️ him) and how strong it's grown, and can be cut
+// with a tap — removing only the thread, never the entities.
+async function renderConnections() {
+  const box = $("connections-web");
+  if (!box) return;
+  box.innerHTML = '<p class="muted small">Loading…</p>';
+  let links;
+  try {
+    links = await dbListMemoryLinks();
+  } catch (err) {
+    box.innerHTML =
+      `<p class="mem-empty muted small">Couldn't load connections: ${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  if (!links.length) {
+    box.innerHTML =
+      '<p class="mem-empty muted small">No connections yet. He draws them as he ' +
+      'notices what belongs together — and his dreaming mind weaves more each ' +
+      'night. 🕸️</p>';
+    return;
+  }
+  const groups = new Map();
+  for (const l of links) {
+    if (!groups.has(l.from_ref)) groups.set(l.from_ref, []);
+    groups.get(l.from_ref).push(l);
+  }
+  box.innerHTML = "";
+  const intro = document.createElement("p");
+  intro.className = "muted small";
+  intro.textContent =
+    `${links.length} thread${links.length === 1 ? "" : "s"} across his memory. ` +
+    "✨ woven in a dream · ✍️ he drew it.";
+  box.appendChild(intro);
+  for (const [from, rows] of [...groups.entries()].sort((a, b) =>
+    a[0].localeCompare(b[0]))) {
+    const grp = document.createElement("div");
+    grp.className = "conn-group";
+    const node = document.createElement("div");
+    node.className = "conn-node";
+    node.textContent = from;
+    grp.appendChild(node);
+    for (const l of rows) {
+      const row = document.createElement("div");
+      row.className = "conn-row";
+      const edge = document.createElement("span");
+      edge.className = "conn-edge";
+      const mark = l.source === "dreamer" ? "✨" : "✍️";
+      const w = l.weight && l.weight > 1 ? ` ·${l.weight}` : "";
+      edge.textContent = `${mark} ${l.relation} → ${l.to_ref}${w}`;
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "conn-del";
+      del.textContent = "✕";
+      del.title = "Cut this thread";
+      del.addEventListener("click", async () => {
+        del.disabled = true;
+        try {
+          await dbDeleteMemoryLink(l.id);
+          await renderConnections();
+          flashToast("Cut that thread.");
+        } catch (e) {
+          del.disabled = false;
+          flashToast(`Couldn't remove that link: ${e.message}`, true);
+        }
+      });
+      row.appendChild(edge);
+      row.appendChild(del);
+      grp.appendChild(row);
+    }
+    box.appendChild(grp);
+  }
 }
 
 // Show one memory tab (About Him / About You / Core Memories / Knowledge
@@ -5436,6 +5529,7 @@ async function refreshMemoriesIfOpen() {
   try {
     await renderMemoryList();
     await renderEntityList();
+    await renderConnections();
   } catch (err) { console.error(err); }
 }
 
