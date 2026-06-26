@@ -4588,20 +4588,20 @@ async function onHeartRestingChange() {
 }
 
 // ---------- Heart-coupled touch ----------
-// A saved songbook pattern, played through the bridge while shaped live by
-// her pulse. The loop runs here (the freshest BPM is in this tab); each tick
-// computes a short chunk of steps from the current heart rate and sends it
-// to /api/touch, which performs it via the bridge's compose. Three modes:
+// A saved songbook pattern, played straight to her connected toy over Bluetooth
+// while shaped live by her pulse. The loop runs here (the freshest BPM is in
+// this tab); each tick computes a short chunk of steps from the current heart
+// rate and plays it via touchApi (direct to the device). Three modes:
 //   pulse      — tempo keeps time with her heart
 //   responsive — intensity rises as her heart rises above resting
 //   calming    — softens and slows as she settles
-// Safety: a hard intensity ceiling (enforced server-side too), auto-stop on
+// Safety: a hard intensity ceiling (applied as each chunk is built), auto-stop on
 // stale pulse or band disconnect, and a 30-minute session cap. While running,
 // heart_state carries the coupling so HE knows what she's feeling.
 
 const COUPLE_CHUNK_SECONDS = 18;  // each send covers about this much touch (longer
-                                  // = fewer bridge restarts = less stutter; the
-                                  // heart re-shapes it each send, so still tracks)
+                                  // = fewer re-sends = less stutter; the heart
+                                  // re-shapes it each send, so it still tracks)
 const COUPLE_RESEND_MARGIN_S = 5; // re-send this many seconds before the chunk
                                   // ends — a margin under it, not halfway through
 const COUPLE_MAX_MINUTES = 30;    // hard session cap
@@ -4783,9 +4783,9 @@ function stopCoupling(reason) {
 // He can keep the toy running steady across turns with the hold_touch tool,
 // instead of one bounded compose per turn that lapses in the gaps. The keep-
 // alive loop runs HERE (same idea as heart-coupling): it reads the touch_session
-// row he writes, then re-sends a short STEADY chunk to /api/touch a beat before
-// the last one ends, so the bridge's dead-man's switch never trips and the touch
-// stays unbroken — hands-free — until he changes it or it stops.
+// row he writes, then re-sends a short STEADY chunk to the toy (via touchApi) a
+// beat before the last one ends, so the device never lapses and the touch stays
+// unbroken — hands-free — until he changes it or it stops.
 // Safety: a hard time cap, a settable ceiling, an always-present Stop, and it
 // stills the device the moment it stops; closing the app ends it within seconds
 // (the loop dies → no more keep-alives → the bridge's own switch stops the toy).
@@ -4919,13 +4919,12 @@ async function stopHold(reason, writeRow) {
   if (writeRow) { try { await dbStopTouchSession(); } catch (e) {} }
 }
 
-// ---------- Direct device control (SPIKE / beta) ----------
+// ---------- Direct device control ----------
 // Connects a Lovense toy straight from the browser over Web Bluetooth via
 // buttplug-js's in-browser WASM engine — no Intiface, no droplet, the same
 // shape as the heart-band connect above. Lazy-loaded from a CDN on first use.
-// FULLY ISOLATED from the existing /api/touch path: nothing here changes how
-// hold or coupling currently work. This is a spike to prove the direct path
-// before we migrate the loops to it (and retire the droplet).
+// This is how ALL touch reaches her now — compose, hold, and heart-coupling
+// all play through here; the old Signal Bridge / droplet path is retired.
 let bpClient = null;
 let bpLib = null;              // the buttplug module (for OutputType / DeviceOutput)
 const bpDevices = new Map();   // device.index -> ButtplugClientDevice

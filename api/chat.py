@@ -1327,7 +1327,7 @@ class handler(BaseHTTPRequestHandler):
                         # The toy lives in the browser, so we don't play here —
                         # we validate/clamp the phrase and hand the steps to the
                         # browser over SSE, which plays them on the direct Web
-                        # Bluetooth connection (or the Signal Bridge fallback).
+                        # Bluetooth connection to her toy.
                         ok, summary, detail, steps, otype = self._exec_compose_tool(inp)
                         if ok:
                             self._sse({"type": "compose", "steps": steps,
