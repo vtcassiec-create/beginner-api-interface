@@ -1316,6 +1316,44 @@ button.ghost:hover { background: var(--bg-elev-2); }
 }
 #attach-btn:hover { background: var(--bg-elev-2); }
 
+/* Mic (talk instead of type) — matches the attach button; pulses while live. */
+.mic-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.mic-btn:hover { background: var(--bg-elev-2); }
+.mic-btn.recording {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 45%, transparent); }
+  50%      { box-shadow: 0 0 0 5px color-mix(in srgb, var(--danger) 0%, transparent); }
+}
+
+/* Voice picker row in settings */
+.voice-row { display: flex; align-items: center; gap: 8px; }
+.voice-select {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+}
+
 /* Hidden but still interactable (mobile won't trigger display:none inputs). */
 .visually-hidden {
   position: absolute;
