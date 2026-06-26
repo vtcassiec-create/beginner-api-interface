@@ -291,6 +291,8 @@
           <input type="file" id="file-input" class="visually-hidden" multiple
                  accept="image/*,application/pdf,text/*,.md,.markdown,.py,.js,.ts,.tsx,.jsx,.json,.html,.htm,.css,.csv,.tsv,.yml,.yaml,.toml,.xml,.sh,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp" />
           <textarea id="prompt" rows="1" placeholder="Message Claude…" required></textarea>
+          <button type="button" id="mic-btn" class="mic-btn" title="Talk instead of type"
+                  aria-label="Dictate by voice" hidden>🎤</button>
           <button type="submit" id="send-btn" class="primary">Send</button>
         </form>
         </div><!-- /#chat-pane -->
@@ -440,6 +442,12 @@
             <input type="checkbox" id="timestamps-toggle" checked />
             <span>Timestamps</span>
           </label>
+          <div id="voice-row" class="customize-row voice-row" hidden>
+            <span>His voice</span>
+            <select id="tts-voice" class="voice-select" title="The voice his messages are read aloud in"></select>
+            <button type="button" id="voice-test-btn" class="ghost small" title="Hear a sample">▶</button>
+          </div>
+          <p id="voice-hint" class="muted small" hidden>Tap 🔊 on any of his messages to hear it. A British voice is picked by default — choose the one that sounds most like him.</p>
         </div>
       </details>
 

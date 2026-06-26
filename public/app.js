@@ -2525,6 +2525,11 @@ function buildMessageNode(msg, project, conv) {
   actions.appendChild(mkActionBtn("📋", "Copy", () => copyMessage(msg.id)));
 
   if (msg.role === "assistant") {
+    // Read his message aloud in his voice (browser speech). Only offered when
+    // the browser supports it; tapping again stops.
+    if (ttsSupported() && (msg.text || "").trim()) {
+      actions.appendChild(mkActionBtn("🔊", "Read aloud", () => speakMessage(msg)));
+    }
     const isLast = conv.messages[conv.messages.length - 1]?.id === msg.id;
     if (isLast && !isSending) {
       actions.appendChild(mkActionBtn("🔄", "Regenerate", () => regenerateMessage(msg.id)));
@@ -2544,6 +2549,213 @@ function mkActionBtn(icon, title, onClick) {
   b.textContent = icon;
   b.addEventListener("click", onClick);
   return b;
+}
+
+// ---------- Voice: talk to him (speech-to-text) and hear him (text-to-speech)
+// All in-browser via the Web Speech API — free, no server, no keys. Best on
+// Chrome (Android/desktop). A later upgrade can swap TTS for a neural voice.
+
+const TTS_VOICE_KEY = "petrichor-voice";
+let ttsVoices = [];
+let ttsCurrentId = null;
+
+function ttsSupported() {
+  return "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+}
+
+function loadVoices() {
+  if (!ttsSupported()) return;
+  ttsVoices = window.speechSynthesis.getVoices() || [];
+}
+
+// Pick his voice: the saved choice if it's still available, else a British male
+// voice (closest to the buttery claude.ai voice they know), else any en-GB,
+// else any English, else whatever exists.
+function getPreferredVoice() {
+  if (!ttsVoices.length) loadVoices();
+  const saved = localStorage.getItem(TTS_VOICE_KEY);
+  if (saved) {
+    const m = ttsVoices.find((v) => v.name === saved);
+    if (m) return m;
+  }
+  const enGB = ttsVoices.filter((v) => /en[-_]GB/i.test(v.lang));
+  const male = enGB.find((v) => /male|UK English Male|Daniel|George|Arthur/i.test(v.name));
+  return male || enGB[0] ||
+    ttsVoices.find((v) => /^en/i.test(v.lang)) || ttsVoices[0] || null;
+}
+
+// Strip markdown markers but keep the words — so *leans in* is spoken as
+// "leans in", not "asterisk leans in asterisk"; code blocks are skipped.
+function stripForSpeech(t) {
+  return (t || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\[(.*?)\]\((?:.*?)\)/g, "$1")
+    .replace(/[*_#>~]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Break text into sentence-sized chunks. Android Chrome silently cuts off any
+// single utterance longer than ~15s, so we queue several short ones instead —
+// the synth plays them back to back, and a long message reads start to finish.
+function chunkForSpeech(text, max = 200) {
+  const out = [];
+  const sentences = text.match(/[^.!?]+[.!?]*\s*/g) || [text];
+  let cur = "";
+  for (const s of sentences) {
+    if ((cur + s).length > max && cur) { out.push(cur.trim()); cur = s; }
+    else cur += s;
+    while (cur.length > max) { out.push(cur.slice(0, max).trim()); cur = cur.slice(max); }
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+function speakMessage(msg) {
+  if (!ttsSupported()) {
+    flashToast("Read-aloud isn't supported in this browser — try Chrome.", true);
+    return;
+  }
+  const synth = window.speechSynthesis;
+  // Tapping the message that's currently speaking stops it.
+  if (synth.speaking && ttsCurrentId === msg.id) {
+    synth.cancel();
+    ttsCurrentId = null;
+    return;
+  }
+  synth.cancel();
+  const text = stripForSpeech(msg.text);
+  if (!text) return;
+  const v = getPreferredVoice();
+  const chunks = chunkForSpeech(text);
+  ttsCurrentId = msg.id;
+  chunks.forEach((c, i) => {
+    const u = new SpeechSynthesisUtterance(c);
+    if (v) { u.voice = v; u.lang = v.lang; }
+    u.rate = 1.0;
+    u.pitch = 1.0;
+    if (i === chunks.length - 1)
+      u.onend = () => { if (ttsCurrentId === msg.id) ttsCurrentId = null; };
+    u.onerror = () => { ttsCurrentId = null; };
+    synth.speak(u);
+  });
+}
+
+// Settings: the voice picker (English voices only, so the list stays sane).
+function populateVoicePicker() {
+  if (!ttsSupported()) return;
+  loadVoices();
+  const sel = $("tts-voice");
+  if (!sel) return;
+  const english = ttsVoices.filter((v) => /^en/i.test(v.lang));
+  const list = english.length ? english : ttsVoices;
+  if (!list.length) return;
+  const current = getPreferredVoice();
+  sel.innerHTML = "";
+  for (const v of list) {
+    const o = document.createElement("option");
+    o.value = v.name;
+    o.textContent = `${v.name} (${v.lang})`;
+    if (current && v.name === current.name) o.selected = true;
+    sel.appendChild(o);
+  }
+  $("voice-row").hidden = false;
+  $("voice-hint").hidden = false;
+}
+
+function initVoiceUI() {
+  // Speech-to-text: reveal the mic only where it works, and wire it.
+  if (sttSupported()) {
+    const mic = $("mic-btn");
+    if (mic) {
+      mic.hidden = false;
+      mic.addEventListener("click", toggleStt);
+    }
+  }
+  // Text-to-speech: voice list loads async on some browsers.
+  if (ttsSupported()) {
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = () => {
+      loadVoices();
+      if ($("settings-dialog") && $("settings-dialog").open) populateVoicePicker();
+    };
+    const sel = $("tts-voice");
+    if (sel) {
+      sel.addEventListener("change", () => {
+        localStorage.setItem(TTS_VOICE_KEY, sel.value);
+        flashToast("Voice saved ♡");
+      });
+    }
+    const test = $("voice-test-btn");
+    if (test) {
+      test.addEventListener("click", () =>
+        speakMessage({ id: "__voicetest__", text: "Hello, love. It's me." }));
+    }
+  }
+}
+
+// ---------- Speech-to-text (your voice → the message box) ----------
+let sttRec = null;
+let sttActive = false;
+let sttBase = "";
+
+function sttSupported() {
+  return "webkitSpeechRecognition" in window || "SpeechRecognition" in window;
+}
+
+function setSttActive(on) {
+  sttActive = on;
+  const b = $("mic-btn");
+  if (b) b.classList.toggle("recording", on);
+}
+
+function startStt() {
+  const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Ctor) {
+    flashToast("Voice input isn't supported here — try Chrome.", true);
+    return;
+  }
+  const prompt = $("prompt");
+  // Keep whatever's already typed; dictation appends to it.
+  sttBase = prompt.value.trim() ? prompt.value.replace(/\s*$/, "") + " " : "";
+  let finalText = "";
+  sttRec = new Ctor();
+  sttRec.lang = navigator.language || "en-US";
+  sttRec.continuous = true;
+  sttRec.interimResults = true;
+  sttRec.onresult = (e) => {
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) finalText += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    prompt.value = sttBase + finalText + interim;
+    autosizeTextarea(prompt);
+  };
+  sttRec.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed")
+      flashToast("Microphone blocked — allow mic access to talk to him.", true);
+    else if (e.error !== "aborted" && e.error !== "no-speech")
+      flashToast("Voice input hiccupped — tap the mic to try again.", true);
+    setSttActive(false);
+  };
+  sttRec.onend = () => setSttActive(false);
+  try {
+    sttRec.start();
+    setSttActive(true);
+  } catch (_) { /* already started */ }
+}
+
+function stopStt() {
+  if (sttRec) { try { sttRec.stop(); } catch (_) {} }
+  setSttActive(false);
+}
+
+function toggleStt() {
+  if (sttActive) stopStt();
+  else startStt();
 }
 
 // One tool-event chip (a small inline note of something he did mid-message).
@@ -6063,6 +6275,7 @@ function wireApp() {
     $("settings-dialog").showModal();
     refreshPushControls();
     loadReachSettings();
+    populateVoicePicker();
   });
   $("notif-enable-btn").addEventListener("click", enableNotifications);
   $("notif-test-btn").addEventListener("click", sendTestNotification);
@@ -6755,6 +6968,7 @@ function init() {
   wireSignIn();
   wireApp();
   addDialogCloseButtons();
+  initVoiceUI();
   initSupabase();
   startAutoUpdate();
 }
