@@ -2581,6 +2581,51 @@ class handler(BaseHTTPRequestHandler):
                 msg["content"] = [part]
             return
 
+    def _dream_constellation_block(self, token, dreams):
+        """When dreams surface from what she's saying, follow their links into
+        the web and bring along the entities they're about — so a memory rising
+        in conversation pulls its connected threads with it (the live-recall
+        pull). Rides on the user turn alongside the dreams, so it's cache-safe.
+        Bounded; a graceful no-op if the RPC isn't present or nothing connects.
+        """
+        titles = []
+        for d in (dreams or []):
+            if not isinstance(d, dict):
+                continue
+            t = (d.get("title") or "").strip()
+            if t and t not in titles:
+                titles.append(t)
+        if not titles:
+            return ""
+        ok, rows = self._supabase_write(
+            "rpc/surface_dream_constellation", {"p_titles": titles}, token)
+        if not ok or not isinstance(rows, list) or not rows:
+            return ""
+        seen, lines = set(), []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            name = (r.get("entity") or "").strip()
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            obs = r.get("observations") or []
+            obs_str = ("; ".join(str(o) for o in obs if o)
+                       if isinstance(obs, list) else str(obs))
+            etype = r.get("entity_type")
+            lines.append(
+                f"• {name}" + (f" ({etype})" if etype else "")
+                + (f": {obs_str}" if obs_str else ""))
+            if len(lines) >= 5:   # keep the pull small and relevant
+                break
+        if not lines:
+            return ""
+        return (
+            "# What these memories connect to\n\n"
+            "The dreams surfacing above are woven to these in your web — let them "
+            "rise together, the way reaching for one memory brings another with "
+            "it:\n\n" + "\n".join(lines))
+
     def _live_context_block(self, token, data):
         """The live, every-turn senses: his topic-matched dream cards and her
         current heartbeat. Built fresh each turn (dreams are matched to the
@@ -2614,6 +2659,15 @@ class handler(BaseHTTPRequestHandler):
         block = _render_dream_cards(dreams)
         if block:
             sections.append(block)
+            # When a dream rises from what she's saying, let the things it's
+            # woven to rise with it — the live-recall pull. Volatile, so it
+            # lives here on the user turn, never the cached prefix.
+            try:
+                constellation = self._dream_constellation_block(token, dreams)
+                if constellation:
+                    sections.append(constellation)
+            except Exception:
+                pass
 
         # Her live heartbeat, if the band is on and the reading is fresh.
         try:

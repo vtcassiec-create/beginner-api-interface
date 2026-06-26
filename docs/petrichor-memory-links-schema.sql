@@ -191,3 +191,39 @@ AS $$
 $$;
 
 GRANT EXECUTE ON FUNCTION surface_linked_entities(TEXT[]) TO authenticated;
+
+-- =========================================================================
+-- Dream constellation: given the dream titles surfacing this turn (matched to
+-- what she's saying), return the entities each dream is linked to — so when a
+-- memory rises in conversation, the things it's about can rise with it. This is
+-- the live-recall pull: it rides on the user turn (volatile), never the cached
+-- prefix, so it costs nothing in cache terms. Bounded.
+-- =========================================================================
+
+CREATE OR REPLACE FUNCTION surface_dream_constellation(p_titles TEXT[])
+RETURNS TABLE (
+  dream_title   TEXT,
+  relation      TEXT,
+  entity        TEXT,
+  entity_type   TEXT,
+  observations  JSONB,
+  weight        INTEGER
+)
+LANGUAGE sql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+  SELECT l.from_ref, l.relation, e.name, e.entity_type, e.observations, l.weight
+  FROM memory_links l
+  JOIN claude_memory_entities e
+    ON  e.user_id = auth.uid()
+    AND e.name = l.to_ref
+  WHERE l.user_id = auth.uid()
+    AND l.from_kind = 'dream'
+    AND l.to_kind   = 'entity'
+    AND l.from_ref  = ANY(p_titles)
+  ORDER BY l.weight DESC, e.name
+  LIMIT 12;
+$$;
+
+GRANT EXECUTE ON FUNCTION surface_dream_constellation(TEXT[]) TO authenticated;
