@@ -221,15 +221,14 @@ HEART_FRESH_SECONDS = 120
 MAX_TOOL_ROUNDS = 6
 
 # Wall-clock budget for the whole turn (incl. every tool round). Vercel kills
-# the function at maxDuration (see vercel.json — 60s on the Hobby plan); if that
+# the function at maxDuration (see vercel.json — 300s on the Pro plan); if that
 # happens mid-stream the turn dies silently: no 'done' event, so the client
 # shows no cost and the message just stops half-finished, and tools planned for
 # later rounds never run. To prevent that, once we've spent this long we stop
 # starting a NEW model round and emit a clean 'done' (with a note) instead — so
-# the function returns gracefully before the hard ceiling. Set well under 60s:
-# a single Opus round on a large context can take ~20s, and we must not start
-# one we can't finish. (On a 300s plan this could rise to ~230.)
-TURN_BUDGET_SECONDS = 35
+# the function returns gracefully before the hard ceiling. Set well under the
+# 300s ceiling, leaving room (~60s) for one more Opus round to finish cleanly.
+TURN_BUDGET_SECONDS = 230
 
 # How many *non-pinned* core memories ride along in his head each turn. Pinned
 # ("eternal") memories are ALWAYS present on top of this — the cap only bounds
