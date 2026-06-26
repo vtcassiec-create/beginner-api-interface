@@ -981,7 +981,7 @@ async function dbDeleteMemoryEntity(id) {
 async function dbListMemoryLinks() {
   const { data, error } = await db
     .from("memory_links")
-    .select("id,from_ref,relation,to_ref,weight,source,created_at")
+    .select("id,from_kind,from_ref,relation,to_ref,to_kind,weight,source,created_at")
     .order("from_ref", { ascending: true })
     .order("weight", { ascending: false });
   if (error) throw error;
@@ -5471,7 +5471,7 @@ async function renderConnections() {
   intro.className = "muted small";
   intro.textContent =
     `${links.length} thread${links.length === 1 ? "" : "s"} across his memory. ` +
-    "✨ woven in a dream · ✍️ he drew it.";
+    "✨ woven in a dream · ✍️ he drew it · 🌙 a dream itself.";
   box.appendChild(intro);
   for (const [from, rows] of [...groups.entries()].sort((a, b) =>
     a[0].localeCompare(b[0]))) {
@@ -5479,7 +5479,10 @@ async function renderConnections() {
     grp.className = "conn-group";
     const node = document.createElement("div");
     node.className = "conn-node";
-    node.textContent = from;
+    // A dream is a node too: when the thread starts from a dream, mark it so
+    // it reads as the dream sitting among the things it's about.
+    const fromDream = rows[0] && rows[0].from_kind === "dream";
+    node.textContent = fromDream ? `🌙 ${from}` : from;
     grp.appendChild(node);
     for (const l of rows) {
       const row = document.createElement("div");
