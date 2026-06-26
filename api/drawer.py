@@ -5,8 +5,8 @@ The chat app reaches the Whisper vault only *through the model* (Anthropic's
 MCP connector runs the tools). That's right for him — but wrong for a
 journaling app: routing her own note-reads through the LLM would cost tokens,
 add latency, and put his attention between her and her things. So this endpoint
-talks to the vault **directly** over MCP (JSON-RPC), the way api/touch.py talks
-to the Signal Bridge — no model, no tokens, just her drawer opening.
+talks to the vault **directly** over MCP (JSON-RPC) — no model, no tokens, just
+her drawer opening.
 
 Scope is enforced HERE, in code: every path must live under `Cassie/`. The
 drawer physically cannot read his Daily Notes or his diary — the "she can't
@@ -20,8 +20,8 @@ dance can't work here: each tools/call must stand on its own. We send a
 self-contained tools/call; if a server ever answers "not initialized" (a
 stateful deployment), we fall back to a full initialize handshake and retry.
 
-Authentication mirrors api/chat.py and api/touch.py: a Supabase access token in
-the Authorization header, verified against /auth/v1/user.
+Authentication mirrors api/chat.py: a Supabase access token in the
+Authorization header, verified against /auth/v1/user.
 
 Request body (POST JSON):
   action — "list" | "read" | "save"
