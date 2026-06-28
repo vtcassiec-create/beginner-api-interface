@@ -2,7 +2,8 @@
   "framework": null,
   "functions": {
     "api/chat.py": { "maxDuration": 300 },
-    "api/backup.py": { "maxDuration": 60 }
+    "api/backup.py": { "maxDuration": 60 },
+    "api/tts.py": { "maxDuration": 60 }
   },
   "rewrites": [
     { "source": "/(.*)", "destination": "/public/$1" }

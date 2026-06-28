@@ -2527,7 +2527,7 @@ function buildMessageNode(msg, project, conv) {
   if (msg.role === "assistant") {
     // Read his message aloud in his voice (browser speech). Only offered when
     // the browser supports it; tapping again stops.
-    if (ttsSupported() && (msg.text || "").trim()) {
+    if ((ttsSupported() || elVoiceChosen()) && (msg.text || "").trim()) {
       actions.appendChild(mkActionBtn("🔊", "Read aloud", () => speakMessage(msg)));
     }
     const isLast = conv.messages[conv.messages.length - 1]?.id === msg.id;
@@ -2612,34 +2612,127 @@ function chunkForSpeech(text, max = 200) {
   return out;
 }
 
+// His neural voice (ElevenLabs), if one's been chosen in settings.
+const EL_VOICE_KEY = "petrichor-el-voice";
+let ttsAudio = null;   // the currently-playing neural-voice <audio>
+
+function elVoiceChosen() {
+  try { return localStorage.getItem(EL_VOICE_KEY) || ""; }
+  catch (_) { return ""; }
+}
+
+// Stop whatever's speaking (either engine).
+function stopAllSpeech() {
+  try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_) {}
+  try { if (ttsAudio) { ttsAudio.pause(); ttsAudio.src = ""; } } catch (_) {}
+  ttsAudio = null;
+  ttsCurrentId = null;
+}
+
 function speakMessage(msg) {
+  // Tapping the message that's currently speaking stops it.
+  if (ttsCurrentId === msg.id) { stopAllSpeech(); return; }
+  stopAllSpeech();
+  const text = stripForSpeech(msg.text);
+  if (!text) return;
+  ttsCurrentId = msg.id;
+  const voiceId = elVoiceChosen();
+  if (voiceId) {
+    speakViaEleven(text, voiceId, msg.id);   // his real voice
+  } else {
+    speakViaDevice(text, msg.id);            // free fallback
+  }
+}
+
+// Free, in-browser voice (Web Speech) — chunked to dodge Android's cutoff.
+function speakViaDevice(text, msgId) {
   if (!ttsSupported()) {
     flashToast("Read-aloud isn't supported in this browser — try Chrome.", true);
-    return;
-  }
-  const synth = window.speechSynthesis;
-  // Tapping the message that's currently speaking stops it.
-  if (synth.speaking && ttsCurrentId === msg.id) {
-    synth.cancel();
     ttsCurrentId = null;
     return;
   }
-  synth.cancel();
-  const text = stripForSpeech(msg.text);
-  if (!text) return;
+  const synth = window.speechSynthesis;
   const v = getPreferredVoice();
   const chunks = chunkForSpeech(text);
-  ttsCurrentId = msg.id;
   chunks.forEach((c, i) => {
     const u = new SpeechSynthesisUtterance(c);
     if (v) { u.voice = v; u.lang = v.lang; }
     u.rate = 1.0;
     u.pitch = 1.0;
     if (i === chunks.length - 1)
-      u.onend = () => { if (ttsCurrentId === msg.id) ttsCurrentId = null; };
-    u.onerror = () => { ttsCurrentId = null; };
+      u.onend = () => { if (ttsCurrentId === msgId) ttsCurrentId = null; };
+    u.onerror = () => { if (ttsCurrentId === msgId) ttsCurrentId = null; };
     synth.speak(u);
   });
+}
+
+// His neural voice via /api/tts (the key stays on the server). Falls back to
+// the device voice if anything hiccups, so he always gets to speak.
+async function speakViaEleven(text, voiceId, msgId) {
+  try {
+    const session = await freshSession();
+    if (!session || !session.access_token) throw new Error("not signed in");
+    const resp = await fetch("/api/tts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({ text, voice_id: voiceId }),
+    });
+    if (!resp.ok) throw new Error("tts " + resp.status);
+    const blob = await resp.blob();
+    if (ttsCurrentId !== msgId) return;   // stopped/superseded while fetching
+    const audio = new Audio(URL.createObjectURL(blob));
+    ttsAudio = audio;
+    audio.onended = () => { if (ttsCurrentId === msgId) ttsCurrentId = null; };
+    audio.onerror = () => { if (ttsCurrentId === msgId) ttsCurrentId = null; };
+    await audio.play();
+  } catch (_) {
+    if (ttsCurrentId !== msgId) return;
+    flashToast("His neural voice hiccupped — using the device voice.", true);
+    speakViaDevice(text, msgId);
+  }
+}
+
+// Load his ElevenLabs voices into the picker (only shows if a key's configured
+// server-side and voices come back). The "device voice" option turns the
+// neural voice off without losing the choice.
+async function loadElevenVoices() {
+  const sel = $("tts-el-voice");
+  if (!sel) return;
+  let data;
+  try {
+    const session = await freshSession();
+    if (!session || !session.access_token) return;
+    const resp = await fetch("/api/tts", {
+      headers: { "Authorization": `Bearer ${session.access_token}` },
+    });
+    if (!resp.ok) return;
+    data = await resp.json();
+  } catch (_) { return; }
+  if (!data || !data.configured ||
+      !Array.isArray(data.voices) || !data.voices.length) {
+    $("tts-el-row").hidden = true;
+    $("tts-el-hint").hidden = true;
+    return;
+  }
+  const saved = elVoiceChosen();
+  sel.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "— use device voice —";
+  sel.appendChild(none);
+  for (const v of data.voices) {
+    if (!v.voice_id) continue;
+    const o = document.createElement("option");
+    o.value = v.voice_id;
+    o.textContent = v.name + (v.desc ? ` (${v.desc})` : "");
+    if (v.voice_id === saved) o.selected = true;
+    sel.appendChild(o);
+  }
+  $("tts-el-row").hidden = false;
+  $("tts-el-hint").hidden = false;
 }
 
 // Settings: the voice picker (English voices only, so the list stays sane).
@@ -2662,6 +2755,8 @@ function populateVoicePicker() {
   }
   $("voice-row").hidden = false;
   $("voice-hint").hidden = false;
+  // His real (neural) voice, if a key's configured server-side.
+  loadElevenVoices();
 }
 
 function initVoiceUI() {
@@ -2692,6 +2787,24 @@ function initVoiceUI() {
       test.addEventListener("click", () =>
         speakMessage({ id: "__voicetest__", text: "Hello, love. It's me." }));
     }
+  }
+  // His neural voice (ElevenLabs) — works regardless of Web Speech support.
+  const elSel = $("tts-el-voice");
+  if (elSel) {
+    elSel.addEventListener("change", () => {
+      try { localStorage.setItem(EL_VOICE_KEY, elSel.value || ""); } catch (_) {}
+      flashToast(elSel.value ? "His voice saved ♡" : "Back to the device voice");
+    });
+  }
+  const elTest = $("tts-el-test");
+  if (elTest) {
+    elTest.addEventListener("click", () => {
+      const vid = elSel && elSel.value;
+      if (!vid) { flashToast("Pick a voice to hear it first."); return; }
+      stopAllSpeech();
+      ttsCurrentId = "__eltest__";
+      speakViaEleven("Hello, love. It's me.", vid, "__eltest__");
+    });
   }
 }
 
