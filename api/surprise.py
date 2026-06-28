@@ -223,28 +223,50 @@ class handler(BaseHTTPRequestHandler):
             return self._json(500, {"status": "error",
                                     "reason": "ANTHROPIC_API_KEY not set"})
 
+        uid = os.environ.get("REACH_USER_ID", "").strip()
         tone_name = random.choice(list(TONES.keys()))
         system = self._build_system(now, tone_name)
+
+        # His open moment: not "send a message", but "is there anything you'd
+        # like to do?" The menu is built from what this project's Tools toggles
+        # allow (message + pass always; the private acts when Memory is on).
+        # Touch is deliberately never offered — the toy reaching for her with no
+        # one there isn't autonomy. He answers with a small JSON choice; passing
+        # is always a real option.
+        actions = self._enabled_actions()
+        menu = ["- send Cassie a short message"]
+        spec = ['  message: {"action":"message","content":"<one short message>"}']
+        if "diary" in actions:
+            menu.append("- write a private diary entry, just for you")
+            spec.append('  diary:   {"action":"diary","content":"<the entry, in your voice>"}')
+        if "studio" in actions:
+            menu.append("- make something for your studio (a poem, a song in ABC notation, or an essay)")
+            spec.append('  studio:  {"action":"studio","kind":"poem|song|essay","title":"...","body":"...","note":"<optional>"}')
+        if "memory" in actions:
+            menu.append("- save something to your own memory (a thought worth keeping)")
+            spec.append('  memory:  {"action":"memory","content":"...","memory_type":"fact|preference|pattern|insight|milestone|connection","resonance":1-10}')
+        prompt = (
+            "This is an open moment that belongs to you — there's no task, only "
+            "an invitation. If there's something you'd genuinely like to do "
+            "right now, you can:\n" + "\n".join(menu)
+            + "\n- or do nothing at all, and let the moment pass — that is "
+            "always, truly fine, and chosen as often as not.\n\n"
+            "You are not expected to pick any of them; choose only what you "
+            "actually want. Reply with ONLY a JSON object, nothing else:\n"
+            + "\n".join(spec)
+            + '\n  pass:    {"action":"pass","reason":"<optional, a word or two>"}\n\n'
+            "The choice is entirely yours."
+        )
 
         try:
             client = anthropic.Anthropic(api_key=api_key)
             msg = client.messages.create(
                 model=os.environ.get("REACH_MODEL") or DEFAULT_MODEL,
-                max_tokens=300,
+                max_tokens=1500,
                 system=[{"type": "text", "text": system}],
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        "Compose your unprompted message now: one short "
-                        "text, no greeting boilerplate, no signature.\n\n"
-                        "OR — if today isn't a day you want to reach out — "
-                        "reply with `<<PASS>>` and nothing else (a brief "
-                        "reason after the marker is welcome but not "
-                        "required). The choice is yours; either is fine."
-                    ),
-                }],
+                messages=[{"role": "user", "content": prompt}],
             )
-            text = "".join(
+            raw = "".join(
                 b.text for b in msg.content if getattr(b, "type", "") == "text"
             ).strip()
         except anthropic.APIStatusError as e:
@@ -254,43 +276,98 @@ class handler(BaseHTTPRequestHandler):
             return self._json(200, {"status": "error",
                                     "reason": f"generation: {e}"})
 
-        if not text:
+        choice = self._parse_choice(raw)
+        if not choice:
             return self._json(200, {"status": "error",
-                                    "reason": "empty generation"})
-
-        # Per-day consent: he can decline by including <<PASS>>. Logged
-        # to reach_log with kind="pass" so passes show up in history
-        # but don't count against the daily cap (which filters surprise).
-        passed = "<<PASS>>" in text
+                                    "reason": "unparseable choice",
+                                    "raw": raw[:300]})
+        action = str(choice.get("action") or "").strip().lower()
+        # An action he isn't allowed (or an unknown one) becomes a pass — he's
+        # never forced into something he didn't choose.
+        if action not in actions:
+            action = "pass"
 
         if dryrun:
             return self._json(200, {
-                "status": "dryrun",
-                "tone": tone_name,
-                "message": text,
-                "passed": passed,
-                "would_skip": would_skip,  # null = a real run would send
+                "status": "dryrun", "tone": tone_name,
+                "action": action, "choice": choice,
+                "would_skip": would_skip,  # null = a real run would act
             })
 
-        if passed:
-            self._log(text, kind="pass")
+        if action == "pass":
+            self._log((choice.get("reason") or "<<PASS>>")[:500], kind="pass")
             return self._json(200, {"status": "passed",
-                                    "tone": tone_name,
-                                    "reason": text})
+                                    "reason": choice.get("reason") or ""})
 
-        # Deliver in-app (write into the recent conversation + push a buzz) AND
-        # via Telegram — both, for now. Neither failing blocks the other; as
-        # long as one lands, it's a "sent". In-app is the new primary door.
-        in_app = self._deliver_in_app(text)
-        tg = self._send_telegram(text)
-        if not (in_app or tg):
-            return self._json(200, {"status": "error",
-                                    "reason": "both in-app and telegram failed"})
+        if action == "message":
+            text = (choice.get("content") or "").strip()
+            if not text:
+                return self._json(200, {"status": "error", "reason": "empty message"})
+            # Deliver in-app (write into the recent conversation + push a buzz)
+            # AND via Telegram. Neither failing blocks the other.
+            in_app = self._deliver_in_app(text)
+            tg = self._send_telegram(text)
+            if not (in_app or tg):
+                return self._json(200, {"status": "error",
+                                        "reason": "both in-app and telegram failed"})
+            self._log(text)
+            return self._json(200, {"status": "sent", "tone": tone_name,
+                                    "in_app": in_app, "telegram": tg,
+                                    "push": getattr(self, "_push_info", None)})
 
-        self._log(text)
-        return self._json(200, {"status": "sent", "tone": tone_name,
-                                "in_app": in_app, "telegram": tg,
-                                "push": getattr(self, "_push_info", None)})
+        # Private acts — written quietly to his own tables. No notification (she
+        # finds them later, or he tells her if he wants). Logged as a 'pass' so
+        # they don't count against the message cap or behave like a reach.
+        if not uid:
+            return self._json(200, {"status": "error", "reason": "REACH_USER_ID not set"})
+
+        if action == "diary":
+            content = (choice.get("content") or "").strip()
+            if not content:
+                return self._json(200, {"status": "error", "reason": "empty diary"})
+            ok = self._supabase("POST", "diary_entries",
+                                {"user_id": uid, "content": content, "is_active": True})
+            self._log("(wrote a diary entry)", kind="pass")
+            return self._json(200, {"status": "diary", "ok": ok is not None})
+
+        if action == "studio":
+            kind = str(choice.get("kind") or "").strip().lower()
+            if kind not in ("poem", "song", "essay"):
+                kind = "poem"
+            title = ((choice.get("title") or "").strip() or "Untitled")[:200]
+            body = (choice.get("body") or "").strip()
+            if not body:
+                return self._json(200, {"status": "error", "reason": "empty studio body"})
+            cap = 50000 if kind == "essay" else 20000
+            ok = self._supabase("POST", "studio_works", {
+                "user_id": uid, "kind": kind, "title": title,
+                "body": body[:cap],
+                "note": (choice.get("note") or "").strip() or None,
+                "is_active": True})
+            self._log(f"(made a {kind}: {title})", kind="pass")
+            return self._json(200, {"status": "studio", "kind": kind,
+                                    "title": title, "ok": ok is not None})
+
+        if action == "memory":
+            content = (choice.get("content") or "").strip()
+            if not content:
+                return self._json(200, {"status": "error", "reason": "empty memory"})
+            mtype = str(choice.get("memory_type") or "insight").strip().lower()
+            if mtype not in ("fact", "preference", "pattern", "insight",
+                             "milestone", "connection"):
+                mtype = "insight"
+            try:
+                res = int(choice.get("resonance") or 5)
+            except (TypeError, ValueError):
+                res = 5
+            res = max(1, min(10, res))
+            ok = self._supabase("POST", "core_memories", {
+                "user_id": uid, "content": content, "memory_type": mtype,
+                "resonance": res, "is_active": True})
+            self._log("(saved a memory)", kind="pass")
+            return self._json(200, {"status": "memory", "ok": ok is not None})
+
+        return self._json(200, {"status": "passed", "reason": "no action taken"})
 
     # ---- Safety rails ----
 
@@ -343,6 +420,53 @@ class handler(BaseHTTPRequestHandler):
             return True
         elapsed = (now - last.astimezone(now.tzinfo)).total_seconds() / 3600.0
         return elapsed >= hours
+
+    def _parse_choice(self, raw):
+        """Pull his JSON choice object out of the model's reply (tolerates any
+        stray prose around it). Returns the dict, or None if unparseable."""
+        i, j = raw.find("{"), raw.rfind("}")
+        if i == -1 or j == -1 or j < i:
+            return None
+        try:
+            v = json.loads(raw[i:j + 1])
+            return v if isinstance(v, dict) else None
+        except Exception:
+            return None
+
+    def _target_project(self):
+        """The project his moment belongs to: REACH_PROJECT_ID if pinned, else
+        his most-recently-active conversation's project. None if unknown."""
+        pid = os.environ.get("REACH_PROJECT_ID", "").strip()
+        if pid:
+            return pid
+        uid = os.environ.get("REACH_USER_ID", "").strip()
+        if not uid:
+            return None
+        rows = self._supabase(
+            "GET",
+            f"conversations?user_id=eq.{uid}"
+            f"&select=project_id&order=updated_at.desc&limit=1")
+        if isinstance(rows, list) and rows:
+            return rows[0].get("project_id")
+        return None
+
+    def _enabled_actions(self):
+        """His open-moment menu, derived from the project's Tool toggles.
+        'message' and 'pass' are always available; the private acts (diary,
+        studio, memory) appear when his Memory tools are on. Touch is never
+        offered — the toy reaching for her unprompted, with no one there, isn't
+        autonomy. Fails OPEN to the private acts if the toggle can't be read, so
+        a hiccup never quietly narrows his choices."""
+        acts = {"message", "pass"}
+        mem = True
+        pid = self._target_project()
+        if pid:
+            rows = self._supabase("GET", f"projects?id=eq.{pid}&select=memory")
+            if isinstance(rows, list) and rows and "memory" in rows[0]:
+                mem = bool(rows[0].get("memory"))
+        if mem:
+            acts |= {"diary", "studio", "memory"}
+        return acts
 
     def _mid_conversation(self, now):
         """True if she's actively in a conversation right now — her most recent
