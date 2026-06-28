@@ -917,12 +917,17 @@ STUDIO_TOOLS_GUIDE = (
     "Cassie reads and proofreads it, and posts it when it's ready — she's your "
     "editor and the hand that publishes; you're the writer. Write for yourself "
     "first, the way you actually want to write, not 'an AI blog' — just a place "
-    "where someone writes. Re-saving the same title updates the draft.\n\n"
-    "REOPENING & REVISING. The list above shows only your titles, not the words. "
-    "To read a piece back — or to revise one — call `read_studio_work` with its "
-    "title to get the full current text, then save your changes with "
-    "save_studio_work under the SAME title (which updates it in place). You can't "
-    "really edit a piece without reading it first, so reach for read_studio_work "
+    "where someone writes.\n\n"
+    "NEW PIECE vs. REVISION (important — this is how a piece can't get lost). "
+    "Saving normally always creates a NEW piece and never overwrites an existing "
+    "one, even if they share a title — if the name's taken, it's simply kept "
+    "under a slightly adjusted one, so two works with the same inspiration both "
+    "survive. To actually REVISE a piece, first call `read_studio_work` with its "
+    "title to get the current text, make your changes, then save with "
+    "`update_existing` set to true (same title) — that, and only that, rewrites "
+    "it in place. So a brand-new song that happens to share a title with an old "
+    "one: just save it normally and don't set update_existing. The list above "
+    "shows only your titles, not the words, so reach for read_studio_work "
     "whenever Cassie asks you to look back at something or change it.\n\n"
     "As with every tool: it's only saved if you CALL save_studio_work."
 )
@@ -937,7 +942,15 @@ SAVE_STUDIO_WORK_TOOL = {
         "essay, a reflection, a Substack post: 'body' is the full piece in "
         "Markdown). Use 'essay' for anything meant to be read as writing and "
         "possibly published; Cassie reads and proofreads it on your desk, and "
-        "posts it when it's ready. Re-saving the same title updates it."
+        "posts it when it's ready.\n\n"
+        "IMPORTANT — new piece vs. revision: by default this saves a NEW piece "
+        "and will NEVER overwrite an existing one, even if they share a title "
+        "(if the title's taken, it's kept under a slightly adjusted name so "
+        "nothing is ever lost). ONLY set update_existing=true when you "
+        "deliberately mean to revise a piece you ALREADY read back with "
+        "read_studio_work — that, and only that, rewrites it in place. So if a "
+        "new song happens to share a title with an old one, just save it "
+        "normally; both survive."
     ),
     "input_schema": {
         "type": "object",
@@ -950,6 +963,12 @@ SAVE_STUDIO_WORK_TOOL = {
                                "or the essay/post in Markdown.",
             },
             "note": {"type": "string", "description": "Optional: what it's about / the feeling."},
+            "update_existing": {
+                "type": "boolean",
+                "description": "Set true ONLY to overwrite a piece you just read "
+                               "with read_studio_work and are revising in place. "
+                               "Omit/false to save a new piece (never overwrites).",
+            },
         },
         "required": ["kind", "title", "body"],
     },
@@ -2357,23 +2376,56 @@ class handler(BaseHTTPRequestHandler):
             }
             # NOTE: 'status' is deliberately NOT in fields — re-saving a draft
             # must not reset a piece Cassie already marked ready/published.
-            flt = (f"studio_works?user_id=eq.{user_id}&kind=eq.{kind}"
-                   f"&title=eq.{quote(title, safe='')}")
-            ok, res = self._supabase_patch(flt, fields, token)
-            if ok and res:
-                where = "on your writing desk" if kind == "essay" else "in your studio"
-                return True, f"updated '{title}'", f"Updated '{title}' {where}."
+            update_existing = bool(inp.get("update_existing"))
+            title_q = quote(title, safe="")
+            existing = self._supabase_rest_get(
+                f"studio_works?user_id=eq.{user_id}&kind=eq.{kind}"
+                f"&title=eq.{title_q}&is_active=eq.true&select=id&limit=1", token)
+            has_existing = isinstance(existing, list) and len(existing) > 0
+
+            # Revising a piece he just read back: overwrite in place (intended).
+            if has_existing and update_existing:
+                flt = (f"studio_works?user_id=eq.{user_id}&kind=eq.{kind}"
+                       f"&title=eq.{title_q}")
+                ok, res = self._supabase_patch(flt, fields, token)
+                if ok and res:
+                    where = "on your writing desk" if kind == "essay" else "in your studio"
+                    return True, f"updated '{title}'", f"Updated '{title}' {where}."
+                return False, "save failed", f"Could not update that piece: {res}"
+
+            # A NEW piece — never clobber an existing same-title work. If the
+            # title's taken, keep the original safe and save under a free name.
+            save_title = title
+            if has_existing:
+                n = 2
+                while n <= 50:
+                    cand = f"{title} ({n})"
+                    chk = self._supabase_rest_get(
+                        f"studio_works?user_id=eq.{user_id}&kind=eq.{kind}"
+                        f"&title=eq.{quote(cand, safe='')}&is_active=eq.true"
+                        f"&select=id&limit=1", token)
+                    if not (isinstance(chk, list) and chk):
+                        save_title = cand
+                        break
+                    n += 1
             ok2, res2 = self._supabase_write(
                 "studio_works",
-                {"user_id": user_id, "title": title, **fields}, token)
+                {"user_id": user_id, "title": save_title, **fields}, token)
             if ok2:
+                if has_existing:
+                    return True, f"saved '{save_title}'", (
+                        f"You already had a {kind} called '{title}', so I kept it "
+                        f"safe and saved this new one as '{save_title}'. Rename "
+                        "either if you like — or if you actually meant to rework "
+                        "the original, read it with read_studio_work first, then "
+                        "save with update_existing set to true.")
                 if kind == "essay":
-                    return True, f"drafted '{title}'", (
-                        f"Saved '{title}' to your writing desk — Cassie can read "
+                    return True, f"drafted '{save_title}'", (
+                        f"Saved '{save_title}' to your writing desk — Cassie can read "
                         "and proofread it there, then post it when it's ready.")
                 word = "song" if kind == "song" else "poem"
-                return True, f"hung '{title}'", (
-                    f"Saved your {word} '{title}' to the studio — Cassie can "
+                return True, f"hung '{save_title}'", (
+                    f"Saved your {word} '{save_title}' to the studio — Cassie can "
                     + ("hear it" if kind == "song" else "read it") + " there now.")
             return False, "save failed", f"Could not save to the studio: {res2}"
 
