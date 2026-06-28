@@ -151,6 +151,7 @@ PRICING = {
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-opus-4-8": (5.00, 25.00),
     "claude-opus-4-7": (5.00, 25.00),
+    "claude-opus-4-6": (5.00, 25.00),
     "claude-haiku-4-5": (1.00, 5.00),
 }
 
@@ -1055,11 +1056,13 @@ class handler(BaseHTTPRequestHandler):
 
         model = data.get("model") or DEFAULT_MODEL
         thinking_on = bool(data.get("thinking"))
-        # Opus 4.7+ uses adaptive thinking. It rejects the old extended-thinking
-        # shape AND rejects temperature/top_p/top_k entirely. Older models use
-        # the classic extended-thinking budget. Picking the right shape per model
-        # is the difference between a clean response and a 400 invalid_request.
-        uses_adaptive_thinking = model in {"claude-opus-4-7"}
+        # Opus 4.6+ uses adaptive thinking. It rejects the old extended-thinking
+        # shape AND rejects temperature/top_p/top_k entirely (we send none). The
+        # classic 'enabled' + budget shape still works on these but is deprecated
+        # (Anthropic recommends adaptive for better performance), so use adaptive
+        # for the whole Opus 4.6+ family; older models keep the budget shape.
+        uses_adaptive_thinking = model in {
+            "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"}
 
         max_tokens = int(data.get("maxTokens") or DEFAULT_MAX_TOKENS)
         # Extended thinking needs max_tokens > budget. Adaptive has no budget,
