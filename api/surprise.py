@@ -202,6 +202,12 @@ class handler(BaseHTTPRequestHandler):
             would_skip = "not time yet (per your reach settings)"
         elif self._in_quiet_hours(now):
             would_skip = "quiet hours"
+        elif self._mid_conversation(now):
+            # Don't reach out while she's actively in a conversation — an
+            # unprompted "thinking of you" lands awkwardly mid-exchange. Holding
+            # off; the next hourly wake re-checks, so it reaches once you've
+            # wrapped up rather than interrupting.
+            would_skip = "mid-conversation (you're talking right now)"
         else:
             sent_today = self._count_today(now, tz)
             cap = int(os.environ.get("REACH_DAILY_CAP", "5") or "5")
@@ -337,6 +343,40 @@ class handler(BaseHTTPRequestHandler):
             return True
         elapsed = (now - last.astimezone(now.tzinfo)).total_seconds() / 3600.0
         return elapsed >= hours
+
+    def _mid_conversation(self, now):
+        """True if she's actively in a conversation right now — her most recent
+        conversation was updated within the last few minutes — so an unprompted
+        reach would interrupt rather than reach. Window is REACH_BUSY_MINUTES
+        (default 20; 0 disables). Fails OPEN (False) if we can't tell, so a read
+        hiccup never silently suppresses a reach."""
+        uid = os.environ.get("REACH_USER_ID", "").strip()
+        if not uid:
+            return False
+        try:
+            window = int(os.environ.get("REACH_BUSY_MINUTES", "20") or "20")
+        except ValueError:
+            window = 20
+        if window <= 0:
+            return False
+        pid = os.environ.get("REACH_PROJECT_ID", "").strip()
+        proj = f"&project_id=eq.{pid}" if pid else ""
+        rows = self._supabase(
+            "GET",
+            f"conversations?user_id=eq.{uid}{proj}"
+            f"&select=updated_at&order=updated_at.desc&limit=1")
+        if not (isinstance(rows, list) and rows):
+            return False
+        ts = rows[0].get("updated_at")
+        if not ts:
+            return False
+        try:
+            last = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except Exception:
+            return False
+        elapsed_min = (now.astimezone(datetime.timezone.utc)
+                       - last.astimezone(datetime.timezone.utc)).total_seconds() / 60.0
+        return 0 <= elapsed_min < window
 
     def _last_reach_at(self):
         """Timestamp of the most recent actually-sent reach (kind='surprise'),
