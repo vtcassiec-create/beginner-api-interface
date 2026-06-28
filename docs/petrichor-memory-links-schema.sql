@@ -186,7 +186,13 @@ AS $$
     AND l.from_kind = 'entity'
     AND l.to_kind   = 'entity'
     AND (l.from_ref = ANY(p_names) OR l.to_ref = ANY(p_names))
-  ORDER BY l.weight DESC, l.relation
+  -- Fully deterministic order (from_ref, relation, to_ref is unique per link),
+  -- so the LIMIT returns the SAME rows in the SAME order every call. Without a
+  -- unique tiebreaker, links tied on weight (e.g. many fresh weight-1 links)
+  -- come back in a shuffling order, which changes this block — and since it
+  -- sits in the cached prompt prefix, that silently cold-rewrites the whole
+  -- cache every turn (~$1 instead of ~$0.03).
+  ORDER BY l.weight DESC, l.from_ref, l.relation, l.to_ref
   LIMIT 30;
 $$;
 
@@ -222,7 +228,8 @@ AS $$
     AND l.from_kind = 'dream'
     AND l.to_kind   = 'entity'
     AND l.from_ref  = ANY(p_titles)
-  ORDER BY l.weight DESC, e.name
+  -- Unique tiebreaker (dream title + entity) so ties on weight don't shuffle.
+  ORDER BY l.weight DESC, e.name, l.from_ref
   LIMIT 12;
 $$;
 
