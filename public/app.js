@@ -1429,10 +1429,13 @@ async function buildApiMessages(project, messages) {
       // back here — the API ignores everything before a compaction block, so
       // this is what lets a long conversation keep running without re-sending
       // (or re-summarizing) the whole transcript. Replay it ahead of his text.
-      // Defensive: only a well-formed block; otherwise fall back to plain text,
-      // so a malformed field can never break the turn.
+      // Defensive: only a well-formed block with NON-EMPTY content; otherwise
+      // fall back to plain text. The API rejects an empty compaction block
+      // ("compaction.content: content cannot be empty"), so a hollow summary
+      // must never be threaded back — we just send his text instead.
       if (msg.compaction && msg.compaction.type === "compaction"
-          && typeof msg.compaction.content === "string") {
+          && typeof msg.compaction.content === "string"
+          && msg.compaction.content.trim()) {
         out.push({
           role: "assistant",
           content: [msg.compaction, { type: "text", text: msg.text || "(no response)" }],

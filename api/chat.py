@@ -1076,6 +1076,11 @@ class handler(BaseHTTPRequestHandler):
             "messages": self._resolve_image_sources(
                 data.get("messages") or [], self._bearer_token()),
         }
+        # Safety net: drop any empty compaction block a client might still send
+        # (e.g. a message saved before the client-side fix, or a hollow summary
+        # from the API). The API 400s on an empty compaction block, which would
+        # otherwise wedge a long conversation that can't be un-sent.
+        self._strip_empty_compaction(kwargs["messages"])
         # The current-moment block rides on the user turn, NOT the system
         # prompt. A timestamp that changes every minute, sitting in the cached
         # system prefix, would invalidate the whole prompt cache on every
@@ -1284,13 +1289,15 @@ class handler(BaseHTTPRequestHandler):
 
                 # If the API compacted this turn, the summary rides in the
                 # response content as a 'compaction' block. Remember the latest
-                # one to hand back to the client at 'done'.
+                # one to hand back to the client at 'done' — but ONLY if it
+                # actually carries content. An empty compaction block, threaded
+                # back next turn, makes the API 400 ("compaction.content: content
+                # cannot be empty"), so a hollow one is dropped here.
                 for b in final.content:
                     if getattr(b, "type", None) == "compaction":
-                        compaction_block = {
-                            "type": "compaction",
-                            "content": getattr(b, "content", "") or "",
-                        }
+                        c = getattr(b, "content", "") or ""
+                        if isinstance(c, str) and c.strip():
+                            compaction_block = {"type": "compaction", "content": c}
 
                 # Continue the loop only when he called a client tool we own.
                 # Server tools (web search) and MCP tools are run by the API
@@ -2760,6 +2767,29 @@ class handler(BaseHTTPRequestHandler):
             else:
                 msg["content"] = [part]
             return
+
+    def _strip_empty_compaction(self, messages):
+        """Drop any compaction content-block whose content is empty before the
+        request goes to the API — an empty one makes it 400
+        ('compaction.content: content cannot be empty'), which would wedge a
+        long conversation that already has the bad block saved in it. Mutates
+        the message list in place; if removing the block empties a message, a
+        placeholder text keeps it valid."""
+        if not isinstance(messages, list):
+            return
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            content = m.get("content")
+            if not isinstance(content, list):
+                continue
+            kept = [
+                blk for blk in content
+                if not (isinstance(blk, dict) and blk.get("type") == "compaction"
+                        and not str(blk.get("content") or "").strip())
+            ]
+            if len(kept) != len(content):
+                m["content"] = kept or [{"type": "text", "text": "(no response)"}]
 
     def _cache_history(self, messages):
         """Put a cache breakpoint on the message BEFORE the current user turn,
