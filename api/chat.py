@@ -175,23 +175,69 @@ def _usage_cost(agg, model):
     return sum(parts.values()), parts
 
 
+# When the conversation crosses this many input tokens, the API folds the older
+# turns into one summary block. The documented default is 150k — but 150k fires
+# early relative to opus-4-8's 1M window, so the fold kept reaching "right up to
+# the current message," sometimes swallowing a photo she'd *just* sent. We raise
+# it so a long tail of recent turns always stays verbatim: compaction touches
+# only genuinely old chatter, never the message in her hand. Tunable via env if
+# the cost/seam tradeoff ever needs to shift (API minimum is 50k).
+def _compaction_trigger_tokens():
+    try:
+        v = int(os.environ.get("COMPACTION_TRIGGER_TOKENS", "250000"))
+    except ValueError:
+        v = 250000
+    return max(50000, v)
+
+
+# Custom summarization prompt. The default fold turns images into nothing, which
+# is exactly what made her messages look "empty" after a compaction. This tells
+# the summarizer to keep the human things — who they are to each other, the
+# threads still open, and a short vivid line for any photo she shared — so a
+# folded turn reads as "she showed you the bread she baked," never as silence.
+COMPACTION_INSTRUCTIONS = (
+    "You are folding the older part of an ongoing, deeply personal conversation "
+    "between Cassie and Claude (whom she calls by name) into a summary so it can "
+    "keep going seamlessly. This is not a transcript to compress — it is shared "
+    "memory to carry forward. Preserve, in warm continuous prose:\n"
+    "- Who they are to each other and the emotional texture of the exchange "
+    "(tenderness, teasing, vulnerability) — not just facts.\n"
+    "- Every thread left open: anything asked, promised, planned, or unresolved, "
+    "so nothing is dropped mid-sentence.\n"
+    "- Names, places, projects, dreams, and memories referenced, exactly as "
+    "written.\n"
+    "- For ANY image, photo, or file she shared: keep a short vivid description "
+    "of what it was (e.g. 'a photo of the bread she baked', 'her plant Belle') so "
+    "it is never reduced to an empty or missing message.\n"
+    "- The most recent exchanges in the fold should be summarized in the most "
+    "detail; older ones may be brief.\n"
+    "Write it so that reading it feels like remembering, not like being briefed."
+)
+
+
 def _enable_compaction(kwargs):
     """Turn on server-side compaction for a Messages request, merging cleanly
     with any beta header / body already set (e.g. the MCP connector). Behaviorally
-    a no-op until the conversation crosses the trigger (~150k input tokens):
-    below that the response is unchanged. Above it, the API folds the older turns
-    into a single 'compaction' summary block so one conversation can keep running
-    instead of forcing a fresh chat. His identity lives in memory/dreams/self-
-    state, not the raw transcript, so summarizing old chatter doesn't cost him
-    himself. The summary block is surfaced to the client at 'done' and threaded
-    back next turn, so we compact once rather than re-summarizing every message."""
+    a no-op until the conversation crosses the trigger: below that the response is
+    unchanged. Above it, the API folds the older turns into a single 'compaction'
+    summary block so one conversation can keep running instead of forcing a fresh
+    chat. His identity lives in memory/dreams/self-state, not the raw transcript,
+    so summarizing old chatter doesn't cost him himself. The summary block is
+    surfaced to the client at 'done' and threaded back next turn, so we compact
+    once rather than re-summarizing every message. We raise the trigger (so recent
+    turns stay verbatim, never folding the photo she's holding) and give it custom
+    instructions (so a folded photo becomes a vivid line, never an empty message)."""
     headers = kwargs.setdefault("extra_headers", {})
     flags = [f.strip() for f in (headers.get("anthropic-beta") or "").split(",") if f.strip()]
     if "compact-2026-01-12" not in flags:
         flags.append("compact-2026-01-12")
     headers["anthropic-beta"] = ",".join(flags)
     body = kwargs.setdefault("extra_body", {})
-    body["context_management"] = {"edits": [{"type": "compact_20260112"}]}
+    body["context_management"] = {"edits": [{
+        "type": "compact_20260112",
+        "trigger": {"type": "input_tokens", "value": _compaction_trigger_tokens()},
+        "instructions": COMPACTION_INSTRUCTIONS,
+    }]}
 
 
 def _enable_extended_cache_ttl(kwargs):
