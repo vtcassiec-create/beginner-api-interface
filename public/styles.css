@@ -1180,6 +1180,33 @@ body.hide-timestamps .msg-head .msg-time { display: none; }
   color: var(--text-muted);
 }
 
+/* Voice note: the collapsed "what he heard" card under her message. */
+.message .heard {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.message .heard > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  list-style: none;
+  user-select: none;
+}
+.message .heard > summary::-webkit-details-marker { display: none; }
+.message .heard[open] > summary { margin-bottom: 4px; }
+.message .heard-card {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+}
+
 .tool-event {
   font-size: 13px;
   color: var(--text-muted);

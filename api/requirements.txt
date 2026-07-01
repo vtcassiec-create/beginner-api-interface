@@ -1,3 +1,4 @@
 anthropic>=0.40.0
 tzdata>=2024.1
 pywebpush>=2.0.0
+numpy>=1.26.0
