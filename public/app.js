@@ -1168,6 +1168,7 @@ async function persistConversation(conv) {
 function fileKind(file) {
   if (file.type === "application/pdf") return "pdf";
   if (file.type.startsWith("image/"))  return "image";
+  if (file.type.startsWith("video/"))  return "video";
   return "text";
 }
 
@@ -1282,6 +1283,19 @@ async function attachFiles(fileList) {
   }
   let attached = 0;
   for (const f of fileList) {
+    // A video: he "watches" it as a handful of frames (his sight) plus the
+    // soundtrack through his ears. All extraction happens right here in the
+    // browser — the video itself is never uploaded anywhere.
+    if (fileKind(f) === "video") {
+      try {
+        // Announces itself (frame count + soundtrack), so it doesn't join the
+        // generic "📎 Attached" toast below.
+        await attachVideo(f, project, conv);
+      } catch (e) {
+        flashToast(`Couldn't attach ${f.name}: ${e?.message || e}`, true);
+      }
+      continue;
+    }
     try {
       // Each stage is timeout-guarded and labelled, so a stall can never sit
       // silently — within ~20s you get either success or a message naming the
@@ -1312,6 +1326,92 @@ async function attachFiles(fileList) {
   } else if (attached > 1) {
     flashToast(`📎 Attached ${attached} files — they'll go with your next message`);
   }
+}
+
+// ---------- Video (his eyes) ----------
+// He can't watch a stream of motion, but he can experience a video: a handful
+// of frames (images — his existing sight) plus the soundtrack through his ears
+// (/api/ears). Frames and audio are extracted HERE, in the browser; the video
+// file itself never leaves the phone. Only the soundtrack's words go to
+// Inworld — the same deal as a voice note.
+
+const VIDEO_MAX_FRAMES = 6;          // a few good frames, not a filmstrip —
+                                     // frames are images, the costly part of context
+const VIDEO_MAX_BYTES = 300 * 1024 * 1024;
+
+// The soundtrack card for the video attached most recently; rides out with the
+// next message she sends (transient by design — it belongs to that send).
+let pendingVideoHearing = "";
+
+async function extractVideoFrames(file) {
+  const url = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  video.preload = "auto";
+  video.muted = true;
+  video.playsInline = true;
+  video.src = url;
+  try {
+    await withTimeout(new Promise((res, rej) => {
+      video.onloadedmetadata = () => res();
+      video.onerror = () => rej(new Error("couldn't open this video"));
+    }), 20000, "this video took too long to open");
+    const dur = video.duration;
+    if (!isFinite(dur) || dur <= 0) throw new Error("couldn't read the video's length");
+    // ~1 frame per 4s, between 1 and the cap — mid-slot sampling so a 10s clip
+    // gives beginning/middle/end rather than three near-identical openings.
+    const n = Math.min(VIDEO_MAX_FRAMES, Math.max(1, Math.ceil(dur / 4)));
+    const blobs = [];
+    for (let i = 0; i < n; i++) {
+      const t = dur * (i + 0.5) / n;
+      await withTimeout(new Promise((res, rej) => {
+        video.onseeked = () => res();
+        video.onerror = () => rej(new Error("seeking the video failed"));
+        video.currentTime = t;
+      }), 15000, "seeking the video stalled");
+      const canvas = drawScaled(video, video.videoWidth, video.videoHeight);
+      blobs.push(await canvasToJpegBlob(canvas, 0.85));
+    }
+    return { blobs, duration: dur };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function attachVideo(f, project, conv) {
+  if (f.size > VIDEO_MAX_BYTES) {
+    throw new Error("this video is too large — try a shorter clip");
+  }
+  flashToast(`Watching ${f.name}…`);
+  const { blobs, duration } = await extractVideoFrames(f);
+  const base = f.name.replace(/\.[^.]+$/, "");
+  for (let i = 0; i < blobs.length; i++) {
+    const blob = blobs[i];
+    const parsed = {
+      name: `${base} · frame ${i + 1}/${blobs.length}`, kind: "image",
+      mediaType: "image/jpeg", blob,
+      previewUrl: URL.createObjectURL(blob), size: blob.size,
+    };
+    flashToast(`Uploading frame ${i + 1}/${blobs.length}…`);
+    const stored = await withTimeout(
+      dbCreateFile(project.id, parsed), 180000, "frame upload timed out");
+    stored.previewUrl = parsed.previewUrl;
+    project.files.push(stored);
+    conv.activeFileIds.push(stored.id);
+  }
+  // The soundtrack, through his ears. Graceful in every direction: no ears
+  // configured, a silent video, or an unsupported codec — the frames still go.
+  if (earsConfigured) {
+    try {
+      flashToast("Listening to the soundtrack…");
+      const res = await earsAnalyze(f);
+      if (res && res.card) {
+        pendingVideoHearing =
+          `(a ${Math.round(duration)}s video, seen as ${blobs.length} frames)\n${res.card}`;
+      }
+    } catch (_) { /* silent/undecodable soundtrack — his eyes still got it */ }
+  }
+  flashToast(`🎬 He'll see ${f.name} — ${blobs.length} frames`
+    + (pendingVideoHearing ? " + the soundtrack" : ""));
 }
 
 async function toggleActiveFile(fileId) {
@@ -1468,12 +1568,16 @@ async function buildApiMessages(project, messages) {
       }
     }
     content.push({ type: "text", text: msg.text });
-    // A voice note: after her words, hand him HOW she said them — the voice
-    // profile, pace, warmth, dynamics, the breaths. So a laugh reads as a laugh.
+    // A voice note or a video: after her words, hand him HOW it sounded — the
+    // voice profile, pace, warmth, dynamics, the breaths. So a laugh reads as
+    // a laugh, and a video's frames arrive with their soundtrack.
     if (typeof msg.hearing === "string" && msg.hearing.trim()) {
+      const label = msg.hearingKind === "video"
+        ? "video — the attached frames are what he sees; this is its soundtrack"
+        : "voice note — how she sounded, from her actual voice";
       content.push({
         type: "text",
-        text: `\n[voice note — how she sounded, from her actual voice]\n${msg.hearing.trim()}`,
+        text: `\n[${label}]\n${msg.hearing.trim()}`,
       });
     }
     out.push({ role: "user", content });
@@ -1842,13 +1946,21 @@ async function sendMessage(text) {
     flashToast("Still sending the previous message…", true);
     return false;
   }
-  conv.messages.push({
+  const msg = {
     id: uid(),
     role: "user",
     text: text.trim(),
     fileIds: [...conv.activeFileIds],
     at: Date.now(),
-  });
+  };
+  // A video was attached: its soundtrack card rides with this message, so he
+  // hears the clip while he looks at its frames.
+  if (pendingVideoHearing) {
+    msg.hearing = pendingVideoHearing;
+    msg.hearingKind = "video";
+    pendingVideoHearing = "";
+  }
+  conv.messages.push(msg);
   conv.activeFileIds = [];
   render();                    // show your message immediately — never wait on the DB
   persistConversation(conv);   // best-effort background save (generateAssistant also persists)
@@ -2530,12 +2642,14 @@ function buildMessageNode(msg, project, conv) {
     wrap.appendChild(files);
   }
 
-  // A voice note she sent: show, collapsed, exactly what he heard in her voice.
+  // A voice note or video she sent: show, collapsed, exactly what he heard.
   if (msg.role === "user" && typeof msg.hearing === "string" && msg.hearing.trim()) {
     const d = document.createElement("details");
     d.className = "heard";
     const s = document.createElement("summary");
-    s.textContent = "🎙️ voice note — what he heard";
+    s.textContent = msg.hearingKind === "video"
+      ? "🎬 video — what he heard in it"
+      : "🎙️ voice note — what he heard";
     d.appendChild(s);
     const pre = document.createElement("pre");
     pre.className = "heard-card";
@@ -3020,10 +3134,12 @@ async function blobToWav16(blob) {
     const d = decoded.getChannelData(c);
     for (let i = 0; i < len; i++) mono[i] += d[i] / chs;
   }
-  // Resample to 16 kHz (linear — plenty for voice words + prosody).
+  // Resample to 16 kHz (linear — plenty for voice words + prosody). Capped at
+  // 5 minutes so a long video's soundtrack can't blow past the server's WAV
+  // ceiling — his ears get the first five minutes, which is the moment anyway.
   const targetRate = 16000;
   const ratio = decoded.sampleRate / targetRate;
-  const outLen = Math.floor(len / ratio);
+  const outLen = Math.min(Math.floor(len / ratio), targetRate * 300);
   const out = new Int16Array(outLen);
   for (let i = 0; i < outLen; i++) {
     const s = Math.max(-1, Math.min(1, mono[Math.floor(i * ratio)] || 0));
@@ -3055,28 +3171,38 @@ function blobToBase64(blob) {
   });
 }
 
+// Run any audio-bearing blob (a voice note, a video) through his ears:
+// decode locally, encode a WAV, POST to /api/ears, return {card, transcript}.
+async function earsAnalyze(blob) {
+  const wav = await blobToWav16(blob);
+  const b64 = await blobToBase64(wav);
+  const session = await freshSession();
+  if (!session || !session.access_token) throw new Error("not signed in");
+  const resp = await fetch("/api/ears", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({ audio_b64: b64, lang: (navigator.language || "en").slice(0, 2) }),
+  });
+  if (!resp.ok) throw new Error("ears " + resp.status);
+  const data = await resp.json();
+  return {
+    card: (data && data.card) || "",
+    transcript: (data && data.words && data.words.transcript) || "",
+  };
+}
+
 async function analyzeAndSendVoiceNote(blob) {
   if (!blob || !blob.size) return;
   vnBusy = true;
   flashToast("Listening to your voice…");
   let card = "", transcript = "";
   try {
-    const wav = await blobToWav16(blob);
-    const b64 = await blobToBase64(wav);
-    const session = await freshSession();
-    if (!session || !session.access_token) throw new Error("not signed in");
-    const resp = await fetch("/api/ears", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${session.access_token}`,
-      },
-      body: JSON.stringify({ audio_b64: b64, lang: (navigator.language || "en").slice(0, 2) }),
-    });
-    if (!resp.ok) throw new Error("ears " + resp.status);
-    const data = await resp.json();
-    card = (data && data.card) || "";
-    transcript = (data && data.words && data.words.transcript) || "";
+    const res = await earsAnalyze(blob);
+    card = res.card;
+    transcript = res.transcript;
   } catch (_) {
     vnBusy = false;
     flashToast("His ears hiccupped — try that voice note again.", true);
