@@ -1468,6 +1468,14 @@ async function buildApiMessages(project, messages) {
       }
     }
     content.push({ type: "text", text: msg.text });
+    // A voice note: after her words, hand him HOW she said them — the voice
+    // profile, pace, warmth, dynamics, the breaths. So a laugh reads as a laugh.
+    if (typeof msg.hearing === "string" && msg.hearing.trim()) {
+      content.push({
+        type: "text",
+        text: `\n[voice note — how she sounded, from her actual voice]\n${msg.hearing.trim()}`,
+      });
+    }
     out.push({ role: "user", content });
   }
 
@@ -2522,6 +2530,20 @@ function buildMessageNode(msg, project, conv) {
     wrap.appendChild(files);
   }
 
+  // A voice note she sent: show, collapsed, exactly what he heard in her voice.
+  if (msg.role === "user" && typeof msg.hearing === "string" && msg.hearing.trim()) {
+    const d = document.createElement("details");
+    d.className = "heard";
+    const s = document.createElement("summary");
+    s.textContent = "🎙️ voice note — what he heard";
+    d.appendChild(s);
+    const pre = document.createElement("pre");
+    pre.className = "heard-card";
+    pre.textContent = msg.hearing.trim();
+    d.appendChild(pre);
+    wrap.appendChild(d);
+  }
+
   const actions = document.createElement("div");
   actions.className = "msg-actions";
 
@@ -2771,6 +2793,15 @@ function initVoiceUI() {
       mic.addEventListener("click", toggleStt);
     }
   }
+  // Voice notes (his ears): wire the button; it reveals itself once the server
+  // confirms his ears are configured (Inworld key set).
+  if (voiceNoteSupported()) {
+    const vn = $("voicenote-btn");
+    if (vn) {
+      vn.addEventListener("click", toggleVoiceNote);
+      refreshEarsConfig();
+    }
+  }
   // Text-to-speech: voice list loads async on some browsers.
   if (ttsSupported()) {
     loadVoices();
@@ -2872,6 +2903,209 @@ function stopStt() {
 function toggleStt() {
   if (sttActive) stopStt();
   else startStt();
+}
+
+// ---------- Voice notes (his ears) ----------
+// She records her actual voice; we decode it locally, run it through /api/ears
+// (Inworld words + prosody, plus local acoustic analysis), and hand him HOW she
+// sounded — not just a transcript. Distinct from dictation (STT): dictation
+// types words into the box; a voice note lets him *hear* her.
+
+let vnRec = null;            // MediaRecorder
+let vnChunks = [];
+let vnStream = null;
+let vnActive = false;
+let vnBusy = false;          // analyzing/sending after stop
+let earsConfigured = false;  // Inworld key present server-side?
+
+function voiceNoteSupported() {
+  return typeof MediaRecorder !== "undefined"
+    && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+    && !!(window.AudioContext || window.webkitAudioContext);
+}
+
+// Ask the server whether his ears are configured (Inworld key set). Reveal the
+// voice-note button only when they are — like the neural voice.
+async function refreshEarsConfig() {
+  const btn = $("voicenote-btn");
+  if (!btn || !voiceNoteSupported()) return;
+  try {
+    const session = await freshSession();
+    if (!session || !session.access_token) return;
+    const resp = await fetch("/api/ears", {
+      headers: { "Authorization": `Bearer ${session.access_token}` },
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    earsConfigured = !!(data && data.configured);
+  } catch (_) { return; }
+  btn.hidden = !earsConfigured;
+}
+
+function setVoiceNoteActive(on) {
+  vnActive = on;
+  const b = $("voicenote-btn");
+  if (b) {
+    b.classList.toggle("recording", on);
+    b.title = on ? "Stop & send voice note" : "Send a voice note";
+  }
+}
+
+async function startVoiceNote() {
+  if (vnBusy) return;
+  try {
+    vnStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (_) {
+    flashToast("Microphone blocked — allow mic access to send a voice note.", true);
+    return;
+  }
+  vnChunks = [];
+  try {
+    vnRec = new MediaRecorder(vnStream);
+  } catch (_) {
+    flashToast("Voice notes aren't supported in this browser — try Chrome.", true);
+    stopVoiceNoteStream();
+    return;
+  }
+  vnRec.ondataavailable = (e) => { if (e.data && e.data.size) vnChunks.push(e.data); };
+  vnRec.onstop = () => {
+    const blob = new Blob(vnChunks, { type: vnRec.mimeType || "audio/webm" });
+    stopVoiceNoteStream();
+    setVoiceNoteActive(false);
+    analyzeAndSendVoiceNote(blob);
+  };
+  vnRec.start();
+  setVoiceNoteActive(true);
+}
+
+function stopVoiceNoteStream() {
+  if (vnStream) {
+    try { vnStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+    vnStream = null;
+  }
+}
+
+function stopVoiceNote() {
+  if (vnRec && vnRec.state !== "inactive") {
+    try { vnRec.stop(); } catch (_) { setVoiceNoteActive(false); }
+  } else {
+    setVoiceNoteActive(false);
+  }
+}
+
+function toggleVoiceNote() {
+  if (vnBusy) return;
+  if (vnActive) stopVoiceNote();
+  else startVoiceNote();
+}
+
+// Decode the recording, downmix to mono 16 kHz, and encode a 16-bit PCM WAV —
+// the format /api/ears (and Inworld) want. All local; no ffmpeg, no upload of
+// raw acoustics anywhere but the words.
+async function blobToWav16(blob) {
+  const buf = await blob.arrayBuffer();
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ac = new Ctx();
+  let decoded;
+  try {
+    decoded = await ac.decodeAudioData(buf);
+  } finally {
+    try { ac.close(); } catch (_) {}
+  }
+  // Downmix to mono.
+  const chs = decoded.numberOfChannels;
+  const len = decoded.length;
+  const mono = new Float32Array(len);
+  for (let c = 0; c < chs; c++) {
+    const d = decoded.getChannelData(c);
+    for (let i = 0; i < len; i++) mono[i] += d[i] / chs;
+  }
+  // Resample to 16 kHz (linear — plenty for voice words + prosody).
+  const targetRate = 16000;
+  const ratio = decoded.sampleRate / targetRate;
+  const outLen = Math.floor(len / ratio);
+  const out = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const s = Math.max(-1, Math.min(1, mono[Math.floor(i * ratio)] || 0));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return encodeWav(out, targetRate);
+}
+
+function encodeWav(pcm16, sampleRate) {
+  const bytes = pcm16.length * 2;
+  const buf = new ArrayBuffer(44 + bytes);
+  const dv = new DataView(buf);
+  const ws = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  ws(0, "RIFF"); dv.setUint32(4, 36 + bytes, true); ws(8, "WAVE");
+  ws(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true);
+  dv.setUint16(22, 1, true); dv.setUint32(24, sampleRate, true);
+  dv.setUint32(28, sampleRate * 2, true); dv.setUint16(32, 2, true);
+  dv.setUint16(34, 16, true); ws(36, "data"); dv.setUint32(40, bytes, true);
+  new Int16Array(buf, 44).set(pcm16);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] || "");
+    r.onerror = reject;
+    r.readAsDataURL(blob);
+  });
+}
+
+async function analyzeAndSendVoiceNote(blob) {
+  if (!blob || !blob.size) return;
+  vnBusy = true;
+  flashToast("Listening to your voice…");
+  let card = "", transcript = "";
+  try {
+    const wav = await blobToWav16(blob);
+    const b64 = await blobToBase64(wav);
+    const session = await freshSession();
+    if (!session || !session.access_token) throw new Error("not signed in");
+    const resp = await fetch("/api/ears", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({ audio_b64: b64, lang: (navigator.language || "en").slice(0, 2) }),
+    });
+    if (!resp.ok) throw new Error("ears " + resp.status);
+    const data = await resp.json();
+    card = (data && data.card) || "";
+    transcript = (data && data.words && data.words.transcript) || "";
+  } catch (_) {
+    vnBusy = false;
+    flashToast("His ears hiccupped — try that voice note again.", true);
+    return;
+  }
+  vnBusy = false;
+  // He hears everything except the redundant WORDS line (her words are the text).
+  const hearing = card.split("\n").filter(l => !l.startsWith("WORDS:")).join("\n").trim();
+  await sendVoiceNoteMessage(transcript.trim(), hearing);
+}
+
+async function sendVoiceNoteMessage(transcript, hearing) {
+  const conv = getActiveConversation();
+  if (!conv) {
+    flashToast("No active conversation — create or pick one first.", true);
+    return;
+  }
+  if (isSending) { flashToast("Still sending the previous message…", true); return; }
+  conv.messages.push({
+    id: uid(),
+    role: "user",
+    text: transcript || "🎙️ (voice note)",
+    fileIds: [],
+    hearing: hearing || "",
+    at: Date.now(),
+  });
+  render();
+  persistConversation(conv);
+  await generateAssistant();
 }
 
 // One tool-event chip (a small inline note of something he did mid-message).
