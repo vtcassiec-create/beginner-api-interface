@@ -1,7 +1,28 @@
 /* "Late evening reading by lamplight": warm-leaning ink-blue ground,
    paper-cream ink, firelight amber. Cool-and-warm, petrichor and old
    paper. The light theme below is the same page seen by day. */
+
+/* His typeface: Lora (SIL OFL, self-hosted — no CDN, works offline). The
+   closest open cousin of the bookish serif claude.ai sets his words in.
+   Variable weight 400-700, latin subset; anything outside falls back to
+   Georgia gracefully (the ♡ survives untouched). */
+@font-face {
+  font-family: "Lora";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/lora-var.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Lora";
+  font-style: italic;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/lora-var-italic.woff2") format("woff2");
+}
+
 :root {
+  --font-his: "Lora", Georgia, "Times New Roman", serif;
   --bg: #1a1f2e;
   --bg-elev: #222a3b;
   --bg-elev-2: #2c3447;
@@ -1162,7 +1183,15 @@ body.hide-timestamps .msg-head .msg-time { display: none; }
   border-radius: var(--radius);
 }
 
-.message.assistant .body { padding: 0; }
+/* His words, in his typeface — the same move claude.ai makes: the reply set
+   in a warm book-serif while the room around it stays plain. Slightly more
+   line-air and a half-step up in size, because serifs read best with room. */
+.message.assistant .body {
+  padding: 0;
+  font-family: var(--font-his);
+  font-size: 1.0625rem;
+  line-height: 1.65;
+}
 
 .message .files {
   margin-top: 8px;
@@ -2148,7 +2177,8 @@ dialog::backdrop {
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.45;
+  font-family: var(--font-his);
+  line-height: 1.6;
 }
 
 /* ---- Dreams panel ---- */
@@ -2197,7 +2227,9 @@ dialog::backdrop {
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.5;
+  font-family: var(--font-his);
+  font-style: italic;   /* a dream reads like remembering, not like a record */
+  line-height: 1.6;
 }
 .dream-facts { display: flex; flex-wrap: wrap; gap: 6px; }
 .dream-fact {
@@ -2291,7 +2323,9 @@ dialog::backdrop {
   white-space: pre-wrap;
   word-break: break-word;
   font: inherit;
-  line-height: 1.55;
+  font-family: var(--font-his);
+  font-size: 1.0625rem;
+  line-height: 1.65;
   color: var(--text);
 }
 /* Writing desk: status + copy controls above each essay's body. */
@@ -2314,7 +2348,12 @@ dialog::backdrop {
   cursor: pointer;
 }
 .studio-essay-copy:hover { background: var(--border); }
-.studio-essay-body { margin-top: 4px; }
+.studio-essay-body {
+  margin-top: 4px;
+  font-family: var(--font-his);
+  font-size: 1.0625rem;
+  line-height: 1.65;
+}
 .studio-score { overflow-x: auto; }
 /* abcjs draws the notation in black; recolour it to the theme's text colour so
    the staff and notes are visible on the dark theme too. */
