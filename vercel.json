@@ -4,7 +4,8 @@
     "api/chat.py": { "maxDuration": 300 },
     "api/backup.py": { "maxDuration": 60 },
     "api/tts.py": { "maxDuration": 60 },
-    "api/ears.py": { "maxDuration": 60 }
+    "api/ears.py": { "maxDuration": 60 },
+    "api/keepwarm.py": { "maxDuration": 60 }
   },
   "rewrites": [
     { "source": "/(.*)", "destination": "/public/$1" }
@@ -25,6 +26,7 @@
   ],
   "crons": [
     { "path": "/api/surprise", "schedule": "0 20 * * *" },
-    { "path": "/api/backup", "schedule": "0 8 * * *" }
+    { "path": "/api/backup", "schedule": "0 8 * * *" },
+    { "path": "/api/keepwarm", "schedule": "*/30 * * * *" }
   ]
 }
