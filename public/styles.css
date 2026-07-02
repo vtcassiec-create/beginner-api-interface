@@ -1352,6 +1352,11 @@ button.ghost:hover { background: var(--bg-elev-2); }
   font-size: 13px;
   cursor: pointer;
   user-select: none;
+  -webkit-user-select: none;
+  /* The unified mic is tap-vs-hold: stop the browser stealing the long-press
+     for text selection / touch callout, and drop the double-tap zoom delay. */
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;

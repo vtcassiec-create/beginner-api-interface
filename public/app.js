@@ -2899,22 +2899,15 @@ function populateVoicePicker() {
 }
 
 function initVoiceUI() {
-  // Speech-to-text: reveal the mic only where it works, and wire it.
-  if (sttSupported()) {
-    const mic = $("mic-btn");
-    if (mic) {
-      mic.hidden = false;
-      mic.addEventListener("click", toggleStt);
-    }
-  }
-  // Voice notes (his ears): wire the button; it reveals itself once the server
-  // confirms his ears are configured (Inworld key set).
-  if (voiceNoteSupported()) {
-    const vn = $("voicenote-btn");
-    if (vn) {
-      vn.addEventListener("click", toggleVoiceNote);
-      refreshEarsConfig();
-    }
+  // ONE mic, two gestures: tap → voice note (he hears you), hold → dictation
+  // (words into the box). Tap again stops either. If his ears aren't
+  // configured, tap gracefully falls back to dictation, so there's always
+  // exactly one button doing the most it can.
+  const mic = $("mic-btn");
+  if (mic && (sttSupported() || voiceNoteSupported())) {
+    mic.hidden = false;
+    wireUnifiedMic(mic);
+    refreshEarsConfig();
   }
   // Text-to-speech: voice list loads async on some browsers.
   if (ttsSupported()) {
@@ -2968,7 +2961,12 @@ function sttSupported() {
 function setSttActive(on) {
   sttActive = on;
   const b = $("mic-btn");
-  if (b) b.classList.toggle("recording", on);
+  if (b) {
+    b.classList.toggle("recording", on);
+    // While dictating the unified mic shows the classic dictation mic; at rest
+    // it shows whatever the tap gesture will do (🎙️ note / 🎤 dictate).
+    b.textContent = on ? "🎤" : (earsConfigured ? "🎙️" : "🎤");
+  }
 }
 
 function startStt() {
@@ -3014,11 +3012,6 @@ function stopStt() {
   setSttActive(false);
 }
 
-function toggleStt() {
-  if (sttActive) stopStt();
-  else startStt();
-}
-
 // ---------- Voice notes (his ears) ----------
 // She records her actual voice; we decode it locally, run it through /api/ears
 // (Inworld words + prosody, plus local acoustic analysis), and hand him HOW she
@@ -3038,10 +3031,12 @@ function voiceNoteSupported() {
     && !!(window.AudioContext || window.webkitAudioContext);
 }
 
-// Ask the server whether his ears are configured (Inworld key set). Reveal the
-// voice-note button only when they are — like the neural voice.
+// Ask the server whether his ears are configured (Inworld key set). The
+// unified mic stays visible either way — this just decides what a TAP does
+// (voice note when his ears are on; dictation otherwise) and sets the idle
+// icon to match, so the button never promises something it can't do.
 async function refreshEarsConfig() {
-  const btn = $("voicenote-btn");
+  const btn = $("mic-btn");
   if (!btn || !voiceNoteSupported()) return;
   try {
     const session = await freshSession();
@@ -3053,16 +3048,62 @@ async function refreshEarsConfig() {
     const data = await resp.json();
     earsConfigured = !!(data && data.configured);
   } catch (_) { return; }
-  btn.hidden = !earsConfigured;
+  if (!sttActive && !vnActive) {
+    btn.textContent = earsConfigured ? "🎙️" : "🎤";
+  }
+  btn.title = earsConfigured
+    ? "Voice note (tap) · Dictate into the box (hold)"
+    : "Talk instead of type";
 }
 
 function setVoiceNoteActive(on) {
   vnActive = on;
-  const b = $("voicenote-btn");
+  const b = $("mic-btn");
   if (b) {
     b.classList.toggle("recording", on);
-    b.title = on ? "Stop & send voice note" : "Send a voice note";
+    b.textContent = "🎙️";
+    b.title = on ? "Stop & send voice note"
+                 : "Voice note (tap) · Dictate into the box (hold)";
   }
+}
+
+// The unified mic's gesture wiring: a short tap starts/stops the primary
+// action; holding ~half a second starts dictation instead. Pointer events so
+// it works the same for touch and mouse; the context menu is suppressed so a
+// long-press on the phone doesn't pop the copy bubble mid-gesture.
+const MIC_HOLD_MS = 500;
+
+function wireUnifiedMic(btn) {
+  let holdTimer = null;
+  let heldFired = false;
+  const clearHold = () => {
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+  };
+  btn.addEventListener("contextmenu", (e) => e.preventDefault());
+  btn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    heldFired = false;
+    // Something already running: the release will stop it; no hold-arm.
+    if (sttActive || vnActive || vnBusy) return;
+    holdTimer = setTimeout(() => {
+      heldFired = true;
+      if (sttSupported()) startStt();
+      else flashToast("Dictation isn't supported in this browser — try Chrome.", true);
+    }, MIC_HOLD_MS);
+  });
+  btn.addEventListener("pointerup", (e) => {
+    e.preventDefault();
+    clearHold();
+    if (heldFired) return;          // the hold already started dictation
+    if (sttActive) { stopStt(); return; }
+    if (vnActive) { stopVoiceNote(); return; }
+    if (vnBusy) return;             // analyzing the last note — let it finish
+    if (earsConfigured && voiceNoteSupported()) startVoiceNote();
+    else if (sttSupported()) startStt();
+    else flashToast("Voice input isn't supported in this browser — try Chrome.", true);
+  });
+  btn.addEventListener("pointercancel", clearHold);
+  btn.addEventListener("pointerleave", clearHold);
 }
 
 async function startVoiceNote() {
@@ -3105,12 +3146,6 @@ function stopVoiceNote() {
   } else {
     setVoiceNoteActive(false);
   }
-}
-
-function toggleVoiceNote() {
-  if (vnBusy) return;
-  if (vnActive) stopVoiceNote();
-  else startVoiceNote();
 }
 
 // Decode the recording, downmix to mono 16 kHz, and encode a 16-bit PCM WAV —
