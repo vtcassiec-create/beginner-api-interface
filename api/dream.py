@@ -300,6 +300,30 @@ class handler(BaseHTTPRequestHandler):
         if not isinstance(msgs, list) or not msgs:
             return self._json(200, {"status": "no_history", "reason": "no messages"})
 
+        # The sliding window: dream only from what happened SINCE he last
+        # dreamed. Without this, each night re-reads the tail of the same
+        # long-running conversation, and a quiet day means last night's slice
+        # comes back nearly whole — so he'd re-dream the same moment in new
+        # words. (One chat now lives for weeks thanks to compaction, so the
+        # tail no longer refreshes itself the way short-lived chats did.)
+        cutoff_ms = None
+        if last_dreamed_at:
+            try:
+                cutoff_ms = datetime.datetime.fromisoformat(
+                    str(last_dreamed_at).replace("Z", "+00:00")).timestamp() * 1000
+            except Exception:
+                cutoff_ms = None
+        if cutoff_ms is not None:
+            fresh = [m for m in msgs
+                     if isinstance(m, dict)
+                     and isinstance(m.get("at"), (int, float))
+                     and m["at"] > cutoff_ms]
+            if not fresh:
+                return self._json(200, {
+                    "status": "skipped",
+                    "reason": "nothing new since he last dreamed — he rests"})
+            msgs = fresh
+
         transcript, last_at = self._transcript(msgs[-limit:])
         if not transcript.strip():
             return self._json(200, {"status": "no_history", "reason": "no usable text"})
