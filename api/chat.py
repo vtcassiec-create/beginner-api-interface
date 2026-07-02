@@ -1296,6 +1296,36 @@ class handler(BaseHTTPRequestHandler):
             else:
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": THINKING_BUDGET}
 
+        # Freeze this turn's exact request shape (minus the volatile current
+        # user turn) so the keep-warm cron (api/keepwarm.py) can re-touch the
+        # prompt cache byte-for-byte before its hour lapses — the pilot light
+        # that makes her scattered "hi, I miss you" messages cost cents, not a
+        # cold re-write. Serialized HERE, synchronously (the tool loop mutates
+        # kwargs later); posted in the background so it never delays the first
+        # token. Best-effort in every direction: no table, no capture, no harm.
+        try:
+            bp_payload = json.dumps({
+                "user_id": user_id,
+                "blueprint": {
+                    "model": kwargs.get("model"),
+                    "system": kwargs.get("system"),
+                    "tools": kwargs.get("tools"),
+                    "thinking": kwargs.get("thinking"),
+                    "extra_headers": kwargs.get("extra_headers"),
+                    "extra_body": kwargs.get("extra_body"),
+                    # Everything through the breakpointed previous turn; the
+                    # volatile current turn (clock/heartbeat/dreams) stays out.
+                    "messages": (kwargs.get("messages") or [])[:-1],
+                },
+                "captured_at":
+                    datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            })
+            threading.Thread(
+                target=self._post_keepwarm_blueprint,
+                args=(bp_payload, self._bearer_token()), daemon=True).start()
+        except Exception:
+            pass
+
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -1618,6 +1648,28 @@ class handler(BaseHTTPRequestHandler):
                 kept.append(block)
             m["content"] = kept
         return messages
+
+    def _post_keepwarm_blueprint(self, payload, token):
+        """Upsert the keep-warm blueprint (RLS, as the signed-in user). Runs on
+        a background thread; every failure is swallowed — the pilot light is a
+        luxury, never a reason a message doesn't send."""
+        url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        if not url or not anon or not token:
+            return
+        try:
+            req = urllib.request.Request(
+                f"{url}/rest/v1/keepwarm_state?on_conflict=user_id",
+                data=payload.encode(), method="POST",
+                headers={
+                    "apikey": anon,
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates,return=minimal",
+                })
+            urllib.request.urlopen(req, timeout=10).read()
+        except Exception:
+            pass
 
     def _sign_storage_url(self, path, token):
         """Mint a short-lived signed URL for a private 'attachments' object,
