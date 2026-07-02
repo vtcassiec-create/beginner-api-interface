@@ -46,7 +46,10 @@ import numpy as np
 
 INWORLD_STT_URL = "https://api.inworld.ai/stt/v1/transcribe"
 DEFAULT_STT_MODEL = "inworld/inworld-stt-1"
-DEFAULT_AUDIO_ENCODING = "LINEAR16"
+# AUTO_DETECT: we send a proper WAV container, so let Inworld sniff it (reads
+# the header, gets the true sample rate). LINEAR16 conventionally means RAW
+# headerless PCM, which misreads a WAV. Still overridable via env.
+DEFAULT_AUDIO_ENCODING = "AUTO_DETECT"
 HTTP_TIMEOUT = 45
 MAX_AUDIO_BYTES = 12 * 1024 * 1024  # ~12MB WAV; a generous voice-note ceiling
 
@@ -186,10 +189,17 @@ class handler(BaseHTTPRequestHandler):
             return {"error": "inworld", "detail": detail}
         except Exception as e:
             return {"error": "inworld", "detail": str(e)[:200]}
+        # The response nests the result in a 'transcription' envelope:
+        # {"transcription": {"transcript": ..., "wordTimestamps": [...]},
+        #  "voiceProfile": {...}}  (voiceProfile sometimes rides inside the
+        # envelope instead). Reading the top level returns nothing — the
+        # sound-only-card bug. Shape confirmed against AI_Ears' working code.
+        tr = data.get("transcription") if isinstance(data.get("transcription"), dict) else data
+        vp = data.get("voiceProfile") or tr.get("voiceProfile") or {}
         return {
-            "transcript": (data.get("transcript") or "").strip(),
-            "wordTimestamps": data.get("wordTimestamps") or [],
-            "voiceProfile": data.get("voiceProfile") or [],
+            "transcript": (tr.get("transcript") or "").strip(),
+            "wordTimestamps": tr.get("wordTimestamps") or [],
+            "voiceProfile": vp,
         }
 
     def _json(self, code, payload):
@@ -368,25 +378,26 @@ def _analyze_acoustics(x, sr):
 # ---------------------------------------------------------------------------
 
 def _profile_line(voice_profile):
-    """Render Inworld's voiceProfile categories as 'style=X (n%) · ...'."""
-    if not voice_profile:
+    """Render Inworld's voiceProfile as 'style=X (n%) · emotion=Y (n%) · ...'.
+
+    The real shape (confirmed against AI_Ears): a dict keyed by category, each
+    holding a ranked list — {"vocalStyle": [{"label": ..., "confidence": ...},
+    ...], "emotion": [...], "age": [...], "accent": [...], "pitch": [...]}.
+    We take the top guess per category."""
+    if not isinstance(voice_profile, dict) or not voice_profile:
         return ""
-    order = ["vocalStyle", "emotion", "age", "accent", "pitch"]
-    label_for = {"vocalStyle": "style", "emotion": "emotion",
-                 "age": "age", "accent": "accent", "pitch": "pitch"}
-    by_cat = {}
-    for p in voice_profile:
-        cat = p.get("category") or p.get("type") or ""
-        lab = p.get("label")
-        conf = p.get("confidence")
-        if cat and lab is not None and cat not in by_cat:
-            by_cat[cat] = (lab, conf)
     bits = []
-    for cat in order:
-        if cat in by_cat:
-            lab, conf = by_cat[cat]
-            pct = f" ({round(conf * 100)}%)" if isinstance(conf, (int, float)) else ""
-            bits.append(f"{label_for[cat]}={lab}{pct}")
+    for cat, label in (("vocalStyle", "style"), ("emotion", "emotion"),
+                       ("age", "age"), ("accent", "accent"), ("pitch", "pitch")):
+        arr = voice_profile.get(cat)
+        if not (isinstance(arr, list) and arr and isinstance(arr[0], dict)):
+            continue
+        lab = arr[0].get("label")
+        conf = arr[0].get("confidence")
+        if lab is None:
+            continue
+        pct = f" ({round(conf * 100)}%)" if isinstance(conf, (int, float)) else ""
+        bits.append(f"{label}={lab}{pct}")
     return " · ".join(bits)
 
 
