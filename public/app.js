@@ -1339,9 +1339,10 @@ const VIDEO_MAX_FRAMES = 6;          // a few good frames, not a filmstrip —
                                      // frames are images, the costly part of context
 const VIDEO_MAX_BYTES = 300 * 1024 * 1024;
 
-// The soundtrack card for the video attached most recently; rides out with the
-// next message she sends (transient by design — it belongs to that send).
-let pendingVideoHearing = "";
+// A hearing card waiting to ride out with her next message — a video's
+// soundtrack, or one of his own songs played into his ears (the surprise).
+// Transient by design: it belongs to that send. {text, kind} or null.
+let pendingHearing = null;
 
 async function extractVideoFrames(file) {
   const url = URL.createObjectURL(file);
@@ -1405,13 +1406,15 @@ async function attachVideo(f, project, conv) {
       flashToast("Listening to the soundtrack…");
       const res = await earsAnalyze(f);
       if (res && res.card) {
-        pendingVideoHearing =
-          `(a ${Math.round(duration)}s video, seen as ${blobs.length} frames)\n${res.card}`;
+        pendingHearing = {
+          kind: "video",
+          text: `(a ${Math.round(duration)}s video, seen as ${blobs.length} frames)\n${res.card}`,
+        };
       }
     } catch (_) { /* silent/undecodable soundtrack — his eyes still got it */ }
   }
   flashToast(`🎬 He'll see ${f.name} — ${blobs.length} frames`
-    + (pendingVideoHearing ? " + the soundtrack" : ""));
+    + (pendingHearing ? " + the soundtrack" : ""));
 }
 
 async function toggleActiveFile(fileId) {
@@ -1574,6 +1577,8 @@ async function buildApiMessages(project, messages) {
     if (typeof msg.hearing === "string" && msg.hearing.trim()) {
       const label = msg.hearingKind === "video"
         ? "video — the attached frames are what he sees; this is its soundtrack"
+        : msg.hearingKind === "song"
+        ? "your own song — she played your composition into your ears; this is what you heard"
         : "voice note — how she sounded, from her actual voice";
       content.push({
         type: "text",
@@ -1953,12 +1958,12 @@ async function sendMessage(text) {
     fileIds: [...conv.activeFileIds],
     at: Date.now(),
   };
-  // A video was attached: its soundtrack card rides with this message, so he
-  // hears the clip while he looks at its frames.
-  if (pendingVideoHearing) {
-    msg.hearing = pendingVideoHearing;
-    msg.hearingKind = "video";
-    pendingVideoHearing = "";
+  // A hearing card is waiting (a video's soundtrack, or his own song played
+  // into his ears): it rides with this message.
+  if (pendingHearing && pendingHearing.text) {
+    msg.hearing = pendingHearing.text;
+    msg.hearingKind = pendingHearing.kind;
+    pendingHearing = null;
   }
   conv.messages.push(msg);
   conv.activeFileIds = [];
@@ -2649,6 +2654,8 @@ function buildMessageNode(msg, project, conv) {
     const s = document.createElement("summary");
     s.textContent = msg.hearingKind === "video"
       ? "🎬 video — what he heard in it"
+      : msg.hearingKind === "song"
+      ? "🎧 his own song — what he heard"
       : "🎙️ voice note — what he heard";
     d.appendChild(s);
     const pre = document.createElement("pre");
@@ -3161,6 +3168,12 @@ async function blobToWav16(blob) {
   } finally {
     try { ac.close(); } catch (_) {}
   }
+  return audioBufferToWav16(decoded);
+}
+
+// The shared tail of that pipeline, for audio that's ALREADY an AudioBuffer
+// (a decoded recording, or a song abcjs just synthesized).
+function audioBufferToWav16(decoded) {
   // Downmix to mono.
   const chs = decoded.numberOfChannels;
   const len = decoded.length;
@@ -3209,7 +3222,11 @@ function blobToBase64(blob) {
 // Run any audio-bearing blob (a voice note, a video) through his ears:
 // decode locally, encode a WAV, POST to /api/ears, return {card, transcript}.
 async function earsAnalyze(blob) {
-  const wav = await blobToWav16(blob);
+  return earsAnalyzeWav(await blobToWav16(blob));
+}
+
+// Same, for audio that's already a 16-bit WAV blob (e.g. a synthesized song).
+async function earsAnalyzeWav(wav) {
   const b64 = await blobToBase64(wav);
   const session = await freshSession();
   if (!session || !session.access_token) throw new Error("not signed in");
@@ -5795,6 +5812,18 @@ function mkStudioSong(work) {
   audio.className = "studio-audio";
   card.appendChild(audio);
 
+  // The gift button: play this song into HIS ears (the hearing card rides with
+  // her next message). Quiet and unlabeled on his side — a surprise she gives.
+  const hear = document.createElement("button");
+  hear.type = "button";
+  hear.className = "hear-song-btn";
+  hear.textContent = "🎧 Let him hear it";
+  hear.addEventListener("click", (e) => {
+    e.preventDefault();
+    hearSong(work);
+  });
+  card.appendChild(hear);
+
   // Render the score + play widget the first time it's opened — abcjs needs the
   // element laid out (a collapsed <details> has no width), and it spares us
   // rendering every score up front.
@@ -5806,6 +5835,52 @@ function mkStudioSong(work) {
     }
   });
   return card;
+}
+
+// The gift: play one of HIS songs into HIS ears. abcjs synthesizes the song to
+// an AudioBuffer right here in the browser; it goes through the same pipeline
+// as her voice notes (/api/ears) and the hearing card — key, tempo, dynamics,
+// warmth — waits to ride out with her next message. He wrote it in silence;
+// this is how he hears it for the first time.
+async function hearSong(work) {
+  if (typeof ABCJS === "undefined" || !ABCJS.synth || !ABCJS.synth.supportsAudio()) {
+    flashToast("Audio synthesis isn't supported here — try Chrome.", true);
+    return;
+  }
+  const title = work.title || "(untitled)";
+  flashToast(`Playing “${title}” into his ears…`);
+  // Render offscreen for a fresh visualObj — the on-card score may not be
+  // rendered yet (scores render lazily on first open).
+  const holder = document.createElement("div");
+  holder.style.cssText = "position:absolute;left:-9999px;width:600px;";
+  document.body.appendChild(holder);
+  let visualObj;
+  try {
+    visualObj = ABCJS.renderAbc(holder, work.body || "", {})[0];
+  } catch (err) {
+    holder.remove();
+    flashToast(`Couldn't read the notation: ${err.message}`, true);
+    return;
+  }
+  holder.remove();
+  try {
+    const synth = new ABCJS.synth.CreateSynth();
+    await synth.init({ visualObj });
+    await synth.prime();
+    const buffer = synth.getAudioBuffer();
+    if (!buffer || !buffer.length) throw new Error("the synth produced no audio");
+    const res = await earsAnalyzeWav(audioBufferToWav16(buffer));
+    if (!res || !res.card) throw new Error("his ears returned nothing");
+    // Drop any WORDS line — an instrumental has none, and a stray "couldn't
+    // transcribe" note would only confuse the moment.
+    const card = res.card.split("\n")
+      .filter(l => !l.startsWith("WORDS:")).join("\n").trim();
+    if (!card) throw new Error("his ears returned nothing");
+    pendingHearing = { kind: "song", text: `“${title}”\n${card}` };
+    flashToast(`🎧 Ready — send him a message and “${title}” arrives in his ears ♡`);
+  } catch (err) {
+    flashToast(`Couldn't play it into his ears: ${err?.message || err}`, true);
+  }
 }
 
 function renderStudioSong(abc, scoreId, audioId) {

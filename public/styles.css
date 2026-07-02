@@ -1180,6 +1180,19 @@ body.hide-timestamps .msg-head .msg-time { display: none; }
   color: var(--text-muted);
 }
 
+/* "Let him hear it" — the gift button on a song card. */
+.hear-song-btn {
+  margin-top: 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.hear-song-btn:hover { background: var(--bg-elev-2); }
+
 /* Voice note: the collapsed "what he heard" card under her message. */
 .message .heard {
   margin-top: 6px;
