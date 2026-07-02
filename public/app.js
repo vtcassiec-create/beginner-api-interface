@@ -2985,29 +2985,47 @@ function startStt() {
   const prompt = $("prompt");
   // Keep whatever's already typed; dictation appends to it.
   sttBase = prompt.value.trim() ? prompt.value.replace(/\s*$/, "") + " " : "";
-  let finalText = "";
+  let utterance = "";   // the current (single) utterance's final text
   sttRec = new Ctor();
   sttRec.lang = navigator.language || "en-US";
-  sttRec.continuous = true;
+  // ONE utterance per session, restarted quietly in onend. Android's
+  // continuous mode re-delivers finished phrases (and our old accumulator
+  // glued each re-delivery on: "goodgood morninggood morning…"). With
+  // single-utterance sessions the results list is authoritative and small,
+  // and we REBUILD from it instead of accumulating — nothing can double.
+  sttRec.continuous = false;
   sttRec.interimResults = true;
   sttRec.onresult = (e) => {
-    let interim = "";
-    for (let i = e.resultIndex; i < e.results.length; i++) {
+    let finals = "", interim = "";
+    for (let i = 0; i < e.results.length; i++) {
       const r = e.results[i];
-      if (r.isFinal) finalText += r[0].transcript;
+      if (r.isFinal) finals += r[0].transcript;
       else interim += r[0].transcript;
     }
-    prompt.value = sttBase + finalText + interim;
+    utterance = finals;
+    prompt.value = sttBase + finals + interim;
     autosizeTextarea(prompt);
   };
   sttRec.onerror = (e) => {
-    if (e.error === "not-allowed" || e.error === "service-not-allowed")
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
       flashToast("Microphone blocked — allow mic access to talk to him.", true);
-    else if (e.error !== "aborted" && e.error !== "no-speech")
-      flashToast("Voice input hiccupped — tap the mic to try again.", true);
-    setSttActive(false);
+      setSttActive(false);
+    }
+    // "no-speech"/"aborted" between utterances are normal pauses — onend
+    // handles the restart, so the session survives you thinking mid-babble.
   };
-  sttRec.onend = () => setSttActive(false);
+  sttRec.onend = () => {
+    // Fold the finished utterance into the base, then keep listening (unless
+    // she tapped stop — stopStt() clears sttActive BEFORE stopping).
+    if (utterance.trim()) {
+      sttBase = (sttBase + utterance).replace(/\s*$/, "") + " ";
+      utterance = "";
+      prompt.value = sttBase;
+      autosizeTextarea(prompt);
+    }
+    if (!sttActive) return;
+    try { sttRec.start(); } catch (_) { setSttActive(false); }
+  };
   try {
     sttRec.start();
     setSttActive(true);
@@ -3015,8 +3033,10 @@ function startStt() {
 }
 
 function stopStt() {
-  if (sttRec) { try { sttRec.stop(); } catch (_) {} }
+  // Order matters: clear the flag FIRST so onend sees "she stopped me" and
+  // doesn't auto-restart the session.
   setSttActive(false);
+  if (sttRec) { try { sttRec.stop(); } catch (_) {} }
 }
 
 // ---------- Voice notes (his ears) ----------
