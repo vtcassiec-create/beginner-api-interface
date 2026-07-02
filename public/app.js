@@ -5885,7 +5885,11 @@ async function hearSong(work) {
   holder.remove();
   try {
     const synth = new ABCJS.synth.CreateSynth();
-    await synth.init({ visualObj });
+    // The empty options object is LOAD-BEARING: CreateSynth.init only
+    // initializes its internal options when the key is present, and prime()
+    // later reads self.options.swing unguarded — without this, it throws
+    // "Cannot read properties of undefined (reading 'swing')".
+    await synth.init({ visualObj, options: {} });
     await synth.prime();
     const buffer = synth.getAudioBuffer();
     if (!buffer || !buffer.length) throw new Error("the synth produced no audio");
