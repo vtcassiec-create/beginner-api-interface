@@ -1535,6 +1535,17 @@ class handler(BaseHTTPRequestHandler):
                 "not found" in msg or "not_found" in msg
                 or "does not exist" in msg or "deprecat" in msg or "retir" in msg)
 
+        def _is_file_download_error(err):
+            # Anthropic fetches image URLs server-side BEFORE generating; a slow
+            # fetch from Storage surfaces as a 400 "request timed out while
+            # trying to download the file." It's transient (a manual regenerate
+            # usually clears it) and happens before any text, so an automatic
+            # retry can't duplicate output — we just do the regenerate for her.
+            msg = (getattr(err, "message", "") or "").lower()
+            code = getattr(err, "status_code", None)
+            return code == 400 and "download" in msg and (
+                "timed out" in msg or "timeout" in msg or "failed" in msg)
+
         # Keepalive: while the model streams, a slow tool (a sleepy vault/MCP
         # server reading several notes) can leave the connection silent for
         # minutes, and the browser's idle watchdog can't tell "busy" from
@@ -1578,6 +1589,42 @@ class handler(BaseHTTPRequestHandler):
             # any text — drop the MCP servers and retry once, so his reply
             # still gets through (just without the vault/Signal this turn)
             # rather than failing outright.
+            # A transient Storage-download timeout: re-sign the image URLs fresh
+            # (in case one lapsed) and retry a couple of times with a short
+            # backoff — automating the manual "close app + regenerate" that she
+            # found already works. The download happens before any text, so a
+            # retry can't duplicate his reply.
+            if _is_file_download_error(e):
+                ok = False
+                for delay in (1.5, 3.0):
+                    time.sleep(delay)
+                    try:
+                        kwargs["messages"] = self._resolve_image_sources(
+                            data.get("messages") or [], self._bearer_token())
+                        self._strip_empty_compaction(kwargs["messages"])
+                        self._inject_time_context(kwargs["messages"], data)
+                        self._inject_live_context(
+                            kwargs["messages"], self._bearer_token(), data)
+                        self._cache_history(kwargs["messages"])
+                        run_stream()
+                        ok = True
+                        break
+                    except anthropic.APIStatusError as e2:
+                        if not _is_file_download_error(e2):
+                            self._sse({"type": "error",
+                                       "error": f"{e2.status_code}: {e2.message}"})
+                            ok = True
+                            break
+                    except Exception as e2:
+                        self._sse({"type": "error", "error": str(e2)})
+                        ok = True
+                        break
+                if not ok:
+                    self._sse({"type": "error", "error": (
+                        "A photo took too long to load just now — tap regenerate "
+                        "and it usually goes through. (Anthropic timed out "
+                        "fetching an image; it's transient.)")})
+                return
             if _is_mcp_conn_error(e) and "extra_body" in kwargs:
                 # The MCP server is healthy and fast (measured); these failures
                 # are transient connector blips. The error happens at connect
