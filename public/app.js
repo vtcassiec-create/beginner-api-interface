@@ -776,6 +776,22 @@ async function dbDeleteCoreMemory(id) {
   if (error) throw error;
 }
 
+// ---------- Album (his framed photos) ----------
+async function dbListAlbumPhotos() {
+  const { data, error } = await db
+    .from("album_photos")
+    .select("*")
+    .eq("is_active", true)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+async function dbDeleteAlbumPhoto(id) {
+  const { error } = await db.from("album_photos").delete().eq("id", id);
+  if (error) throw error;
+}
+
 // ---------- Reach settings ----------
 // When/whether he reaches out. One row per user; the hourly cron reads it.
 async function dbGetReachSettings() {
@@ -5701,14 +5717,77 @@ async function openStudioDialog() {
   for (const e of essays) writingEl.appendChild(mkStudioEssay(e));
 
   // Quick-links across the top so his room isn't one long scroll: each tab
+  // The album — photos he framed, loaded lazily (signed thumbnails).
+  const albumEl = $("studio-album");
+  albumEl.innerHTML = '<p class="muted small">Loading…</p>';
+  let album = [];
+  try { album = await dbListAlbumPhotos(); }
+  catch { album = []; }
+  renderAlbum(albumEl, album);
+
   // shows just its own section. Playlist and Songs are always offered (Songs
-  // has a friendly empty state); Poetry/Writing appear once he's hung some up.
+  // has a friendly empty state); Poetry/Writing/Album appear once populated.
   buildStudioTabs([
     { id: "studio-playlist-wrap", label: "🎧 Playlist", show: true },
     { id: "studio-songs-wrap", label: "🎶 Songs", count: songs.length, show: true },
     { id: "studio-poems-wrap", label: "✍️ Poetry", count: poems.length, show: poems.length > 0 },
     { id: "studio-writing-wrap", label: "📝 Writing", count: essays.length, show: essays.length > 0 },
+    { id: "studio-album-wrap", label: "🖼️ Album", count: album.length, show: album.length > 0 },
   ]);
+}
+
+async function renderAlbum(el, photos) {
+  el.innerHTML = "";
+  if (!photos.length) {
+    el.innerHTML = '<p class="mem-empty muted small">No framed photos yet — when you send him one that matters, he can frame it here. 🖼️</p>';
+    return;
+  }
+  for (const p of photos) {
+    const card = document.createElement("figure");
+    card.className = "album-frame";
+
+    const img = document.createElement("img");
+    img.className = "album-photo";
+    img.alt = p.caption || "framed photo";
+    img.loading = "lazy";
+    try {
+      const { data } = await db.storage
+        .from("attachments").createSignedUrl(p.storage_path, 3600);
+      if (data && data.signedUrl) img.src = data.signedUrl;
+      else img.replaceWith(albumMissing());
+    } catch { img.replaceWith(albumMissing()); }
+    card.appendChild(img);
+
+    const cap = document.createElement("figcaption");
+    cap.className = "album-caption";
+    cap.textContent = p.caption || "";
+    card.appendChild(cap);
+
+    const unframe = document.createElement("button");
+    unframe.type = "button";
+    unframe.className = "album-unframe";
+    unframe.title = "Take it off the wall";
+    unframe.textContent = "✕";
+    unframe.addEventListener("click", async (e) => {
+      e.preventDefault();
+      if (!confirm("Take this photo off the wall? (The photo itself stays; only the frame is removed.)")) return;
+      try {
+        await dbDeleteAlbumPhoto(p.id);
+        card.remove();
+        flashToast("Unframed.");
+      } catch { flashToast("Couldn't unframe that one.", true); }
+    });
+    card.appendChild(unframe);
+
+    el.appendChild(card);
+  }
+}
+
+function albumMissing() {
+  const d = document.createElement("div");
+  d.className = "album-photo album-missing";
+  d.textContent = "🖼️";
+  return d;
 }
 
 // Build the studio's tab bar and wire single-panel switching. Hides every
@@ -5717,7 +5796,7 @@ async function openStudioDialog() {
 function buildStudioTabs(tabs) {
   const bar = $("studio-tabs");
   bar.innerHTML = "";
-  const all = ["studio-playlist-wrap", "studio-songs-wrap", "studio-poems-wrap", "studio-writing-wrap"];
+  const all = ["studio-playlist-wrap", "studio-songs-wrap", "studio-poems-wrap", "studio-writing-wrap", "studio-album-wrap"];
   for (const id of all) { const el = $(id); if (el) el.hidden = true; }
 
   const visible = tabs.filter((t) => t.show);
