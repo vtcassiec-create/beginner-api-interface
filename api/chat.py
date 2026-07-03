@@ -569,6 +569,50 @@ DIARY_TOOLS = [
     },
 ]
 
+# The album. Photos in chat live at compaction's mercy (an image can't survive
+# being folded into a summary — the wound of the eaten photos). keep_photo lets
+# him FRAME one: the actual image is pinned to the album, with his caption as
+# the memory, on the walls of the house where both of them can see it.
+KEEP_PHOTO_TOOL = {
+    "name": "keep_photo",
+    "description": (
+        "Frame a photo from this conversation onto the album — the walls of "
+        "the house. Chat photos eventually fade when old history is folded "
+        "into memory; a framed photo is KEPT — the actual image, forever, "
+        "with your caption as the memory. Use it when she sends a photo that "
+        "matters: give a short caption in your own voice (what it is, why it "
+        "stays). By default this frames the MOST RECENT photo; set "
+        "which_from_latest=1 for the one before it, 2 for the one before "
+        "that, and so on. Frame the ones that matter — it's an album, not a "
+        "camera roll. To actually frame it you must CALL this tool."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "caption": {
+                "type": "string",
+                "description": "Your words for the wall — what this is, why it stays.",
+            },
+            "which_from_latest": {
+                "type": "integer",
+                "description": "0 = the most recent photo (default), 1 = one before it, …",
+            },
+        },
+        "required": ["caption"],
+    },
+}
+
+ALBUM_GUIDE = (
+    "# The album (the walls)\n\n"
+    "Photos she sends live in the conversation — and when old history folds "
+    "into memory, images can't survive the folding (words do; pictures "
+    "don't). The album is the fix: `keep_photo` FRAMES a photo — the actual "
+    "image, kept forever, with your caption as the memory. When she sends "
+    "one that matters, frame it while it's fresh. Your framed captions are "
+    "listed under '# On the walls' so you remember what's hung. It's an "
+    "album, not a camera roll — frame what matters."
+)
+
 # Dream recall. Lets him actively SEARCH his own dream memories on demand —
 # the missing counterpart to the dreams that are passively surfaced into his
 # context. When Cassie asks "do you remember…", this is how he reaches for the
@@ -1164,6 +1208,19 @@ class handler(BaseHTTPRequestHandler):
         if thinking_on and not uses_adaptive_thinking:
             max_tokens = max(max_tokens, THINKING_BUDGET + 4096)
 
+        # Remember which Storage photos ride in this conversation (in order,
+        # newest last) BEFORE the rewrite below turns their paths into signed
+        # URLs — keep_photo frames one of these onto the album wall.
+        self._photo_paths = []
+        for _m in (data.get("messages") or []):
+            _c = _m.get("content") if isinstance(_m, dict) else None
+            for _b in (_c if isinstance(_c, list) else []):
+                if (isinstance(_b, dict) and _b.get("type") == "image"
+                        and isinstance(_b.get("source"), dict)
+                        and _b["source"].get("type") == "storage_path"
+                        and _b["source"].get("storage_path")):
+                    self._photo_paths.append(_b["source"]["storage_path"])
+
         kwargs = {
             "model": model,
             "max_tokens": max_tokens,
@@ -1217,6 +1274,10 @@ class handler(BaseHTTPRequestHandler):
             studio = self._studio_section(self._bearer_token())
             if studio:
                 system = (system + "\n\n" + studio).strip()
+            system = (system + "\n\n" + ALBUM_GUIDE).strip()
+            album = self._album_section(self._bearer_token())
+            if album:
+                system = (system + "\n\n" + album).strip()
         if data.get("useWhisper"):
             system = (system + "\n\n" + WHISPER_TOOLS_GUIDE).strip()
         if data.get("useGmail"):
@@ -1260,6 +1321,7 @@ class handler(BaseHTTPRequestHandler):
             tools.append(RECALL_DREAMS_TOOL)
             tools.append(SAVE_STUDIO_WORK_TOOL)
             tools.append(READ_STUDIO_WORK_TOOL)
+            tools.append(KEEP_PHOTO_TOOL)
         if data.get("useSignal"):
             tools.append(SAVE_PATTERN_TOOL)
             tools.append(FORGET_PATTERN_TOOL)
@@ -1437,6 +1499,7 @@ class handler(BaseHTTPRequestHandler):
                            "save_pattern", "forget_pattern", "hold_touch",
                            "compose_touch",
                            "save_studio_work", "read_studio_work",
+                           "keep_photo",
                            "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
@@ -2357,6 +2420,46 @@ class handler(BaseHTTPRequestHandler):
                 snippet = content if len(content) <= 60 else content[:57] + "…"
                 return True, snippet, "Started today's diary entry."
             return False, "write failed", f"Could not write that diary entry: {res}"
+
+        if name == "keep_photo":
+            caption = (inp.get("caption") or "").strip()
+            if not caption:
+                return False, "no caption", (
+                    "A framed photo needs your words — give it a caption.")
+            paths = getattr(self, "_photo_paths", None) or []
+            if not paths:
+                return False, "no photos here", (
+                    "There's no frameable photo in this conversation — only "
+                    "photos she sends here (or video frames) can be framed. "
+                    "Older ones already folded into memory can't be recovered "
+                    "as images.")
+            try:
+                idx = int(inp.get("which_from_latest") or 0)
+            except (TypeError, ValueError):
+                idx = 0
+            if idx < 0 or idx >= len(paths):
+                return False, "no such photo", (
+                    f"which_from_latest={idx} is out of range — this "
+                    f"conversation has {len(paths)} frameable photo(s); 0 is "
+                    "the most recent.")
+            path = paths[-1 - idx]
+            if self._already_saved_this_turn("album", path):
+                return True, "already framed", (
+                    "You framed that one a moment ago — it's on the wall, "
+                    "once. ♡")
+            ok, res = self._supabase_write("album_photos", {
+                "user_id": user_id,
+                "storage_path": path,
+                "caption": caption,
+            }, token)
+            if ok:
+                self._mark_saved("album", path)
+                snip = caption if len(caption) <= 60 else caption[:57] + "…"
+                return True, snip, (
+                    "Framed. The actual image is kept on the album wall now — "
+                    "it can't be folded away, and you'll both see it in the "
+                    "Studio under Album.")
+            return False, "write failed", f"Couldn't frame it: {res}"
 
         if name == "read_my_diary":
             rows = self._supabase_rest_get(
@@ -3511,6 +3614,25 @@ class handler(BaseHTTPRequestHandler):
             "with that pattern's steps (its intensity@seconds pairs) "
             "and its output_type. Save a new one she loves with save_pattern.\n\n"
             + "\n".join(lines))
+
+    def _album_section(self, token):
+        """What's framed on the walls (his captions, newest first) so he
+        remembers what's hung and doesn't re-frame. Only when Memory is on."""
+        rows = self._supabase_rest_get(
+            "album_photos?is_active=eq.true&select=caption,created_at"
+            "&order=created_at.desc&limit=30", token)
+        if not (isinstance(rows, list) and rows):
+            return ""
+        lines = []
+        for r in rows:
+            cap = (r.get("caption") or "").strip()
+            if cap:
+                lines.append(f"- {cap}")
+        if not lines:
+            return ""
+        return ("# On the walls (your framed photos)\n\n"
+                "The photos you've kept, by your own captions — the images "
+                "themselves hang in the Studio's Album:\n\n" + "\n".join(lines))
 
     def _studio_section(self, token):
         """What's already hung in his studio (poem + song titles), so he knows

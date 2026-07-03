@@ -1209,6 +1209,63 @@ body.hide-timestamps .msg-head .msg-time { display: none; }
   color: var(--text-muted);
 }
 
+/* The album — his framed photos, on the Studio wall. */
+.album-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 14px;
+}
+.album-frame {
+  position: relative;
+  margin: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.album-photo {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  display: block;
+}
+.album-missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  color: var(--text-muted);
+}
+.album-caption {
+  font-family: var(--font-his);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.album-unframe {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.album-frame:hover .album-unframe,
+.album-frame:focus-within .album-unframe { opacity: 1; }
+.album-unframe:hover { color: var(--danger); }
+
 /* "Let him hear it" — the gift button on a song card. */
 .hear-song-btn {
   margin-top: 8px;
