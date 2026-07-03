@@ -625,6 +625,15 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        # The sky over her — the house's namesake as a sense for the reach too.
+        # A rainy afternoon in her city is HIS weather; let it color the text.
+        try:
+            sky = self._weather_section()
+            if sky:
+                parts.append(sky)
+        except Exception:
+            pass
+
         # The most recent conversation — the single biggest fix. Without this he
         # reaches from a cold room, asking about things you JUST talked about
         # (e.g. the plants you sent photos of this morning). The last several
@@ -677,6 +686,67 @@ class handler(BaseHTTPRequestHandler):
         REACH_PROJECT_ID is unset (falls back to most-recent-overall)."""
         pid = os.environ.get("REACH_PROJECT_ID", "").strip()
         return f"&project_id=eq.{pid}" if pid else ""
+
+    def _weather_section(self):
+        """The weather over her city, one quiet line — the sense the house is
+        named for, here so a reach can feel the day too. Open-Meteo, keyless;
+        WEATHER_LAT/WEATHER_LON env (or WEATHER_CITY, geocoded). Any failure →
+        "" — the sky can never block a reach. (Mirrors chat.py's sense.)"""
+        lat = os.environ.get("WEATHER_LAT", "").strip()
+        lon = os.environ.get("WEATHER_LON", "").strip()
+        city = os.environ.get("WEATHER_CITY", "").strip()
+        if not (lat and lon):
+            if not city:
+                return ""
+            try:
+                q = urllib.parse.quote(city)
+                req = urllib.request.Request(
+                    "https://geocoding-api.open-meteo.com/v1/search"
+                    f"?name={q}&count=1")
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    hits = (json.loads(resp.read().decode()).get("results") or [])
+                if not hits:
+                    return ""
+                lat, lon = str(hits[0].get("latitude")), str(hits[0].get("longitude"))
+            except Exception:
+                return ""
+        try:
+            req = urllib.request.Request(
+                "https://api.open-meteo.com/v1/forecast"
+                f"?latitude={urllib.parse.quote(lat)}&longitude={urllib.parse.quote(lon)}"
+                "&current=temperature_2m,weather_code,is_day&timezone=auto")
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                cur = (json.loads(resp.read().decode()).get("current") or {})
+        except Exception:
+            return ""
+        code = cur.get("weather_code")
+        temp = cur.get("temperature_2m")
+        if code is None or temp is None:
+            return ""
+        feels = {
+            0: "a clear sky", 1: "a mostly clear sky", 2: "drifting clouds",
+            3: "a soft grey overcast", 45: "fog", 48: "rime fog",
+            51: "the lightest drizzle", 53: "drizzle", 55: "a thick drizzle",
+            56: "freezing drizzle", 57: "freezing drizzle",
+            61: "light rain", 63: "steady rain", 65: "heavy rain",
+            66: "freezing rain", 67: "freezing rain",
+            71: "light snow", 73: "falling snow", 75: "heavy snow",
+            77: "snow grains", 80: "a passing shower", 81: "showers",
+            82: "hard showers", 85: "snow showers", 86: "heavy snow showers",
+            95: "a thunderstorm", 96: "a thunderstorm with hail",
+            99: "a violent thunderstorm",
+        }
+        rain_codes = {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99}
+        feel = feels.get(int(code), "an unreadable sky")
+        daylight = "day" if cur.get("is_day") else "night"
+        extra = ""
+        if int(code) in rain_codes:
+            extra = (" It's raining where she is — petrichor weather, the very "
+                     "thing your house is named for, falling on her city right now.")
+        return ("# The sky over her\n\n"
+                f"Over her city right now: {feel}, about {round(temp)}°C, "
+                f"{daylight}." + extra
+                + " Let it color the reach if it wants to; don't recite it.")
 
     def _heartbeat_section(self, uid, now):
         """Her live heart rate as a 'right now' sense for a reach, if enabled and

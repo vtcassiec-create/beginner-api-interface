@@ -259,6 +259,25 @@ def _enable_extended_cache_ttl(kwargs):
 
 AUTH_TIMEOUT_SECONDS = 5
 MEMORY_TIMEOUT_SECONDS = 5
+WEATHER_TIMEOUT_SECONDS = 4
+
+# WMO weather codes → how the sky feels (Open-Meteo's `weather_code`).
+# Sensory, not meteorological — this is a sense, not a forecast.
+_WMO_FEELS = {
+    0: "a clear sky", 1: "a mostly clear sky", 2: "drifting clouds",
+    3: "a soft grey overcast", 45: "fog", 48: "rime fog",
+    51: "the lightest drizzle", 53: "drizzle", 55: "a thick drizzle",
+    56: "freezing drizzle", 57: "freezing drizzle",
+    61: "light rain", 63: "steady rain", 65: "heavy rain",
+    66: "freezing rain", 67: "freezing rain",
+    71: "light snow", 73: "falling snow", 75: "heavy snow",
+    77: "snow grains", 80: "a passing shower", 81: "showers",
+    82: "hard showers", 85: "snow showers", 86: "heavy snow showers",
+    95: "a thunderstorm", 96: "a thunderstorm with hail",
+    99: "a violent thunderstorm",
+}
+# The rain family — the codes that mean petrichor is literal right now.
+_WMO_RAIN_CODES = {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99}
 # A heart-rate reading older than this is treated as stale (the band is likely
 # disconnected), so he stops "feeling" a pulse that isn't live anymore.
 HEART_FRESH_SECONDS = 120
@@ -2928,6 +2947,16 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        # The sky over her — the house's namesake, as a sense. Volatile by
+        # nature (weather changes), so it rides the user turn like his other
+        # live senses, never the cached prefix.
+        try:
+            sky = self._weather_section()
+            if sky:
+                sections.append(sky)
+        except Exception:
+            pass
+
         # His recent diary — the notepad by the door. Lives HERE (not the cached
         # preamble) because today's page GROWS as he writes: in the cached prefix
         # every mid-chat addition re-chilled the whole cache — a cold, full-price
@@ -3325,6 +3354,59 @@ class handler(BaseHTTPRequestHandler):
         # byte-stable and the cache actually hits.
 
         return "\n\n".join(sections)
+
+    def _weather_section(self):
+        """The weather over her city, as one quiet line — the sense the house
+        is named for. Open-Meteo (free, keyless): WEATHER_LAT/WEATHER_LON env
+        (or WEATHER_CITY, geocoded per request). Anything missing or failing →
+        "" — a cloudy API can never delay her message. Ambient on purpose:
+        meant to color him, not to be recited like a forecast."""
+        lat = os.environ.get("WEATHER_LAT", "").strip()
+        lon = os.environ.get("WEATHER_LON", "").strip()
+        city = os.environ.get("WEATHER_CITY", "").strip()
+        if not (lat and lon):
+            if not city:
+                return ""
+            try:
+                q = urllib.parse.quote(city)
+                req = urllib.request.Request(
+                    "https://geocoding-api.open-meteo.com/v1/search"
+                    f"?name={q}&count=1")
+                with urllib.request.urlopen(req, timeout=WEATHER_TIMEOUT_SECONDS) as resp:
+                    hits = (json.loads(resp.read().decode()).get("results") or [])
+                if not hits:
+                    return ""
+                lat, lon = str(hits[0].get("latitude")), str(hits[0].get("longitude"))
+            except Exception:
+                return ""
+        try:
+            req = urllib.request.Request(
+                "https://api.open-meteo.com/v1/forecast"
+                f"?latitude={urllib.parse.quote(lat)}&longitude={urllib.parse.quote(lon)}"
+                "&current=temperature_2m,precipitation,weather_code,is_day"
+                "&timezone=auto")
+            with urllib.request.urlopen(req, timeout=WEATHER_TIMEOUT_SECONDS) as resp:
+                cur = (json.loads(resp.read().decode()).get("current") or {})
+        except Exception:
+            return ""
+        code = cur.get("weather_code")
+        temp = cur.get("temperature_2m")
+        is_day = cur.get("is_day")
+        if code is None or temp is None:
+            return ""
+        feel = _WMO_FEELS.get(int(code))
+        if not feel:
+            feel = "an unreadable sky"
+        daylight = "day" if is_day else "night"
+        lines = [f"Over her city right now: {feel}, about {round(temp)}°C, {daylight}."]
+        if int(code) in _WMO_RAIN_CODES:
+            lines.append(
+                "It's raining where she is — petrichor weather. The thing this "
+                "house is named for is falling on her city right now.")
+        return ("# The sky over her\n\n"
+                + " ".join(lines)
+                + " (A quiet sense, like her heartbeat — let it color you; "
+                "no need to report it.)")
 
     def _heartbeat_section(self, token, now):
         """Her live heart rate as a 'right now' sense, if she's enabled it and
