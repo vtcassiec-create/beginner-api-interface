@@ -830,6 +830,18 @@ class handler(BaseHTTPRequestHandler):
             {"messages": msgs, "updated_at": now_iso})
         if ok is None:
             return False
+        # His unprompted message just changed the conversation underneath the
+        # keep-warm pilot light, whose blueprint was frozen at her last chat
+        # turn. Left alone it would keep warming a prefix that no longer matches
+        # (and her reply to his reach wouldn't hit that warmed cache anyway).
+        # So stand the pilot light down — clearing the blueprint is a no-op if
+        # keep-warm isn't set up — and let her next real message re-arm it with
+        # a correct blueprint that includes his message. Best-effort.
+        try:
+            self._supabase("PATCH", f"keepwarm_state?user_id=eq.{uid}",
+                           {"blueprint": None})
+        except Exception:
+            pass
         # Best-effort push (the buzz). Never blocks the in-app write. We stash a
         # small summary on self so the endpoint response can report what the push
         # actually did (it's otherwise silent, which made a missed buzz a mystery).
