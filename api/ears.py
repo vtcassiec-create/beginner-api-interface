@@ -97,13 +97,28 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             return self._json(400, {"error": "bad request"})
         b64 = (body.get("audio_b64") or "").strip()
+        audio_path = (body.get("audio_path") or "").strip()
         lang = (body.get("lang") or "en").strip() or "en"
-        if not b64:
-            return self._json(400, {"error": "audio_b64 required"})
-        try:
-            audio = base64.b64decode(b64)
-        except Exception:
-            return self._json(400, {"error": "audio_b64 not valid base64"})
+        used_storage = False
+        if audio_path:
+            # Big audio (a whole song, a long soundtrack) can't fit through
+            # Vercel's ~4.5MB request-body door (the "ears 413"). The client
+            # uploads the WAV to her own Storage instead and hands us the path;
+            # we fetch it AS HER (her token — bucket RLS still applies), and
+            # tidy up the object afterwards.
+            if ".." in audio_path or len(audio_path) > 300:
+                return self._json(400, {"error": "bad audio_path"})
+            audio = self._storage_get(audio_path)
+            if audio is None:
+                return self._json(400, {"error": "couldn't fetch audio_path"})
+            used_storage = True
+        elif b64:
+            try:
+                audio = base64.b64decode(b64)
+            except Exception:
+                return self._json(400, {"error": "audio_b64 not valid base64"})
+        else:
+            return self._json(400, {"error": "audio_b64 or audio_path required"})
         if len(audio) > MAX_AUDIO_BYTES:
             return self._json(400, {"error": "audio too large"})
 
@@ -119,12 +134,55 @@ class handler(BaseHTTPRequestHandler):
         # Words + prosody from Inworld (may be absent if unconfigured/errored).
         words = self._inworld_stt(audio, lang)
 
+        # The Storage object was a hand-off, not a keepsake — tidy it away so
+        # song pings don't slowly fill her bucket. Best-effort.
+        if used_storage:
+            self._storage_delete(audio_path)
+
         card = _build_card(words, sound)
         return self._json(200, {
             "card": card,                # preformatted text he receives
             "words": words,              # {transcript, wordTimestamps, voiceProfile}
             "sound": sound,              # acoustic dict
         })
+
+    # ---- storage (as the signed-in user; bucket RLS applies) ----
+
+    def _bearer_token(self):
+        auth = self.headers.get("Authorization", "")
+        return auth[len("Bearer "):].strip() if auth.startswith("Bearer ") else ""
+
+    def _storage_headers(self):
+        return {
+            "Authorization": f"Bearer {self._bearer_token()}",
+            "apikey": os.environ.get("SUPABASE_ANON_KEY", "").strip(),
+        }
+
+    def _storage_get(self, path):
+        """Fetch an attachments object as the user. None on any failure."""
+        base = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        if not base:
+            return None
+        try:
+            req = urllib.request.Request(
+                f"{base}/storage/v1/object/attachments/{path}",
+                headers=self._storage_headers())
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                return resp.read(MAX_AUDIO_BYTES + 1)
+        except Exception:
+            return None
+
+    def _storage_delete(self, path):
+        base = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        if not base:
+            return
+        try:
+            req = urllib.request.Request(
+                f"{base}/storage/v1/object/attachments/{path}",
+                method="DELETE", headers=self._storage_headers())
+            urllib.request.urlopen(req, timeout=HTTP_TIMEOUT).read()
+        except Exception:
+            pass
 
     # ---- auth (mirrors tts.py) ----
 

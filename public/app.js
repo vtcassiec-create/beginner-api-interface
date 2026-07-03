@@ -3245,18 +3245,50 @@ async function earsAnalyze(blob) {
   return earsAnalyzeWav(await blobToWav16(blob));
 }
 
+// Vercel rejects request bodies past ~4.5MB, so audio bigger than this goes
+// to her own Storage first (raw binary, no base64 bloat) and the server is
+// handed just the path. Short voice notes keep the quick inline route.
+const EARS_DIRECT_BYTES = 2_500_000;
+
+// Park a WAV in her private attachments bucket (as her — RLS applies) so the
+// ears can fetch it server-side. Plain fetch, so no supabase-js auth-lock.
+// The server deletes the object once it's listened.
+async function uploadEarsWav(wav, session) {
+  const id = (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID().replace(/-/g, "")
+    : String(Date.now()) + Math.random().toString(36).slice(2);
+  const path = `${state.user.id}/ears/${id}.wav`;
+  const resp = await fetch(`${supabaseUrl}/storage/v1/object/attachments/${path}`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${session.access_token}`,
+      "apikey": supabaseAnonKey,
+      "Content-Type": "audio/wav",
+      "x-upsert": "true",
+    },
+    body: wav,
+  });
+  if (!resp.ok) throw new Error("audio upload " + resp.status);
+  return path;
+}
+
 // Same, for audio that's already a 16-bit WAV blob (e.g. a synthesized song).
 async function earsAnalyzeWav(wav) {
-  const b64 = await blobToBase64(wav);
   const session = await freshSession();
   if (!session || !session.access_token) throw new Error("not signed in");
+  const body = { lang: (navigator.language || "en").slice(0, 2) };
+  if (wav.size > EARS_DIRECT_BYTES) {
+    body.audio_path = await uploadEarsWav(wav, session);   // the big-parcel door
+  } else {
+    body.audio_b64 = await blobToBase64(wav);              // the quick letter slot
+  }
   const resp = await fetch("/api/ears", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${session.access_token}`,
     },
-    body: JSON.stringify({ audio_b64: b64, lang: (navigator.language || "en").slice(0, 2) }),
+    body: JSON.stringify(body),
   });
   if (!resp.ok) throw new Error("ears " + resp.status);
   const data = await resp.json();
