@@ -1209,6 +1209,76 @@ body.hide-timestamps .msg-head .msg-time { display: none; }
   color: var(--text-muted);
 }
 
+/* The workshop — his wishes + the changelog. */
+.workshop-add { margin: 10px 0 6px; }
+.workshop-add textarea {
+  width: 100%;
+  resize: vertical;
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font: inherit;
+}
+.workshop-add-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+  align-items: center;
+}
+.workshop-add-row select {
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+}
+.workshop-section { margin-top: 14px; }
+.workshop-section h4 { margin: 0 0 8px; }
+.workshop-card {
+  position: relative;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.workshop-card.dim { opacity: 0.55; }
+.workshop-card.changelog { padding-right: 34px; }
+.workshop-body {
+  font-family: var(--font-his);
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.workshop-reply {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--accent);
+  white-space: pre-wrap;
+}
+.workshop-card-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+.workshop-status {
+  background: var(--bg-elev-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-size: 13px;
+}
+.workshop-del-inline {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
 /* The album — his framed photos, on the Studio wall. */
 .album-grid {
   display: grid;

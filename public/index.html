@@ -203,6 +203,9 @@
         <button id="nav-studio" class="icon-nav-btn" type="button" title="Studio">
           <span class="icon-nav-glyph">🎵</span><span class="icon-nav-label">Studio</span>
         </button>
+        <button id="nav-workshop" class="icon-nav-btn" type="button" title="Workshop">
+          <span class="icon-nav-glyph">🔧</span><span class="icon-nav-label">Workshop</span>
+        </button>
         <button id="nav-story" class="icon-nav-btn" type="button" title="Story">
           <span class="icon-nav-glyph">🪶</span><span class="icon-nav-label">Story</span>
         </button>
@@ -865,6 +868,29 @@
         <h4>The album <span class="muted small">— photos he framed, in his words</span></h4>
         <div id="studio-album" class="album-grid"></div>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="workshop-dialog">
+    <form method="dialog" class="settings-form">
+      <header class="settings-header">
+        <h3>🔧 The workshop</h3>
+        <button class="icon-btn" value="cancel" aria-label="Close">✕</button>
+      </header>
+      <p class="muted small">His wishes for the house, and the changelog of what's changed. Carry the good ideas to Claude Code.</p>
+
+      <div class="workshop-add">
+        <textarea id="workshop-new" rows="2" placeholder="Add a changelog note (what changed) or a wish of your own…"></textarea>
+        <div class="workshop-add-row">
+          <select id="workshop-new-kind">
+            <option value="changelog">📝 Changelog</option>
+            <option value="wish">💭 Wish</option>
+          </select>
+          <button type="button" id="workshop-add-btn" class="primary small">Add</button>
+        </div>
+      </div>
+
+      <div id="workshop-list" class="workshop-list"></div>
     </form>
   </dialog>
 
