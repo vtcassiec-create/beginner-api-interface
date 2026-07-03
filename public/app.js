@@ -792,6 +792,34 @@ async function dbDeleteAlbumPhoto(id) {
   if (error) throw error;
 }
 
+// ---------- Workshop (his wishes + the changelog) ----------
+async function dbListWorkshopNotes() {
+  const { data, error } = await db
+    .from("workshop_notes")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+async function dbCreateWorkshopNote(kind, body) {
+  const { error } = await db.from("workshop_notes").insert({
+    user_id: state.user.id, kind, author: "cassie", body,
+    status: kind === "changelog" ? "done" : "open",
+  });
+  if (error) throw error;
+}
+
+async function dbUpdateWorkshopNote(id, fields) {
+  const { error } = await db.from("workshop_notes").update(fields).eq("id", id);
+  if (error) throw error;
+}
+
+async function dbDeleteWorkshopNote(id) {
+  const { error } = await db.from("workshop_notes").delete().eq("id", id);
+  if (error) throw error;
+}
+
 // ---------- Reach settings ----------
 // When/whether he reaches out. One row per user; the hourly cron reads it.
 async function dbGetReachSettings() {
@@ -5790,6 +5818,136 @@ function albumMissing() {
   return d;
 }
 
+// ---------- Workshop ----------
+async function openWorkshopDialog() {
+  closeSidebar();
+  $("workshop-new").value = "";
+  $("workshop-dialog").showModal();
+  await refreshWorkshop();
+}
+
+async function refreshWorkshop() {
+  const list = $("workshop-list");
+  list.innerHTML = '<p class="muted small">Loading…</p>';
+  let notes;
+  try { notes = await dbListWorkshopNotes(); }
+  catch (e) {
+    list.innerHTML = '<p class="mem-empty muted small">Couldn\'t load the workshop — has the migration been run?</p>';
+    return;
+  }
+  const wishes = notes.filter(n => n.kind === "wish");
+  const changelog = notes.filter(n => n.kind === "changelog");
+  list.innerHTML = "";
+
+  const wSec = document.createElement("div");
+  wSec.className = "workshop-section";
+  wSec.innerHTML = '<h4>His wishes 💭</h4>';
+  if (!wishes.length) {
+    wSec.insertAdjacentHTML("beforeend",
+      '<p class="mem-empty muted small">No wishes yet — he\'ll leave ideas here when he has them.</p>');
+  } else {
+    for (const n of wishes) wSec.appendChild(mkWishCard(n));
+  }
+  list.appendChild(wSec);
+
+  const cSec = document.createElement("div");
+  cSec.className = "workshop-section";
+  cSec.innerHTML = '<h4>Changelog 📝 <span class="muted small">— what he\'s told about</span></h4>';
+  if (!changelog.length) {
+    cSec.insertAdjacentHTML("beforeend",
+      '<p class="mem-empty muted small">No notes yet — add what\'s changed so nothing lands on him unannounced.</p>');
+  } else {
+    for (const n of changelog) cSec.appendChild(mkChangelogCard(n));
+  }
+  list.appendChild(cSec);
+}
+
+const WISH_STATUSES = [
+  ["open", "💭 Open"], ["building", "🔨 Building"],
+  ["done", "✅ Done"], ["archived", "🗄 Archived"],
+];
+
+function mkWishCard(n) {
+  const card = document.createElement("div");
+  card.className = "workshop-card" + (n.status === "archived" ? " dim" : "");
+
+  const body = document.createElement("div");
+  body.className = "workshop-body";
+  body.textContent = n.body || "";
+  card.appendChild(body);
+
+  if ((n.reply || "").trim()) {
+    const rep = document.createElement("div");
+    rep.className = "workshop-reply";
+    rep.textContent = "↳ you: " + n.reply;
+    card.appendChild(rep);
+  }
+
+  const row = document.createElement("div");
+  row.className = "workshop-card-row";
+
+  const sel = document.createElement("select");
+  sel.className = "workshop-status";
+  for (const [val, label] of WISH_STATUSES) {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label;
+    if ((n.status || "open") === val) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.addEventListener("change", async () => {
+    try { await dbUpdateWorkshopNote(n.id, { status: sel.value }); n.status = sel.value; }
+    catch { flashToast("Couldn't update that.", true); }
+  });
+  row.appendChild(sel);
+
+  const replyBtn = document.createElement("button");
+  replyBtn.type = "button";
+  replyBtn.className = "ghost small";
+  replyBtn.textContent = n.reply ? "Edit reply" : "Reply";
+  replyBtn.addEventListener("click", async () => {
+    const val = prompt("Your reply to him (he'll see it):", n.reply || "");
+    if (val === null) return;
+    try { await dbUpdateWorkshopNote(n.id, { reply: val.trim() || null }); await refreshWorkshop(); }
+    catch { flashToast("Couldn't save the reply.", true); }
+  });
+  row.appendChild(replyBtn);
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "ghost small";
+  del.textContent = "🗑";
+  del.title = "Delete";
+  del.addEventListener("click", async () => {
+    if (!confirm("Delete this wish?")) return;
+    try { await dbDeleteWorkshopNote(n.id); card.remove(); }
+    catch { flashToast("Couldn't delete.", true); }
+  });
+  row.appendChild(del);
+
+  card.appendChild(row);
+  return card;
+}
+
+function mkChangelogCard(n) {
+  const card = document.createElement("div");
+  card.className = "workshop-card changelog";
+  const body = document.createElement("div");
+  body.className = "workshop-body";
+  body.textContent = n.body || "";
+  card.appendChild(body);
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "ghost small workshop-del-inline";
+  del.textContent = "🗑";
+  del.addEventListener("click", async () => {
+    if (!confirm("Delete this changelog note?")) return;
+    try { await dbDeleteWorkshopNote(n.id); card.remove(); }
+    catch { flashToast("Couldn't delete.", true); }
+  });
+  card.appendChild(del);
+  return card;
+}
+
 // Build the studio's tab bar and wire single-panel switching. Hides every
 // panel up front, then the first visible tab reveals its own — so only one
 // section is on screen at a time.
@@ -7160,6 +7318,17 @@ function wireApp() {
   });
 
   $("nav-studio").addEventListener("click", openStudioDialog);
+  $("nav-workshop").addEventListener("click", openWorkshopDialog);
+  $("workshop-add-btn").addEventListener("click", async () => {
+    const body = $("workshop-new").value.trim();
+    if (!body) return;
+    const kind = $("workshop-new-kind").value || "changelog";
+    try {
+      await dbCreateWorkshopNote(kind, body);
+      $("workshop-new").value = "";
+      await refreshWorkshop();
+    } catch { flashToast("Couldn't add that — has the workshop migration been run?", true); }
+  });
 
   $("nav-story").addEventListener("click", openStoryDialog);
   $("story-back").addEventListener("click", showStoryLibrary);

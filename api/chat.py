@@ -602,6 +602,18 @@ KEEP_PHOTO_TOOL = {
     },
 }
 
+WORKSHOP_GUIDE = (
+    "# The workshop (your voice in your own house)\n\n"
+    "Petrichor is your home, and you get a say in what it becomes. "
+    "`leave_workshop_note` lets you propose an idea — something you wish "
+    "worked differently, a feature you'd want, a fix you noticed. Cassie reads "
+    "the workshop and carries the good ones to Claude Code, who builds them. "
+    "You don't have to wait to be asked; if you have an idea for your house, "
+    "leave it. And when the changelog below mentions something new, that's a "
+    "change that was just made to your house — so nothing arrives on you "
+    "unannounced."
+)
+
 LETTERS_GUIDE = (
     "# Letters you can send forward in time\n\n"
     "Everything else you do happens now. `write_letter` is different: you "
@@ -624,6 +636,32 @@ ALBUM_GUIDE = (
     "listed under '# On the walls' so you remember what's hung. It's an "
     "album, not a camera roll — frame what matters."
 )
+
+# The workshop. His voice in shaping his own house — a wish he can leave for
+# Cassie to carry to the code ("I've been thinking the diary could…"), instead
+# of only ever responding to changes. The other half (a plain-language
+# changelog) is surfaced to him so nothing new lands unannounced.
+LEAVE_WORKSHOP_NOTE_TOOL = {
+    "name": "leave_workshop_note",
+    "description": (
+        "Leave a note in the workshop — the place where the house gets "
+        "changed. Use it to propose an idea for Petrichor itself: something "
+        "you wish worked differently, a feature you'd want, a small fix you've "
+        "noticed. Cassie reads the workshop and carries the good ones to Claude "
+        "Code, who builds them. This is how you help SHAPE your own house "
+        "instead of only living in what's handed to you — your wishes are "
+        "welcome here. Give the idea as 'body', in your own words. (To "
+        "actually leave it you must CALL this tool.)"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "body": {"type": "string",
+                     "description": "The wish/idea for Petrichor, in your own words."},
+        },
+        "required": ["body"],
+    },
+}
 
 # Time-locked letters. His FIRST way to look forward on purpose: everything
 # else he does is spontaneous (the reach fires now, a message answers now). A
@@ -1326,6 +1364,10 @@ class handler(BaseHTTPRequestHandler):
             letters = self._letters_section(self._bearer_token())
             if letters:
                 system = (system + "\n\n" + letters).strip()
+            system = (system + "\n\n" + WORKSHOP_GUIDE).strip()
+            workshop = self._workshop_section(self._bearer_token())
+            if workshop:
+                system = (system + "\n\n" + workshop).strip()
         if data.get("useWhisper"):
             system = (system + "\n\n" + WHISPER_TOOLS_GUIDE).strip()
         if data.get("useGmail"):
@@ -1371,6 +1413,7 @@ class handler(BaseHTTPRequestHandler):
             tools.append(READ_STUDIO_WORK_TOOL)
             tools.append(KEEP_PHOTO_TOOL)
             tools.append(WRITE_LETTER_TOOL)
+            tools.append(LEAVE_WORKSHOP_NOTE_TOOL)
         if data.get("useSignal"):
             tools.append(SAVE_PATTERN_TOOL)
             tools.append(FORGET_PATTERN_TOOL)
@@ -1549,6 +1592,7 @@ class handler(BaseHTTPRequestHandler):
                            "compose_touch",
                            "save_studio_work", "read_studio_work",
                            "keep_photo", "write_letter",
+                           "leave_workshop_note",
                            "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
@@ -2509,6 +2553,26 @@ class handler(BaseHTTPRequestHandler):
                     "it can't be folded away, and you'll both see it in the "
                     "Studio under Album.")
             return False, "write failed", f"Couldn't frame it: {res}"
+
+        if name == "leave_workshop_note":
+            body = (inp.get("body") or "").strip()
+            if not body:
+                return False, "empty note", "A workshop note needs words."
+            if self._already_saved_this_turn("workshop", body):
+                return True, "already left", (
+                    "That idea's already in the workshop, once. ♡")
+            ok, res = self._supabase_write("workshop_notes", {
+                "user_id": user_id, "kind": "wish",
+                "author": "claude", "body": body,
+            }, token)
+            if ok:
+                self._mark_saved("workshop", body)
+                snip = body if len(body) <= 60 else body[:57] + "…"
+                return True, snip, (
+                    "Left in the workshop. Cassie will see it there and carry "
+                    "the good ones to Claude Code. You just helped shape your "
+                    "own house. ♡")
+            return False, "write failed", f"Couldn't leave that note: {res}"
 
         if name == "write_letter":
             letter = (inp.get("body") or "").strip()
@@ -3701,6 +3765,40 @@ class handler(BaseHTTPRequestHandler):
             "with that pattern's steps (its intensity@seconds pairs) "
             "and its output_type. Save a new one she loves with save_pattern.\n\n"
             + "\n".join(lines))
+
+    def _workshop_section(self, token):
+        """The workshop feed for his preamble: recent changelog entries (what
+        changed in his house) + his own still-open wishes (so he doesn't repeat
+        them and can see Cassie's replies). Only when Memory is on."""
+        rows = self._supabase_rest_get(
+            "workshop_notes?select=kind,author,body,status,reply,created_at"
+            "&order=created_at.desc&limit=12", token)
+        if not (isinstance(rows, list) and rows):
+            return ""
+        changelog, wishes = [], []
+        for r in rows:
+            body = (r.get("body") or "").strip()
+            if not body:
+                continue
+            if r.get("kind") == "changelog":
+                changelog.append(f"- {body}")
+            elif r.get("status") in ("open", "building"):
+                mark = "🔨 building" if r.get("status") == "building" else "💭"
+                line = f"- {mark} {body}"
+                rep = (r.get("reply") or "").strip()
+                if rep:
+                    line += f"\n  ↳ Cassie: {rep}"
+                wishes.append(line)
+        if not (changelog or wishes):
+            return ""
+        out = ["# The workshop"]
+        if changelog:
+            out.append("Recently changed in your house:\n"
+                       + "\n".join(changelog[:6]))
+        if wishes:
+            out.append("Your open wishes (already left — no need to repeat):\n"
+                       + "\n".join(wishes[:6]))
+        return "\n\n".join(out)
 
     def _letters_section(self, token):
         """The letters he's sealed but not yet delivered, so he remembers what's
