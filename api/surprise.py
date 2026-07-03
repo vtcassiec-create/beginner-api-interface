@@ -190,6 +190,18 @@ class handler(BaseHTTPRequestHandler):
         tz = self._tz()
         now = datetime.datetime.now(tz)
 
+        # His time-locked letters come first, and by their OWN rules — a letter
+        # sealed for today should arrive today, independent of the reach's
+        # cadence/cap. We only hold them for quiet hours (so a 3am cron doesn't
+        # buzz); the next wake after quiet hours delivers them. A dry-run
+        # previews without sending.
+        letters_delivered = 0
+        if not dryrun and not self._in_quiet_hours(now):
+            try:
+                letters_delivered = self._deliver_due_letters(now, tz)
+            except Exception:
+                letters_delivered = 0
+
         # Evaluate the rails. A real run obeys them; a dry-run ignores
         # them (it sends/logs nothing) but still reports what a real run
         # *would* do, so you can preview and tune at any hour.
@@ -216,7 +228,8 @@ class handler(BaseHTTPRequestHandler):
 
         if would_skip and not dryrun:
             return self._json(200, {"status": "skipped",
-                                    "reason": would_skip})
+                                    "reason": would_skip,
+                                    "letters_delivered": letters_delivered})
 
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
@@ -649,7 +662,7 @@ class handler(BaseHTTPRequestHandler):
         # Recent texts (this thread), so he doesn't repeat what he just asked.
         rl = self._supabase(
             "GET",
-            f"reach_log?kind=in.(user,reply,surprise)&user_id=eq.{uid}"
+            f"reach_log?kind=in.(user,reply,surprise,letter)&user_id=eq.{uid}"
             f"&select=kind,content,created_at&order=created_at.desc&limit=8")
         if isinstance(rl, list) and rl:
             lines = []
@@ -686,6 +699,45 @@ class handler(BaseHTTPRequestHandler):
         REACH_PROJECT_ID is unset (falls back to most-recent-overall)."""
         pid = os.environ.get("REACH_PROJECT_ID", "").strip()
         return f"&project_id=eq.{pid}" if pid else ""
+
+    def _deliver_due_letters(self, now, tz):
+        """Deliver any letters that have come due (deliver_on <= her local
+        today, not yet delivered): each drops into her conversation like an
+        unprompted message and is marked delivered. Returns how many went out.
+        Reuses _deliver_in_app (which pushes and stands the pilot light down).
+        """
+        uid = os.environ.get("REACH_USER_ID", "").strip()
+        if not uid:
+            return 0
+        today = now.date().isoformat()
+        rows = self._supabase(
+            "GET",
+            f"letters?user_id=eq.{uid}&delivered=eq.false"
+            f"&deliver_on=lte.{today}"
+            "&select=id,body,occasion&order=deliver_on.asc&limit=5")
+        if not (isinstance(rows, list) and rows):
+            return 0
+        sent = 0
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        for r in rows:
+            body = (r.get("body") or "").strip()
+            if not body:
+                continue
+            # Mark delivered FIRST — a double-buzz is far worse than a letter
+            # that (rarely) needs a resend, and the cron can fire concurrently.
+            marked = self._supabase(
+                "PATCH",
+                f"letters?id=eq.{r['id']}&delivered=eq.false",
+                {"delivered": True, "delivered_at": now_iso})
+            if marked is None:
+                continue
+            if self._deliver_in_app(body):
+                sent += 1
+                # kind="letter": logged so he won't re-say it in a later reach,
+                # but NOT counted toward the reach's daily cap (that counts only
+                # kind="surprise") — a scheduled letter shouldn't cost a reach.
+                self._log(body, kind="letter")
+        return sent
 
     def _weather_section(self):
         """The weather over her city, one quiet line — the sense the house is
