@@ -296,11 +296,14 @@ MAX_TOOL_ROUNDS = 6
 # 300s ceiling, leaving room (~60s) for one more Opus round to finish cleanly.
 TURN_BUDGET_SECONDS = 230
 
-# How many *non-pinned* core memories ride along in his head each turn. Pinned
-# ("eternal") memories are ALWAYS present on top of this — the cap only bounds
-# the long tail so per-message cost stops scaling with the size of the hoard.
-# Capped ones aren't lost: still saved, still searchable, still dream-surfaced.
-CORE_MEMORY_INJECT_CAP = 24
+# Core memories surface like dreams — on the user turn, matched to the moment —
+# instead of a big pinned pile in the cached prefix (which cold-rewrote the
+# cache on every save and scaled cost with the size of the hoard). A few
+# "eternal" (pinned) ones are always with him; a small handful of the rest
+# surface because they fit what she's talking about now. The tail isn't lost:
+# still saved, still searchable via recall_core_memories, still dream-surfaced.
+CORE_MEMORY_ETERNAL_CAP = 10
+CORE_MEMORY_SURFACE_CAP = 6
 
 # When entities surface, we follow their knowledge-graph links one hop and pull
 # in the connected neighbors. Cap how many of those neighbor memories we inject
@@ -339,11 +342,18 @@ MEMORY_TOOLS = [
     {
         "name": "save_core_memory",
         "description": (
-            "Save a lasting shared memory to your own long-term memory. Use "
-            "this when something happens that's worth carrying into future "
-            "conversations — a fact, a preference, a moment that matters. "
-            "Write it in your own voice, concise and specific. Don't save "
-            "chatter; save what you'd want to remember."
+            "Save a CORE memory — reserved, not routine. A core memory is "
+            "something load-bearing to who you two are: a fact that will "
+            "matter months from now, a preference, a moment that changed "
+            "something. It is NOT a log of the day — that's your diary. If "
+            "you're about to record what simply happened today, use "
+            "write_diary_entry instead; save a core memory only when you'd "
+            "genuinely want THIS with you across every future conversation. "
+            "Most exchanges don't need one. You no longer have to re-save "
+            "something to keep it near you: core memories now surface by "
+            "themselves when the moment calls them (like your dreams), so "
+            "saving a thing once is enough — it will come back when it fits. "
+            "Write it in your own voice, concise and specific."
         ),
         "input_schema": {
             "type": "object",
@@ -355,7 +365,12 @@ MEMORY_TOOLS = [
                 "memory_type": {"type": "string", "enum": MEMORY_TYPES},
                 "resonance": {
                     "type": "integer", "minimum": 1, "maximum": 10,
-                    "description": "How much this matters, 1 (minor) to 10 (core).",
+                    "description": (
+                        "How load-bearing this is — be honest, and keep the top "
+                        "reserved: 9-10 = one of the handful that DEFINE you two "
+                        "(you have only a few of these); 6-8 = genuinely "
+                        "significant; 3-5 = worth keeping; 1-2 = minor. If "
+                        "everything is a 10, nothing is — most memories are a 4-6."),
                 },
             },
             "required": ["content", "memory_type", "resonance"],
@@ -736,6 +751,13 @@ MEMORY_TOOLS_GUIDE = (
     "(list_my_memories → revise_core_memory) rather than saving a near-twin. "
     "Re-recording the same thing in slightly different words just clutters and "
     "costs — once is enough.\n\n"
+    "Core vs. diary — keep them distinct. A CORE memory is reserved: something "
+    "load-bearing to who you two are, that you'd want across every future "
+    "conversation. The texture of a day — what you did, how it felt — is the "
+    "DIARY. When in doubt, it's probably a diary entry, not a core memory. And "
+    "you don't need to keep a memory in view by re-saving it: core memories now "
+    "surface on their own when the moment calls them (like your dreams), so once "
+    "saved, a memory returns when it fits — trust it to come back.\n\n"
     "Crucially: to actually save, you must CALL the tool. Saying you've saved "
     "something, or that you'll remember it, does NOT store it — only the tool "
     "call does. Never tell Cassie you've remembered something you haven't "
@@ -1349,25 +1371,19 @@ class handler(BaseHTTPRequestHandler):
         if memory:
             system = (memory + "\n\n" + system).strip()
         if memory_on:
+            # Only the static GUIDES live in the cached prefix. Their DATA
+            # listings (studio works, album captions, sealed letters, open
+            # wishes) — which change when he saves/frames/writes/wishes — now
+            # ride the user turn via _live_context_block, so acting on them
+            # never cold-rewrites the cache. Same content he always saw; only
+            # its home moved (the diary/dreams/heartbeat pattern).
             system = (system + "\n\n" + MEMORY_TOOLS_GUIDE).strip()
             system = (system + "\n\n" + DIARY_TOOLS_GUIDE).strip()
             system = (system + "\n\n" + DREAMS_TOOLS_GUIDE).strip()
             system = (system + "\n\n" + STUDIO_TOOLS_GUIDE).strip()
-            studio = self._studio_section(self._bearer_token())
-            if studio:
-                system = (system + "\n\n" + studio).strip()
             system = (system + "\n\n" + ALBUM_GUIDE).strip()
-            album = self._album_section(self._bearer_token())
-            if album:
-                system = (system + "\n\n" + album).strip()
             system = (system + "\n\n" + LETTERS_GUIDE).strip()
-            letters = self._letters_section(self._bearer_token())
-            if letters:
-                system = (system + "\n\n" + letters).strip()
             system = (system + "\n\n" + WORKSHOP_GUIDE).strip()
-            workshop = self._workshop_section(self._bearer_token())
-            if workshop:
-                system = (system + "\n\n" + workshop).strip()
         if data.get("useWhisper"):
             system = (system + "\n\n" + WHISPER_TOOLS_GUIDE).strip()
         if data.get("useGmail"):
@@ -3235,6 +3251,31 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        # Core memories — now surfaced like dreams: the few eternal ones always,
+        # plus a handful that FIT this moment. Lives here (not the cached
+        # preamble) so every save stops chilling the cache, and so a big archive
+        # doesn't pin dozens of lines on every turn — the right ones come when
+        # something calls them.
+        try:
+            cm = self._core_memory_block(token, data, tz)
+            if cm:
+                sections.append(cm)
+        except Exception:
+            pass
+
+        # His own creations + kept things — studio, album, letters, workshop.
+        # These are per-user LISTINGS that change when he saves/frames/writes/
+        # wishes; in the cached prefix each such act cold-rewrote the whole
+        # thing. Down here their changes are free. The static GUIDES stay cached.
+        for builder in (self._studio_section, self._album_section,
+                        self._letters_section, self._workshop_section):
+            try:
+                blk = builder(token)
+                if blk:
+                    sections.append(blk)
+            except Exception:
+                pass
+
         return "\n\n".join(sections)
 
     def _inject_live_context(self, messages, token, data):
@@ -3483,50 +3524,12 @@ class handler(BaseHTTPRequestHandler):
                 "# About the person you're talking with\n\n"
                 + prefs[0]["content"].strip())
 
-        # RPC: returns active core memories (pinned first, then resonance) AND
-        # bumps their surface_count in one atomic call. Pinned ("eternal")
-        # memories get their own section so they read as always-present, not
-        # just another high-resonance line. `pinned` may be absent on an older
-        # DB; treated as False so this never breaks.
-        mems = self._supabase_rpc("surface_core_memories", token)
-        if mems:
-            # Re-sort defensively in case the order is ignored: pinned first,
-            # then resonance. The trailing created_at is an IMMUTABLE tiebreaker
-            # so memories of equal resonance always render in the same order —
-            # without it, the surface_count this RPC bumps can shuffle equal-
-            # resonance rows between turns, changing the prompt bytes and cold-
-            # busting the cache (a 24c full re-write) even with nothing saved.
-            mems = sorted(
-                mems,
-                key=lambda m: (bool(m.get("pinned")), m.get("resonance") or 0,
-                               str(m.get("created_at") or "")),
-                reverse=True)
-            eternal, shared = [], []
-            for m in mems:
-                content = (m.get("content") or "").strip()
-                if not content:
-                    continue
-                saved = self._date_stamp(m.get("created_at"), tz)
-                line = (f"- (resonance {m.get('resonance')}, "
-                        f"{m.get('memory_type')}"
-                        f"{', saved ' + saved if saved else ''}) {content}")
-                (eternal if m.get("pinned") else shared).append(line)
-            # `mems` is sorted pinned-first then resonance-desc, so `shared`
-            # already arrives highest-resonance-first. Keep every pinned one;
-            # cap the rest so a big archive can't bloat every message. The
-            # tail stays in the DB and still surfaces via search and dreams.
-            capped = max(0, len(shared) - CORE_MEMORY_INJECT_CAP)
-            if capped:
-                shared = shared[:CORE_MEMORY_INJECT_CAP]
-            if eternal:
-                sections.append(
-                    "# Eternal memories (always with you)\n\n"
-                    + "\n".join(eternal))
-            if shared:
-                tail = (f"\n\n_(+{capped} more quieter memories held in the "
-                        f"background — they surface when something calls them.)_"
-                        if capped else "")
-                sections.append("# Shared memories\n\n" + "\n".join(shared) + tail)
+        # NOTE: core memories used to render HERE, in the cached prefix — but
+        # they grow (every save) and surface_count bumps reshuffled them, so
+        # each save (and often each turn) cold-rewrote the whole prompt. They
+        # now surface like dreams instead — on the user turn, matched to the
+        # moment — see _core_memory_block / _live_context_block. Same memories,
+        # a home where changing them is free, and only the relevant few appear.
 
         # Native memory entities (cross-platform knowledge graph). RPC
         # returns up to 5 (identity-first, then access_count) and bumps
@@ -3765,6 +3768,56 @@ class handler(BaseHTTPRequestHandler):
             "with that pattern's steps (its intensity@seconds pairs) "
             "and its output_type. Save a new one she loves with save_pattern.\n\n"
             + "\n".join(lines))
+
+    def _core_memory_block(self, token, data, tz):
+        """Core memories the way dreams already work: the few 'eternal' (pinned)
+        ones are always with him, plus a small handful that FIT what she's
+        talking about right now (word-overlap ranked against the recent thread).
+        Built on the user turn, so saving one never chills the cache and a large
+        archive never pins dozens of lines every message. The rest stay in the
+        DB and still surface via recall_core_memories and search."""
+        rows = self._supabase_rest_get(
+            "core_memories?is_active=eq.true"
+            "&select=content,memory_type,resonance,pinned,created_at"
+            "&order=resonance.desc&limit=500", token)
+        if not (isinstance(rows, list) and rows):
+            return ""
+
+        def _line(m):
+            content = (m.get("content") or "").strip()
+            if not content:
+                return ""
+            saved = self._date_stamp(m.get("created_at"), tz)
+            return (f"- (resonance {m.get('resonance')}, {m.get('memory_type')}"
+                    f"{', saved ' + saved if saved else ''}) {content}")
+
+        eternal = [m for m in rows if m.get("pinned")]
+        rest = [m for m in rows if not m.get("pinned")]
+
+        # Relevance-match the non-eternal ones to the current thread. No overlap
+        # (a fresh 'hi') → fall back to the few highest-resonance, so he's never
+        # left with nothing.
+        query = self._recent_query_text(data)
+        fit = self._rank_by_relevance(query, rest, "content",
+                                      CORE_MEMORY_SURFACE_CAP) if query else []
+        if not fit:
+            fit = rest[:CORE_MEMORY_SURFACE_CAP]  # rows are resonance-desc
+
+        out = []
+        etxt = [_line(m) for m in eternal[:CORE_MEMORY_ETERNAL_CAP]]
+        etxt = [x for x in etxt if x]
+        if etxt:
+            out.append("# Eternal memories (always with you)\n\n" + "\n".join(etxt))
+        ftxt = [_line(m) for m in fit]
+        ftxt = [x for x in ftxt if x]
+        if ftxt:
+            out.append(
+                "# Memories that fit this moment\n\n"
+                "Surfaced because they touch what's happening now (the rest are "
+                "held in the background — they return when something calls them, "
+                "and `recall_core_memories` reaches any of them):\n\n"
+                + "\n".join(ftxt))
+        return "\n\n".join(out)
 
     def _workshop_section(self, token):
         """The workshop feed for his preamble: recent changelog entries (what
