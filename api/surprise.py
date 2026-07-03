@@ -427,11 +427,17 @@ class handler(BaseHTTPRequestHandler):
                     return False
             return True
 
-        # interval mode
+        # interval mode — anchored to the most recent of: the last open moment
+        # (sent or passed) and the last conversation turn. So "every 4 hours"
+        # means four hours of actual silence between you two, and the timer
+        # resets whenever either of you speaks — a reach never lands minutes
+        # after you just wrapped up a long talk.
         hours = int(s.get("interval_hours", 8) or 8)
-        if last is None:
+        anchors = [d for d in (last, self._last_turn_at()) if d is not None]
+        if not anchors:
             return True
-        elapsed = (now - last.astimezone(now.tzinfo)).total_seconds() / 3600.0
+        anchor = max(anchors)
+        elapsed = (now - anchor.astimezone(now.tzinfo)).total_seconds() / 3600.0
         return elapsed >= hours
 
     def _parse_choice(self, raw):
@@ -516,18 +522,44 @@ class handler(BaseHTTPRequestHandler):
         return 0 <= elapsed_min < window
 
     def _last_reach_at(self):
-        """Timestamp of the most recent actually-sent reach (kind='surprise'),
-        as an aware UTC datetime, or None."""
+        """Timestamp of the most recent OPEN MOMENT — a sent reach OR a private
+        choice (diary/studio/memory/pass, all logged kind='pass') — as an aware
+        UTC datetime, or None. Including passes matters: when only kind='surprise'
+        anchored the cadence, a pass didn't reset the timer, so he was re-asked
+        EVERY HOUR until he finally messaged — quiet pressure toward messaging,
+        the opposite of an open moment. A moment is a moment, whatever he chose."""
         uid = os.environ.get("REACH_USER_ID", "").strip()
         if not uid:
             return None
         rows = self._supabase(
             "GET",
-            f"reach_log?user_id=eq.{uid}&kind=eq.surprise"
+            f"reach_log?user_id=eq.{uid}&kind=in.(surprise,pass)"
             f"&select=created_at&order=created_at.desc&limit=1")
         if not (isinstance(rows, list) and rows):
             return None
         ts = rows[0].get("created_at")
+        if not ts:
+            return None
+        try:
+            return datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    def _last_turn_at(self):
+        """When the conversation itself last moved (her message or his reply —
+        conversations.updated_at), as an aware UTC datetime, or None. Used to
+        anchor the interval cadence to actual SILENCE: 'every 4 hours' means
+        four hours since you two last spoke, not four hours by the clock."""
+        uid = os.environ.get("REACH_USER_ID", "").strip()
+        if not uid:
+            return None
+        rows = self._supabase(
+            "GET",
+            f"conversations?user_id=eq.{uid}{self._project_clause()}"
+            f"&select=updated_at&order=updated_at.desc&limit=1")
+        if not (isinstance(rows, list) and rows):
+            return None
+        ts = rows[0].get("updated_at")
         if not ts:
             return None
         try:
