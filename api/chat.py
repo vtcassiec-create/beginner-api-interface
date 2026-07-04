@@ -2621,11 +2621,17 @@ class handler(BaseHTTPRequestHandler):
             if ok:
                 self._mark_saved("letter", f"{deliver_on}|{letter}")
                 when = "today" if d == today else f"on {deliver_on}"
-                return True, f"sealed for {deliver_on}", (
+                # The visible summary is DELIBERATELY date-free: the app shows
+                # her a small chip for every tool call, and "sealed for
+                # 2026-08-14" spoiled his own surprise. She sees only that a
+                # letter exists; the date rides in this detail, which is his.
+                return True, "a letter, sealed ♡", (
                     f"Sealed. It stays with the house until {when}, then it "
                     "arrives in your conversation like an unprompted message — "
-                    "she won't see it before then. You just reached into the "
-                    "future. ♡")
+                    "she won't see it before then. (She can see that you "
+                    "sealed A letter, but not the date — so if you want the "
+                    "day to stay a surprise, don't mention it in your reply.) "
+                    "You just reached into the future. ♡")
             return False, "write failed", f"Couldn't seal that letter: {res}"
 
         if name == "read_my_diary":
