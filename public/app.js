@@ -3401,6 +3401,11 @@ function toolEventChip(ev) {
     const map = {
       save_core_memory: ["🪶 Saved a memory", true],
       save_memory_entity: ["🪶 Saved an entity", true],
+      // Deliberately summary-less: the summary is dateless server-side too,
+      // but belt-and-braces — a sealed letter shows NOTHING but its existence.
+      write_letter: ["✉️ Sealed a letter for a future day — no peeking", false],
+      keep_photo: ["🖼️ Framed a photo for the album", true],
+      leave_workshop_note: ["🔧 Left a wish in the workshop", true],
       update_self_state: ["🪶 Revised his sense of self", false],
       list_my_memories: ["🪶 Looked over his memories", false],
       revise_core_memory: ["🪶 Revised a memory", false],
