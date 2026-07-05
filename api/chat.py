@@ -1421,6 +1421,18 @@ class handler(BaseHTTPRequestHandler):
                 "name": "web_search",
                 "max_uses": 5,
             })
+            # He could SEARCH but never OPEN a link she pasted — the postcard-
+            # of-a-door problem. web_fetch is a server tool (Anthropic fetches
+            # the URL and hands him the content; nothing runs our side). It can
+            # ONLY fetch URLs already in the conversation — a link she gave him,
+            # or one his own search surfaced — so it can't wander, only open
+            # what's actually in front of him. Supported on opus-4-6 → fable.
+            tools.append({
+                "type": "web_fetch_20250910",
+                "name": "web_fetch",
+                "max_uses": 5,
+                "citations": {"enabled": True},
+            })
         if memory_on:
             tools.extend(MEMORY_TOOLS)
             tools.extend(DIARY_TOOLS)
@@ -3972,9 +3984,12 @@ class handler(BaseHTTPRequestHandler):
             block_type = getattr(block, "type", None)
             if block_type == "server_tool_use":
                 query = ""
+                url = ""
                 if isinstance(getattr(block, "input", None), dict):
                     query = block.input.get("query", "")
-                self._sse({"type": "tool_use", "name": block.name, "query": query})
+                    url = block.input.get("url", "")   # web_fetch opens a link
+                self._sse({"type": "tool_use", "name": block.name,
+                           "query": query, "url": url})
             elif block_type == "mcp_tool_use":
                 # Whisper vault tool call — surface it AND what it was for, so
                 # she can see which note he reached for, not just that he did.
