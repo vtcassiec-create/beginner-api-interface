@@ -1873,7 +1873,7 @@ async function generateAssistant() {
           updateAssistantBubble(assistantMsg);
         } else if (event.type === "tool_use") {
           assistantMsg.toolEvents.push({
-            name: event.name, query: event.query,
+            name: event.name, query: event.query, url: event.url || "",
             input: event.input || null, id: event.id || "",
             at: assistantMsg.text.length,
           });
@@ -3424,9 +3424,13 @@ function toolEventChip(ev) {
   } else if (isVaultTool(ev.name)) {
     return vaultToolChip(ev);
   } else {
-    note.textContent = ev.name === "web_search" && ev.query
-      ? `🌐 Searching the web for "${ev.query}"…`
-      : `🔧 Used tool: ${ev.name}`;
+    if (ev.name === "web_search" && ev.query) {
+      note.textContent = `🌐 Searching the web for "${ev.query}"…`;
+    } else if (ev.name === "web_fetch") {
+      note.textContent = ev.url ? `🔗 Opening ${ev.url}` : "🔗 Opening a link";
+    } else {
+      note.textContent = `🔧 Used tool: ${ev.name}`;
+    }
   }
   return note;
 }
