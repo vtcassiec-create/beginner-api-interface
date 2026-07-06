@@ -297,6 +297,9 @@
           <button type="button" id="mic-btn" class="mic-btn"
                   title="Voice note (tap) · Dictate into the box (hold)"
                   aria-label="Voice note on tap, dictation on hold" hidden>🎤</button>
+          <button type="button" id="call-btn" class="mic-btn"
+                  title="Call him — your voice to his, no keyboard"
+                  aria-label="Start a voice call" hidden>📞</button>
           <button type="submit" id="send-btn" class="primary">Send</button>
         </form>
         </div><!-- /#chat-pane -->
@@ -945,6 +948,20 @@
       </div>
     </div>
   </dialog>
+
+  <!-- Voice call: the keyboard removed. Her voice goes in through the same
+       dictation engine, a pause means "your turn", and his reply is spoken in
+       his chosen voice as it streams — the whole exchange still lands in the
+       conversation like any other turn. -->
+  <div id="call-overlay" hidden>
+    <div id="call-status" class="call-status">listening…</div>
+    <div id="call-orb" class="call-orb listening"></div>
+    <div id="call-caption" class="call-caption"></div>
+    <div class="call-actions">
+      <button type="button" id="call-interrupt" class="call-interrupt" hidden>tap to jump in</button>
+      <button type="button" id="call-end" class="call-end">end call ♡</button>
+    </div>
+  </div>
 
   <div id="toast" class="toast" hidden></div>
 

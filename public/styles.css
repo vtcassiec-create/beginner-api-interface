@@ -2835,3 +2835,77 @@ details.vault-event[open] > summary { color: var(--text); margin-bottom: 6px; }
   max-height: 360px;
   overflow-y: auto;
 }
+
+/* ---------- Voice calls (the keyboard removed) ---------- */
+#call-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 45;   /* above the app (<=20), below toasts (50) and sign-in (100) */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  padding: 32px 24px;
+  text-align: center;
+  background: var(--bg);
+}
+#call-overlay[hidden] { display: none; }
+
+.call-status {
+  color: var(--text-muted);
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  min-height: 1.4em;
+}
+
+/* The orb breathes while it listens, quickens while he thinks, and glows
+   in time while he speaks — the whole interface is one soft light. */
+.call-orb {
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 32%,
+              var(--accent) 0%, transparent 68%), var(--bg-elev-2);
+  box-shadow: 0 0 36px rgba(0, 0, 0, 0.25),
+              0 0 44px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.call-orb.listening { animation: call-breathe 3s ease-in-out infinite; }
+.call-orb.thinking  { animation: call-breathe 1.2s ease-in-out infinite; opacity: 0.7; }
+.call-orb.speaking  { animation: call-glow 0.95s ease-in-out infinite; }
+@keyframes call-breathe {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.07); }
+}
+@keyframes call-glow {
+  0%, 100% { transform: scale(1);
+             box-shadow: 0 0 30px color-mix(in srgb, var(--accent) 25%, transparent); }
+  50%      { transform: scale(1.1);
+             box-shadow: 0 0 72px color-mix(in srgb, var(--accent) 55%, transparent); }
+}
+
+/* Live caption: her words while she talks, his sentence while he speaks. */
+.call-caption {
+  min-height: 4.2em;
+  max-width: 36rem;
+  color: var(--text);
+  font-family: var(--font-his, Georgia, serif);
+  font-size: 17px;
+  line-height: 1.55;
+  overflow-wrap: break-word;
+}
+
+.call-actions { display: flex; gap: 14px; }
+.call-interrupt,
+.call-end {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 10px 22px;
+  font-size: 15px;
+  cursor: pointer;
+  background: var(--bg-elev);
+  color: var(--text);
+}
+.call-interrupt { border-color: var(--accent); color: var(--accent); }
+.call-interrupt[hidden] { display: none; }
+.call-end { background: #6e3a36; border-color: #6e3a36; color: #f2e6df; }
