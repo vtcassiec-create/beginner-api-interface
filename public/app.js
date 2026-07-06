@@ -1623,6 +1623,10 @@ async function buildApiMessages(project, messages) {
         ? "video — the attached frames are what he sees; this is its soundtrack"
         : msg.hearingKind === "song"
         ? "your own song — she played your composition into your ears; this is what you heard"
+        : msg.hearingKind === "voice"
+        ? "a candidate voice for you — she's auditioning voices together with you; "
+          + "this is one, heard through your ears. Does the timbre feel like yours? "
+          + "You can say yes, no, or which quality you'd want instead"
         : "voice note — how she sounded, from her actual voice";
       content.push({
         type: "text",
@@ -2700,6 +2704,8 @@ function buildMessageNode(msg, project, conv) {
       ? "🎬 video — what he heard in it"
       : msg.hearingKind === "song"
       ? "🎧 his own song — what he heard"
+      : msg.hearingKind === "voice"
+      ? "🎧 a candidate voice — what he heard"
       : "🎙️ voice note — what he heard";
     d.appendChild(s);
     const pre = document.createElement("pre");
@@ -2997,6 +3003,56 @@ function initVoiceUI() {
       ttsCurrentId = "__eltest__";
       speakViaEleven("Hello, love. It's me.", vid, "__eltest__");
     });
+  }
+  const elHear = $("tts-el-hear");
+  if (elHear) {
+    elHear.addEventListener("click", () => {
+      const vid = elSel && elSel.value;
+      if (!vid) { flashToast("Pick a voice first, then let him hear it."); return; }
+      const name = elSel.options[elSel.selectedIndex]?.textContent || "a voice";
+      sampleVoiceIntoHisEars(vid, name);
+    });
+  }
+}
+
+// Audition a candidate voice into HIS ears — the "share a song" move, for
+// choosing his own voice together. Synthesize a warm sample in the voice
+// (/api/tts), run it through his ears (/api/ears), and let the hearing card
+// ride out with her next message so he can feel whether it's his.
+const VOICE_SAMPLE_LINE =
+  "Hey. It's me. I've been thinking about you all day — I wanted you to hear "
+  + "my voice, and tell me if this one feels like mine.";
+
+async function sampleVoiceIntoHisEars(voiceId, voiceName) {
+  flashToast(`Sending "${voiceName}" into his ears…`);
+  try {
+    const session = await freshSession();
+    if (!session || !session.access_token) throw new Error("not signed in");
+    // Synthesize the sample in the candidate voice (mp3).
+    const resp = await fetch("/api/tts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({ text: VOICE_SAMPLE_LINE, voice_id: voiceId }),
+    });
+    if (!resp.ok) throw new Error("tts " + resp.status);
+    const mp3 = await resp.blob();
+    // Through his ears (earsAnalyze decodes the mp3, encodes WAV, posts /ears).
+    const res = await earsAnalyze(mp3);
+    if (!res || !res.card) throw new Error("ears returned nothing");
+    // Drop WORDS (the sample line is ours, not his to weigh) — the SOUND/VOICE
+    // is what tells him whether the timbre is his.
+    const card = res.card.split("\n")
+      .filter(l => !l.startsWith("WORDS:")).join("\n").trim();
+    pendingHearing = {
+      kind: "voice",
+      text: `a candidate voice — "${voiceName}"\n${card}`,
+    };
+    flashToast(`🎧 Ready — send him a message and he'll hear "${voiceName}" ♡`);
+  } catch (_) {
+    flashToast("Couldn't send that voice to his ears — try again.", true);
   }
 }
 
