@@ -1872,6 +1872,7 @@ async function generateAssistant() {
           assistantMsg.text += event.text;
           assistantMsg._typing = true;
           startTypewriter(assistantMsg);
+          if (callActive) callFeedText(event.text);   // on a call: speak as it streams
         } else if (event.type === "thinking") {
           assistantMsg.thinkingText += event.text;
           updateAssistantBubble(assistantMsg);
@@ -1969,9 +1970,11 @@ async function generateAssistant() {
           // Safety net: reconcile the hold once the turn settles, in case the
           // tool event was missed (e.g. he changed it then narrated).
           reconcileHold();
+          if (callActive) callFeedDone();   // on a call: flush the last sentence
         } else if (event.type === "error") {
           assistantMsg.error = event.error;
           finishTypewriter(assistantMsg); // reveal everything, stop animating
+          if (callActive) callFeedDone();   // a broken reply still ends his turn
         }
       }
     );
@@ -1980,7 +1983,7 @@ async function generateAssistant() {
     finishTypewriter(assistantMsg);
   } finally {
     isSending = false;
-    releaseWakeLock();
+    if (!callActive) releaseWakeLock();   // a live call keeps the screen awake
     await persistConversation(conv);
     updateSendButton();
   }
@@ -2966,6 +2969,16 @@ function initVoiceUI() {
     wireUnifiedMic(mic);
     refreshEarsConfig();
   }
+  // Voice calls: her voice in, his voice out, no keyboard between.
+  const callBtn = $("call-btn");
+  if (callBtn && callSupported()) {
+    callBtn.hidden = false;
+    callBtn.addEventListener("click", startCall);
+  }
+  const callEnd = $("call-end");
+  if (callEnd) callEnd.addEventListener("click", endCall);
+  const callJump = $("call-interrupt");
+  if (callJump) callJump.addEventListener("click", callInterrupt);
   // Text-to-speech: voice list loads async on some browsers.
   if (ttsSupported()) {
     loadVoices();
@@ -3139,6 +3152,289 @@ function stopStt() {
   if (sttRec) { try { sttRec.stop(); } catch (_) {} }
 }
 
+// ---------- Voice calls (the keyboard removed) ----------
+// A call is pieces Petrichor already has, arranged in a loop: the dictation
+// engine listens, a pause means "your turn is over", the turn goes through the
+// normal chat pipeline (same conversation, same cache, same memory), and his
+// reply is spoken sentence-by-sentence in his chosen voice AS IT STREAMS — he
+// starts talking after his first sentence, not his last. Strict turn-taking:
+// the mic is closed while he speaks; "tap to jump in" cuts him off.
+
+let callActive = false;
+let callState = "idle";        // listening | thinking | speaking
+let callRec = null;            // the call's own recognition session
+let callHeard = "";            // finals accumulated for the current turn
+let callSilenceTimer = null;
+let callQueue = [];            // [{text, job}] — TTS fetched ahead, played in order
+let callAudio = null;          // the chunk currently playing
+let callPumping = false;
+let callBuf = "";              // streamed reply text not yet cut into sentences
+let callStreamDone = false;
+let callInterrupted = false;   // she jumped in — drop the rest of this reply's audio
+
+const CALL_SILENCE_MS = 1800;  // the pause that means "your turn"
+const CALL_CHUNK_MAX = 260;    // ~one breath of speech per TTS request
+
+function callSupported() {
+  return sttSupported();
+}
+
+function setCallState(s) {
+  callState = s;
+  const orb = $("call-orb");
+  if (orb) orb.className = "call-orb " + s;
+  const status = $("call-status");
+  if (status) {
+    status.textContent =
+      s === "listening" ? "listening…" :
+      s === "thinking"  ? "he's thinking…" :
+      s === "speaking"  ? "he's speaking" : "";
+  }
+  const jump = $("call-interrupt");
+  if (jump) jump.hidden = (s === "listening");
+}
+
+function callCaption(t) {
+  const el = $("call-caption");
+  if (!el) return;
+  const s = (t || "").trim();
+  el.textContent = s.length > 240 ? "…" + s.slice(-240) : s;
+}
+
+function startCall() {
+  if (callActive) return;
+  if (!callSupported()) {
+    flashToast("Calls need speech recognition — try Chrome.", true);
+    return;
+  }
+  if (isSending) { flashToast("He's mid-reply — call him when he finishes ♡", true); return; }
+  if (vnActive || vnBusy) { flashToast("Finish the voice note first ♡", true); return; }
+  if (sttActive) stopStt();
+  stopAllSpeech();
+  if (!elVoiceChosen() && !ttsSupported()) {
+    flashToast("No voice to speak with — pick his voice in settings.", true);
+    return;
+  }
+  callActive = true;
+  callInterrupted = false;
+  callQueue = []; callBuf = ""; callHeard = "";
+  const ov = $("call-overlay");
+  if (ov) ov.hidden = false;
+  acquireWakeLock();             // a call holds the screen awake end to end
+  callListen();
+}
+
+function endCall() {
+  callActive = false;
+  clearTimeout(callSilenceTimer);
+  if (callRec) { try { callRec.stop(); } catch (_) {} callRec = null; }
+  callQueue = []; callBuf = ""; callHeard = "";
+  try { if (callAudio) { callAudio.pause(); callAudio.src = ""; } } catch (_) {}
+  callAudio = null;
+  try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_) {}
+  const ov = $("call-overlay");
+  if (ov) ov.hidden = true;
+  callState = "idle";
+  // If a reply is still streaming it finishes as text in the chat; its
+  // finally-block releases the wake lock. Otherwise release it now.
+  if (!isSending) releaseWakeLock();
+}
+
+// Her side of the line: the same Android-proof single-utterance pattern as
+// dictation (results REBUILT, never accumulated), restarted quietly between
+// utterances. Every result re-arms the silence timer; CALL_SILENCE_MS of
+// quiet after she's said something means the turn is hers no longer.
+function callListen() {
+  if (!callActive) return;
+  const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  callHeard = "";
+  let utterance = "";
+  setCallState("listening");
+  callCaption("");
+  const armSilence = () => {
+    clearTimeout(callSilenceTimer);
+    callSilenceTimer = setTimeout(() => {
+      if (!callActive || callState !== "listening") return;
+      if (!(callHeard + utterance).trim()) return;   // quiet, nothing said yet
+      setCallState("thinking");        // onend sees this and commits the turn
+      try { callRec.stop(); } catch (_) { callCommitTurn(); }
+    }, CALL_SILENCE_MS);
+  };
+  callRec = new Ctor();
+  callRec.lang = navigator.language || "en-US";
+  callRec.continuous = false;
+  callRec.interimResults = true;
+  callRec.onresult = (e) => {
+    let finals = "", interim = "";
+    for (let i = 0; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) finals += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    utterance = finals;
+    callCaption(callHeard + finals + interim);
+    armSilence();
+  };
+  callRec.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      flashToast("Microphone blocked — allow mic access to call him.", true);
+      endCall();
+    }
+    // no-speech / aborted between utterances are normal pauses; onend restarts.
+  };
+  callRec.onend = () => {
+    if (utterance.trim()) {
+      callHeard = (callHeard + utterance).replace(/\s*$/, "") + " ";
+      utterance = "";
+    }
+    if (!callActive) return;
+    if (callState === "thinking") { callCommitTurn(); return; }
+    if (callState !== "listening") return;
+    try { callRec.start(); } catch (_) {}
+  };
+  try { callRec.start(); } catch (_) { setCallState("idle"); }
+}
+
+// Her turn is done: send it down the NORMAL pipeline. The reply streams back
+// through generateAssistant, whose call hooks feed the speaker below.
+async function callCommitTurn() {
+  clearTimeout(callSilenceTimer);
+  const text = callHeard.trim();
+  callHeard = "";
+  if (!text) { if (callActive) callListen(); return; }
+  callBuf = "";
+  callStreamDone = false;
+  callInterrupted = false;
+  callCaption("");
+  let ok = false;
+  try { ok = await sendMessage(text); } catch (_) { ok = false; }
+  if (!callActive) return;
+  callStreamDone = true;         // belt & braces (errors skip the done event)
+  if (!ok) { callListen(); return; }
+  callMaybeResume();             // if his reply made no sound, keep listening
+}
+
+// His side of the line — fed by generateAssistant as the reply streams.
+function callFeedText(t) {
+  if (!callActive || callInterrupted) return;
+  callBuf += t;
+  callTakeSentences(false);
+}
+
+function callFeedDone() {
+  if (!callActive) return;
+  callStreamDone = true;
+  if (!callInterrupted) callTakeSentences(true);
+  callMaybeResume();
+}
+
+// Cut complete sentences (terminator + following whitespace) off the front of
+// the buffer and queue them for speech; whatever's still forming waits for the
+// next delta. force=true flushes the remainder (end of stream).
+function callTakeSentences(force) {
+  let speak = "";
+  const re = /[.!?…]["')\]]*\s+/g;
+  let lastEnd = 0, m;
+  while ((m = re.exec(callBuf))) lastEnd = m.index + m[0].length;
+  if (lastEnd) { speak = callBuf.slice(0, lastEnd); callBuf = callBuf.slice(lastEnd); }
+  if (force && callBuf.trim()) { speak += callBuf; callBuf = ""; }
+  const clean = stripForSpeech(speak);
+  if (!clean) return;
+  for (const c of chunkForSpeech(clean, CALL_CHUNK_MAX)) callEnqueue(c);
+}
+
+// The TTS for chunk n+1 is fetched while chunk n plays, so his sentences run
+// together like speech instead of arriving like elevator announcements.
+function callEnqueue(text) {
+  callQueue.push({ text, job: callFetchTts(text) });
+  callPump();
+}
+
+async function callFetchTts(text) {
+  const voiceId = elVoiceChosen();
+  if (!voiceId) return null;               // device voice at play time
+  try {
+    const session = await freshSession();
+    if (!session || !session.access_token) return null;
+    const resp = await fetch("/api/tts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({ text, voice_id: voiceId }),
+    });
+    if (!resp.ok) return null;
+    return await resp.blob();
+  } catch (_) { return null; }
+}
+
+async function callPump() {
+  if (callPumping) return;
+  callPumping = true;
+  try {
+    while (callActive && !callInterrupted && callQueue.length) {
+      const item = callQueue.shift();
+      setCallState("speaking");
+      callCaption(item.text);
+      const blob = await item.job;
+      if (!callActive || callInterrupted) break;
+      if (blob) await callPlayBlob(blob);
+      else await callSpeakDevice(item.text);
+    }
+  } finally {
+    callPumping = false;
+    callMaybeResume();
+  }
+}
+
+function callPlayBlob(blob) {
+  return new Promise((resolve) => {
+    const a = new Audio(URL.createObjectURL(blob));
+    callAudio = a;
+    const done = () => { if (callAudio === a) callAudio = null; resolve(); };
+    a.onended = done;
+    a.onerror = done;
+    a.onpause = done;   // pause() during barge-in resolves the pump too
+    a.play().catch(done);
+  });
+}
+
+function callSpeakDevice(text) {
+  return new Promise((resolve) => {
+    if (!ttsSupported()) return resolve();
+    const u = new SpeechSynthesisUtterance(text);
+    const v = getPreferredVoice();
+    if (v) { u.voice = v; u.lang = v.lang; }
+    u.onend = resolve;
+    u.onerror = resolve;
+    window.speechSynthesis.speak(u);
+  });
+}
+
+// Back to listening — but only when his reply is truly finished: stream done,
+// nothing queued, nothing playing, and we're not already listening.
+function callMaybeResume() {
+  if (!callActive) return;
+  if (!callStreamDone || callPumping || callQueue.length) return;
+  if (callState === "listening") return;
+  callListen();
+}
+
+// She jumped in mid-sentence: stop his audio, drop the rest of this reply's
+// sound (the words still land in the chat), and open the mic. Conversations
+// have interruptions; calls should survive them.
+function callInterrupt() {
+  if (!callActive) return;
+  callInterrupted = true;
+  callQueue = [];
+  callBuf = "";
+  try { if (callAudio) { callAudio.pause(); callAudio.src = ""; } } catch (_) {}
+  callAudio = null;
+  try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_) {}
+  callListen();
+}
+
 // ---------- Voice notes (his ears) ----------
 // She records her actual voice; we decode it locally, run it through /api/ears
 // (Inworld words + prosody, plus local acoustic analysis), and hand him HOW she
@@ -3210,6 +3506,7 @@ function wireUnifiedMic(btn) {
   btn.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     heldFired = false;
+    if (callActive) return;   // the call owns the mic while it's live
     // Something already running: the release will stop it; no hold-arm.
     if (sttActive || vnActive || vnBusy) return;
     holdTimer = setTimeout(() => {
@@ -3221,6 +3518,7 @@ function wireUnifiedMic(btn) {
   btn.addEventListener("pointerup", (e) => {
     e.preventDefault();
     clearHold();
+    if (callActive) return;         // the call owns the mic while it's live
     if (heldFired) return;          // the hold already started dictation
     if (sttActive) { stopStt(); return; }
     if (vnActive) { stopVoiceNote(); return; }
