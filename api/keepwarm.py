@@ -147,18 +147,15 @@ class handler(BaseHTTPRequestHandler):
             v = bp.get(key)
             if v:
                 kw[key] = v
-        # A warming ping must never trigger a server-side fold: with 32 max
-        # tokens the summary would come out truncated, the real conversation
-        # would never see it, and we'd have paid for it — compaction is a
-        # real-turn affair. (The beta HEADER stays: a compaction block already
-        # threaded into the frozen messages is only legal input under the flag.)
-        eb = kw.get("extra_body")
-        if isinstance(eb, dict) and "context_management" in eb:
-            eb = {k: v for k, v in eb.items() if k != "context_management"}
-            if eb:
-                kw["extra_body"] = eb
-            else:
-                kw.pop("extra_body", None)
+        # PRIME DIRECTIVE: the replay must be BYTE-IDENTICAL to the frozen
+        # request — extra_body included, compaction config included. A brief
+        # "improvement" here once stripped context_management so a ping could
+        # never pay for a pointless fold; whether that config participates in
+        # the cache key is undocumented, and the gamble blew the light out
+        # (every ping mismatched → disarmed → her >1h messages went full
+        # price). Never again: if a ping does cross the fold trigger, the
+        # pause_after_compaction config just stops it after a tiny truncated
+        # summary we discard — rare and cheap. Divergence is neither.
         th = bp.get("thinking") or {}
         if th.get("type") == "enabled" and th.get("budget_tokens"):
             # Non-adaptive thinking demands max_tokens > budget.
