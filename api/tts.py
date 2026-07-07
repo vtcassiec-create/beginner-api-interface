@@ -58,9 +58,10 @@ class handler(BaseHTTPRequestHandler):
             body = {}
         text = (body.get("text") or "").strip()
         voice_id = (body.get("voice_id") or "").strip()
+        prev = (body.get("previous_text") or "").strip()
         if not text or not voice_id:
             return self._json(400, {"error": "text and voice_id required"})
-        self._synthesize(text[:MAX_TTS_CHARS], voice_id)
+        self._synthesize(text[:MAX_TTS_CHARS], voice_id, prev[:1000])
 
     # ---- auth ----
 
@@ -124,14 +125,21 @@ class handler(BaseHTTPRequestHandler):
             })
         return self._json(200, {"configured": True, "voices": out})
 
-    def _synthesize(self, text, voice_id):
-        """Proxy a TTS request to ElevenLabs and stream the audio back."""
+    def _synthesize(self, text, voice_id, previous_text=""):
+        """Proxy a TTS request to ElevenLabs and stream the audio back.
+        previous_text (optional) is what he said just before this chunk —
+        ElevenLabs uses it for prosody continuity, so a reply spoken in
+        pieces (voice calls stream sentence groups) sounds like one breath
+        of speech instead of disconnected clips."""
         key = self._api_key()
         if not key:
             return self._json(503, {"error": "not_configured"})
         model = os.environ.get("ELEVENLABS_MODEL", "").strip() or DEFAULT_TTS_MODEL
         fmt = os.environ.get("ELEVENLABS_FORMAT", "").strip() or DEFAULT_FORMAT
-        payload = json.dumps({"text": text, "model_id": model}).encode()
+        body = {"text": text, "model_id": model}
+        if previous_text:
+            body["previous_text"] = previous_text
+        payload = json.dumps(body).encode()
         url = (f"{EL_BASE}/text-to-speech/{urllib.parse.quote(voice_id, safe='')}"
                f"?output_format={urllib.parse.quote(fmt)}")
         try:
