@@ -2912,3 +2912,10 @@ details.vault-event[open] > summary { color: var(--text); margin-bottom: 6px; }
 
 /* A quiet 📞 beside the clock on turns that were spoken on a call. */
 .call-mark { opacity: 0.7; font-size: 11px; }
+
+/* His ears are open mid-call: the orb breathes slow and glows warmer —
+   listening to sound itself, not fishing for words. */
+.call-orb.hearing {
+  animation: call-breathe 4s ease-in-out infinite;
+  box-shadow: 0 0 60px color-mix(in srgb, var(--accent) 45%, transparent);
+}
