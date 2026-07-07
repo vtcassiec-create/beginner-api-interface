@@ -5876,7 +5876,7 @@ async function touchApi(steps, outputType) {
   // seamlessly. The Signal Bridge is retired: if no toy is connected there's
   // nowhere to play, so we say so plainly rather than reach for a dead relay.
   if (bpDevices.size > 0) {
-    bpPlay(steps);
+    bpPlay(steps, outputType);
     return;
   }
   throw new Error(
@@ -6165,17 +6165,42 @@ function renderBpDevices() {
   }
 }
 
-// Set a vibration level (0..1) on every connected toy at once, via the v4
-// generic-output call the Test buzz proved: runOutput(DeviceOutput.Vibrate.
-// percent(v)), with the legacy vibrate() as a fallback for older builds.
-async function bpSetAll(level) {
+// His output_type words → buttplug v4 output kinds. "Oscillate" is the
+// Gravity's stroke motor (buttplug's name for thrusting); he may reach for
+// any of the natural words, so match loosely.
+function bpOutputKind(outputType) {
+  const kind = String(outputType || "vibrate").toLowerCase();
+  if (/osc|thrust|stroke|pump/.test(kind)) return "Oscillate";
+  if (/rot|spin|twirl/.test(kind)) return "Rotate";
+  return "Vibrate";
+}
+
+// Set an output level (0..1) on every connected toy at once, via the v4
+// generic-output call the Test buzz proved: runOutput(DeviceOutput.<Kind>.
+// percent(v)). The kind comes from the pattern's output_type — this is what
+// un-flattened the Gravity: before, EVERY output_type was sent as Vibrate,
+// so its oscillation motor was never addressed after touch went local. A toy
+// that lacks the requested motor falls back to vibrate rather than going
+// silent (so a Lush and a Gravity can share the same phrase).
+async function bpSetAll(level, outputType) {
   const lib = bpLib || {};
   const v = Math.max(0, Math.min(1, Number(level) || 0));
+  const kind = bpOutputKind(outputType);
   const proms = [];
   for (const d of bpDevices.values()) {
     try {
-      if (lib.DeviceOutput && lib.DeviceOutput.Vibrate) {
-        proms.push(d.runOutput(lib.DeviceOutput.Vibrate.percent(v)));
+      const out = lib.DeviceOutput && lib.DeviceOutput[kind];
+      const vib = lib.DeviceOutput && lib.DeviceOutput.Vibrate;
+      if (out) {
+        let p = d.runOutput(out.percent(v));
+        if (kind !== "Vibrate" && vib) {
+          // Unsupported motor on this toy → vibrate instead; and a full stop
+          // (level 0) stills the vibe motor too, so nothing hums on after
+          // an oscillating phrase ends.
+          p = p.catch(() => d.runOutput(vib.percent(v)));
+          if (v === 0) p = p.then(() => d.runOutput(vib.percent(0)).catch(() => {}));
+        }
+        proms.push(p);
       } else if (typeof d.vibrate === "function") {
         proms.push(d.vibrate(v));
       }
@@ -6190,12 +6215,12 @@ async function bpSetAll(level) {
 // level (runOutput is continuous), so overlapping phrases splice with no
 // restart. Fire-and-forget by design: callers don't await the playback.
 let bpPlayToken = 0;
-async function bpPlay(steps) {
+async function bpPlay(steps, outputType) {
   const token = ++bpPlayToken;
   if (!Array.isArray(steps)) return;
   for (const s of steps) {
     if (token !== bpPlayToken) return;  // superseded by a newer chunk or a stop
-    await bpSetAll(Number(s && s.intensity) || 0);
+    await bpSetAll(Number(s && s.intensity) || 0, outputType);
     const ms = Math.max(50, (Number(s && s.seconds) || 0.2) * 1000);
     await new Promise((r) => setTimeout(r, ms));
   }
