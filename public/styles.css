@@ -2909,3 +2909,6 @@ details.vault-event[open] > summary { color: var(--text); margin-bottom: 6px; }
 .call-interrupt { border-color: var(--accent); color: var(--accent); }
 .call-interrupt[hidden] { display: none; }
 .call-end { background: #6e3a36; border-color: #6e3a36; color: #f2e6df; }
+
+/* A quiet 📞 beside the clock on turns that were spoken on a call. */
+.call-mark { opacity: 0.7; font-size: 11px; }
