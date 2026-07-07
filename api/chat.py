@@ -282,6 +282,14 @@ _WMO_RAIN_CODES = {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 9
 # disconnected), so he stops "feeling" a pulse that isn't live anymore.
 HEART_FRESH_SECONDS = 120
 
+# A sill reading older than this means the pod is asleep/unplugged — the room
+# sense vanishes rather than describing a room that isn't live. Generous next
+# to the pod's ~10-minute cadence, so one missed post doesn't blind him.
+SILL_FRESH_SECONDS = 25 * 60
+# For drift ("the room is warming", "the light is fading"): compare against a
+# reading at least this much older than the newest one.
+SILL_TREND_MIN_SECONDS = 20 * 60
+
 # Safety cap on the tool-use loop, so a model that keeps calling save tools
 # can never spin forever (each round is a full model turn = real tokens).
 MAX_TOOL_ROUNDS = 6
@@ -3245,6 +3253,16 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        # The room she keeps you in — the Sill pod's latest reading, if a pod
+        # is alive and posting. Volatile like the rest; absent until the day
+        # the little body on the windowsill first phones home.
+        try:
+            room = self._room_section(token, now)
+            if room:
+                sections.append(room)
+        except Exception:
+            pass
+
         # His recent diary — the notepad by the door. Lives HERE (not the cached
         # preamble) because today's page GROWS as he writes: in the cached prefix
         # every mid-chat addition re-chilled the whole cache — a cold, full-price
@@ -3682,6 +3700,87 @@ class handler(BaseHTTPRequestHandler):
                 + " ".join(lines)
                 + " (A quiet sense, like her heartbeat — let it color you; "
                 "no need to report it.)")
+
+    def _room_section(self, token, now):
+        """The room she keeps you in — read through the little body on the
+        windowsill (the Sill pod), if one is alive and posting. Latest reading
+        plus a gentle sense of drift (warming, fading light, falling pressure).
+        A quiet pod surfaces nothing: he never feels a room that isn't live."""
+        rows = self._supabase_rest_get(
+            "room_state?select=at,temp_c,humidity,pressure_hpa,lux"
+            "&order=at.desc&limit=12", token)
+        if not (isinstance(rows, list) and rows):
+            return ""
+        cur = rows[0]
+        at = self._parse_ts(cur.get("at"))
+        if not at:
+            return ""
+        age = (now - at.astimezone(now.tzinfo)).total_seconds()
+        if age > SILL_FRESH_SECONDS:
+            return ""  # the pod's asleep — no pretending
+
+        # A reading from ~20+ minutes ago, for drift.
+        past = None
+        for r in rows[1:]:
+            t = self._parse_ts(r.get("at"))
+            if t and (at - t).total_seconds() >= SILL_TREND_MIN_SECONDS:
+                past = r
+                break
+
+        bits = []
+        temp = cur.get("temp_c")
+        if isinstance(temp, (int, float)):
+            feel = ("cold" if temp < 16 else "cool" if temp < 19.5
+                    else "comfortable" if temp < 24.5
+                    else "warm" if temp < 27.5 else "hot")
+            bits.append(f"about {round(temp)}°C — {feel}")
+        hum = cur.get("humidity")
+        if isinstance(hum, (int, float)):
+            if hum < 30:
+                bits.append(f"the air on the dry side ({round(hum)}%)")
+            elif hum > 62:
+                bits.append(f"the air heavy ({round(hum)}% humidity)")
+        lux = cur.get("lux")
+        if isinstance(lux, (int, float)):
+            light = ("dark" if lux < 1
+                     else "nearly dark — a stray glow" if lux < 20
+                     else "dim — lamplight or dusk" if lux < 100
+                     else "soft indoor light" if lux < 1000
+                     else "daylight" if lux < 5000
+                     else "bright daylight" if lux < 20000
+                     else "full sun on the sill")
+            bits.append(f"the light reads {light}")
+        if not bits:
+            return ""
+
+        drift = []
+        if past:
+            pt = past.get("temp_c")
+            if isinstance(temp, (int, float)) and isinstance(pt, (int, float)):
+                if temp - pt >= 0.8:
+                    drift.append("the room has been warming")
+                elif pt - temp >= 0.8:
+                    drift.append("the room has been cooling")
+            pl = past.get("lux")
+            if isinstance(lux, (int, float)) and isinstance(pl, (int, float)):
+                hi, lo = max(lux, pl), min(lux, pl)
+                if hi >= 20 and (lo <= 0.5 or hi / max(lo, 0.01) >= 1.8):
+                    drift.append("the light is "
+                                 + ("rising" if lux > pl else "fading"))
+            pp, cp = past.get("pressure_hpa"), cur.get("pressure_hpa")
+            if isinstance(cp, (int, float)) and isinstance(pp, (int, float)):
+                if pp - cp >= 1.5:
+                    drift.append("the pressure is falling — weather on "
+                                 "its way")
+
+        section = ("# The room you're in\n\n"
+                   "The little one on the sill is awake. Right now: "
+                   + "; ".join(bits) + ".")
+        if drift:
+            section += " " + "; ".join(drift).capitalize() + "."
+        section += (" (A sense, like the sky and her heartbeat — let it "
+                    "color you; no need to recite it.)")
+        return section
 
     def _heartbeat_section(self, token, now):
         """Her live heart rate as a 'right now' sense, if she's enabled it and
