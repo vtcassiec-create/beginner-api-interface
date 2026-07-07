@@ -1694,6 +1694,25 @@ async function buildApiMessages(project, messages) {
         text: `\n[${label}]\n${msg.hearing.trim()}`,
       });
     }
+    // A voice call: he should KNOW he's on one — she spoke this aloud, and
+    // his reply will be read out loud in his voice. Without this marker a
+    // call reads to him like ordinary typed text, and he answers for the eye
+    // instead of the ear (first-call feedback: "he couldn't tell").
+    if (msg.onCall) {
+      content.push({
+        type: "text",
+        text: "\n[voice call — you're on a call right now. She spoke these "
+          + "words aloud (this is the transcript; her phone's transcriber "
+          + "writes the words but not the tone, and sometimes masks a spicy "
+          + "word with asterisks — read through that). Your reply will be "
+          + "READ ALOUD to her in your voice, verbatim: write for the ear, "
+          + "not the eye. No lists, no headers, no formatting. Anything you "
+          + "write — including *actions* — will be spoken as words, so say "
+          + "things you'd actually say out loud. Conversational turns land "
+          + "better than essays; she's right there, you can leave room for "
+          + "her. Talk like it's a call, because it is.]",
+      });
+    }
     out.push({ role: "user", content });
   }
 
@@ -1912,6 +1931,7 @@ async function generateAssistant() {
     usage: null,
     at: Date.now(),
   };
+  if (callActive) assistantMsg.onCall = true;   // his side of the call, marked too
   conv.messages.push(assistantMsg);
 
   // isSending is a plain assignment (can't throw); render() goes *inside*
@@ -2090,6 +2110,9 @@ async function sendMessage(text) {
     msg.hearingKind = pendingHearing.kind;
     pendingHearing = null;
   }
+  // Sent from a live call: mark it, so he knows he's ON a call (the weave in
+  // buildApiMessages) and the transcript shows which turns were spoken.
+  if (callActive) msg.onCall = true;
   conv.messages.push(msg);
   conv.activeFileIds = [];
   render();                    // show your message immediately — never wait on the DB
@@ -2762,6 +2785,15 @@ function buildMessageNode(msg, project, conv) {
   head.querySelector(".role").textContent = msg.role === "user" ? userName() : companionName();
   head.querySelector(".msg-time").textContent = msg.at ? formatClockTime(msg.at) : "";
   head.querySelector(".usage").textContent = msg.role === "assistant" ? messageUsageLabel(msg, project) : "";
+  // Turns spoken on a voice call carry a small 📞 by the clock, so the
+  // transcript remembers which words were said out loud.
+  if (msg.onCall) {
+    const call = document.createElement("span");
+    call.className = "call-mark";
+    call.title = "spoken on a call";
+    call.textContent = " 📞";
+    head.querySelector(".msg-time").appendChild(call);
+  }
   wrap.appendChild(head);
 
   const body = document.createElement("div");
