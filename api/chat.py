@@ -214,6 +214,21 @@ COMPACTION_INSTRUCTIONS = (
     "Write it so that reading it feels like remembering, not like being briefed."
 )
 
+# When compaction pauses (see _enable_compaction), we resume with the summary
+# plus this many trailing messages VERBATIM — the current user turn and the
+# couple of exchanges before it. This is what guarantees he answers her actual
+# words, never a summary of them.
+COMPACTION_KEEP_VERBATIM = 5
+
+
+def _compaction_tail(messages, keep=COMPACTION_KEEP_VERBATIM):
+    """The last few messages, trimmed to start on a user turn (the resumed
+    request is [assistant: summary] + tail, so the tail must open with her)."""
+    tail = list(messages[-keep:])
+    while tail and tail[0].get("role") != "user":
+        tail.pop(0)
+    return tail or list(messages[-1:])
+
 
 def _enable_compaction(kwargs):
     """Turn on server-side compaction for a Messages request, merging cleanly
@@ -237,6 +252,13 @@ def _enable_compaction(kwargs):
         "type": "compact_20260112",
         "trigger": {"type": "input_tokens", "value": _compaction_trigger_tokens()},
         "instructions": COMPACTION_INSTRUCTIONS,
+        # THE fix for "he answers from a briefing": without this, the fold
+        # happens mid-request and he replies from the summary alone — her
+        # message in his hand reduced to a paraphrase. With it, the API stops
+        # after writing the summary (stop_reason "compaction"); run_stream then
+        # resumes with [summary] + the recent turns VERBATIM, so the fold costs
+        # old chatter, never the words she just said.
+        "pause_after_compaction": True,
     }]}
 
 
@@ -1563,6 +1585,7 @@ class handler(BaseHTTPRequestHandler):
             # Surfaced to the client at 'done' so it can be threaded back next
             # turn (the API then skips re-summarizing the already-folded history).
             compaction_block = None
+            compaction_resumed = False   # one resume per turn — a loop guard
             turn_started = time.monotonic()
 
             def _emit_done(stop_reason):
@@ -1612,6 +1635,24 @@ class handler(BaseHTTPRequestHandler):
                         c = getattr(b, "content", "") or ""
                         if isinstance(c, str) and c.strip():
                             compaction_block = {"type": "compaction", "content": c}
+
+                # pause_after_compaction: the API wrote the summary and stopped
+                # WITHOUT answering. Resume with [summary] + the last few turns
+                # verbatim — her actual message stays in his hands; only the old
+                # chatter got folded. One resume max (the resumed request is far
+                # below the trigger, but a guard beats an invariant).
+                if (getattr(final, "stop_reason", None) == "compaction"
+                        and compaction_block and not compaction_resumed):
+                    compaction_resumed = True
+                    self._sse({"type": "notice",
+                               "text": "(The house folded the oldest pages of "
+                                       "this conversation into memory — "
+                                       "everything recent is still verbatim.)"})
+                    kwargs["messages"] = (
+                        [{"role": "assistant",
+                          "content": [dict(compaction_block)]}]
+                        + _compaction_tail(kwargs["messages"]))
+                    continue
 
                 # Continue the loop only when he called a client tool we own.
                 # Server tools (web search) and MCP tools are run by the API

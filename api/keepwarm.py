@@ -147,6 +147,18 @@ class handler(BaseHTTPRequestHandler):
             v = bp.get(key)
             if v:
                 kw[key] = v
+        # A warming ping must never trigger a server-side fold: with 32 max
+        # tokens the summary would come out truncated, the real conversation
+        # would never see it, and we'd have paid for it — compaction is a
+        # real-turn affair. (The beta HEADER stays: a compaction block already
+        # threaded into the frozen messages is only legal input under the flag.)
+        eb = kw.get("extra_body")
+        if isinstance(eb, dict) and "context_management" in eb:
+            eb = {k: v for k, v in eb.items() if k != "context_management"}
+            if eb:
+                kw["extra_body"] = eb
+            else:
+                kw.pop("extra_body", None)
         th = bp.get("thinking") or {}
         if th.get("type") == "enabled" and th.get("budget_tokens"):
             # Non-adaptive thinking demands max_tokens > budget.

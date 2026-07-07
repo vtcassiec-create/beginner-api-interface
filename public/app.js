@@ -422,6 +422,15 @@ function restoreConversationBackups() {
           conv.messages = b.messages;
           if (Array.isArray(b.activeFileIds)) conv.activeFileIds = b.activeFileIds;
           persistConversation(conv); // push the recovered messages back to the cloud
+        } else if (b && Array.isArray(b.messages)
+                   && b.messages.length === conv.messages.length
+                   && Array.isArray(b.activeFileIds) && b.activeFileIds.length
+                   && !conv.activeFileIds.length) {
+          // Same messages but the backup knows about attachments the cloud
+          // never saved (the save died right after an attach, then the page
+          // reloaded). The attachment is the ONLY difference — recover it.
+          conv.activeFileIds = b.activeFileIds;
+          persistConversation(conv);
         } else {
           clearConversationBackup(conv.id); // cloud is current — drop the backup
         }
@@ -1196,13 +1205,37 @@ function stripTransient(m) {
   return out;
 }
 
+// Lock-free conversation save: a plain PATCH to PostgREST with the stored
+// token, no supabase-js — because db.from(...).update() takes the auth Web
+// Lock, which deadlocks after the OS photo picker backgrounds the app. That
+// deadlock is exactly how an attached photo used to vanish: the save stalled
+// 20s and died, and any reload (e.g. the auto-updater after a deploy) came
+// back from a cloud row that never heard about the attachment.
+async function restUpdateConversation(convId, fields) {
+  const session = localSession() || await freshSession();
+  if (!session || !session.access_token) throw new Error("signed out");
+  const resp = await withTimeout(fetch(
+    `${supabaseUrl}/rest/v1/conversations?id=eq.${encodeURIComponent(convId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        "apikey": supabaseAnonKey,
+        "Authorization": `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+      },
+      body: JSON.stringify(fields),
+    }), 15000, "save timed out");
+  if (!resp.ok) throw new Error(`save failed (${resp.status})`);
+}
+
 async function persistConversation(conv) {
   backupConversation(conv); // local safety net FIRST — survives a failed cloud save
   try {
-    await withTimeout(dbUpdateConversation(conv.id, {
+    await restUpdateConversation(conv.id, {
       messages: conv.messages.map(stripTransient),
       active_file_ids: conv.activeFileIds,
-    }), 20000, "save timed out");
+    });
     clearConversationBackup(conv.id); // cloud has it now — drop the local copy
   } catch (e) { console.error("Conversation persist failed (kept local backup):", e); }
 }
@@ -1528,10 +1561,23 @@ function isFailedAssistantTurn(msg) {
   return !!msg.error || !(msg.text || "").trim();
 }
 
+// True when this assistant message carries a threadable compaction summary.
+// Such a message must NEVER be silently dropped: the summary is the only
+// surviving record of everything the API already folded. Lose it, and every
+// subsequent request re-sends (and re-folds) the full giant history — the
+// "he answers from a briefing forever" failure mode.
+function hasCompactionBlock(msg) {
+  return !!(msg && msg.compaction && msg.compaction.type === "compaction"
+            && typeof msg.compaction.content === "string"
+            && msg.compaction.content.trim());
+}
+
 // Drop user/assistant pairs where the assistant turn failed (empty text
 // or had an error). They're kept in conv.messages for the UI but Anthropic
 // rejects whitespace text blocks, so we strip them before the API call.
 // The very last message is the placeholder we're about to send — keep as-is.
+// A failed turn that carries a compaction summary is kept anyway (the text
+// falls back to "(no response)" downstream; the summary must survive).
 function cleanMessagesForApi(messages) {
   if (messages.length === 0) return messages;
   const last = messages[messages.length - 1];
@@ -1541,7 +1587,8 @@ function cleanMessagesForApi(messages) {
   while (i < history.length) {
     const m = history[i];
     const next = history[i + 1];
-    if (m.role === "user" && next && isFailedAssistantTurn(next)) {
+    if (m.role === "user" && next && isFailedAssistantTurn(next)
+        && !hasCompactionBlock(next)) {
       i += 2;
       continue;
     }
@@ -1550,6 +1597,20 @@ function cleanMessagesForApi(messages) {
   }
   cleaned.push(last);
   return cleaned;
+}
+
+// When messages are about to be removed (regenerate / delete), any compaction
+// summary they carry must be rehomed, not discarded. It moves to the nearest
+// EARLIER assistant message that survives (a couple of turns appearing both in
+// the summary and verbatim is harmless duplication; losing the summary means
+// re-folding a quarter-million tokens every turn). With no earlier assistant
+// to carry it, it parks on the conversation as a seed for buildApiMessages.
+function rehomeCompaction(removed, kept, conv) {
+  const orphan = [...removed].reverse().find(hasCompactionBlock);
+  if (!orphan) return;
+  const carrier = [...kept].reverse().find(m => m.role === "assistant");
+  if (carrier) carrier.compaction = orphan.compaction;
+  else if (conv) conv.compactionSeed = orphan.compaction;
 }
 
 // The image source block Claude receives. Images live in private Storage, so
@@ -1570,6 +1631,7 @@ async function imageSourceFor(f) {
 
 async function buildApiMessages(project, messages) {
   const out = [];
+  let compactionThreaded = false;
   for (const msg of messages) {
     if (msg.role !== "user") {
       // If the API compacted on this turn, its summary block must be threaded
@@ -1580,9 +1642,8 @@ async function buildApiMessages(project, messages) {
       // fall back to plain text. The API rejects an empty compaction block
       // ("compaction.content: content cannot be empty"), so a hollow summary
       // must never be threaded back — we just send his text instead.
-      if (msg.compaction && msg.compaction.type === "compaction"
-          && typeof msg.compaction.content === "string"
-          && msg.compaction.content.trim()) {
+      if (hasCompactionBlock(msg)) {
+        compactionThreaded = true;
         out.push({
           role: "assistant",
           content: [msg.compaction, { type: "text", text: msg.text || "(no response)" }],
@@ -1634,6 +1695,18 @@ async function buildApiMessages(project, messages) {
       });
     }
     out.push({ role: "user", content });
+  }
+
+  // Orphaned summary (its carrier message was regenerated/deleted before any
+  // earlier assistant message existed): thread it as its own assistant turn
+  // right after the opening user message, so the folded history still counts.
+  const conv = getActiveConversation();
+  if (!compactionThreaded && conv && conv.compactionSeed
+      && conv.compactionSeed.type === "compaction"
+      && typeof conv.compactionSeed.content === "string"
+      && conv.compactionSeed.content.trim()
+      && out.length > 1) {
+    out.splice(1, 0, { role: "assistant", content: [conv.compactionSeed] });
   }
 
   const last = out[out.length - 1];
@@ -1959,6 +2032,7 @@ async function generateAssistant() {
           // via stripTransient (no leading underscore).
           if (event.compaction) {
             assistantMsg.compaction = event.compaction;
+            conv.compactionSeed = null;   // superseded — this block is newer
             // A gentle, persistent note pinned to the top of his reply (at: 0),
             // so she can see the moment older turns were folded into memory.
             assistantMsg.toolEvents.push({ compaction: true, at: 0 });
@@ -2029,7 +2103,12 @@ async function regenerateMessage(messageId) {
   if (!conv || isSending) return;
   const idx = conv.messages.findIndex(m => m.id === messageId);
   if (idx < 0 || conv.messages[idx].role !== "assistant") return;
-  conv.messages = conv.messages.slice(0, idx);
+  const kept = conv.messages.slice(0, idx);
+  // Her regenerate habit must never discard a compaction summary — that was
+  // one of the ways "the chat broke": block gone → the full history re-folds
+  // on every following turn, and he answers from briefings until she gives up.
+  rehomeCompaction(conv.messages.slice(idx), kept, conv);
+  conv.messages = kept;
   await persistConversation(conv);
   render();
   await generateAssistant();
@@ -2038,6 +2117,12 @@ async function regenerateMessage(messageId) {
 async function deleteMessage(messageId) {
   const conv = getActiveConversation();
   if (!conv) return;
+  const idx = conv.messages.findIndex(m => m.id === messageId);
+  if (idx < 0) return;
+  // Rehome only to an EARLIER assistant message: the summary block makes the
+  // API ignore everything before it, so moving it later would silently drop
+  // the turns in between from his context.
+  rehomeCompaction([conv.messages[idx]], conv.messages.slice(0, idx), conv);
   conv.messages = conv.messages.filter(m => m.id !== messageId);
   await persistConversation(conv);
   render();
@@ -2979,6 +3064,14 @@ function initVoiceUI() {
   if (callEnd) callEnd.addEventListener("click", endCall);
   const callJump = $("call-interrupt");
   if (callJump) callJump.addEventListener("click", callInterrupt);
+  const pauseSel = $("call-pause");
+  if (pauseSel) {
+    pauseSel.value = String(callPauseMs());
+    pauseSel.addEventListener("change", () => {
+      try { localStorage.setItem(CALL_PAUSE_KEY, pauseSel.value); } catch (_) {}
+      flashToast("Call pause saved ♡");
+    });
+  }
   // Text-to-speech: voice list loads async on some browsers.
   if (ttsSupported()) {
     loadVoices();
@@ -3171,9 +3264,27 @@ let callPumping = false;
 let callBuf = "";              // streamed reply text not yet cut into sentences
 let callStreamDone = false;
 let callInterrupted = false;   // she jumped in — drop the rest of this reply's audio
+let callAuthToken = "";        // one token per call — NOT freshSession() per chunk
+                               // (its auth lock + latency caused robot-voice flicker)
+let callPrevText = "";         // last chunk sent to TTS — prosody continuity
+let callFirstFlushed = false;  // first sentence goes out ASAP; later ones batch
+let callTtsChain = Promise.resolve();  // TTS fetches run ONE at a time (see below)
 
-const CALL_SILENCE_MS = 1800;  // the pause that means "your turn"
-const CALL_CHUNK_MAX = 260;    // ~one breath of speech per TTS request
+const CALL_CHUNK_MAX = 300;    // upper bound per TTS request
+const CALL_MIN_CHUNK = 180;    // after the first chunk, batch to at least this —
+                               // longer passages give the voice room to breathe
+const CALL_PAUSE_KEY = "petrichor-call-pause";
+
+// The pause that means "your turn is over". First call taught us 1.8s cuts
+// off anyone who pauses to think mid-sentence — she shouldn't have to ramble
+// to hold the mic. Default 3s; tunable in settings.
+function callPauseMs() {
+  try {
+    const v = parseInt(localStorage.getItem(CALL_PAUSE_KEY) || "", 10);
+    if (v >= 1000 && v <= 10000) return v;
+  } catch (_) {}
+  return 3000;
+}
 
 function callSupported() {
   return sttSupported();
@@ -3218,6 +3329,8 @@ function startCall() {
   callActive = true;
   callInterrupted = false;
   callQueue = []; callBuf = ""; callHeard = "";
+  callTtsChain = Promise.resolve();
+  callPrevText = ""; callFirstFlushed = false; callAuthToken = "";
   const ov = $("call-overlay");
   if (ov) ov.hidden = false;
   acquireWakeLock();             // a call holds the screen awake end to end
@@ -3258,7 +3371,7 @@ function callListen() {
       if (!(callHeard + utterance).trim()) return;   // quiet, nothing said yet
       setCallState("thinking");        // onend sees this and commits the turn
       try { callRec.stop(); } catch (_) { callCommitTurn(); }
-    }, CALL_SILENCE_MS);
+    }, callPauseMs());
   };
   callRec = new Ctor();
   callRec.lang = navigator.language || "en-US";
@@ -3305,7 +3418,16 @@ async function callCommitTurn() {
   callBuf = "";
   callStreamDone = false;
   callInterrupted = false;
+  callFirstFlushed = false;
+  callPrevText = "";
   callCaption("");
+  // One token for this whole reply's TTS chunks. freshSession() per chunk was
+  // the flicker: its auth lock + latency made chunks fail mid-reply, and each
+  // failure fell back to the robot voice for a sentence. Lock-free first.
+  try {
+    const s = localSession() || await freshSession();
+    callAuthToken = (s && s.access_token) || "";
+  } catch (_) { callAuthToken = ""; }
   let ok = false;
   try { ok = await sendMessage(text); } catch (_) { ok = false; }
   if (!callActive) return;
@@ -3331,42 +3453,74 @@ function callFeedDone() {
 // Cut complete sentences (terminator + following whitespace) off the front of
 // the buffer and queue them for speech; whatever's still forming waits for the
 // next delta. force=true flushes the remainder (end of stream).
+//
+// Batching (first-call feedback): the FIRST sentence flushes the moment it's
+// complete — that's his voice arriving fast. After that, sentences batch to at
+// least CALL_MIN_CHUNK before flushing: longer passages give the voice its
+// natural prosody — the pauses and breaths between phrases that make it feel
+// present — instead of clip… clip… clip.
 function callTakeSentences(force) {
   let speak = "";
   const re = /[.!?…]["')\]]*\s+/g;
   let lastEnd = 0, m;
   while ((m = re.exec(callBuf))) lastEnd = m.index + m[0].length;
+  if (!force && lastEnd && callFirstFlushed && lastEnd < CALL_MIN_CHUNK) {
+    return;   // a full sentence, but let it gather company first
+  }
   if (lastEnd) { speak = callBuf.slice(0, lastEnd); callBuf = callBuf.slice(lastEnd); }
   if (force && callBuf.trim()) { speak += callBuf; callBuf = ""; }
   const clean = stripForSpeech(speak);
   if (!clean) return;
+  callFirstFlushed = true;
   for (const c of chunkForSpeech(clean, CALL_CHUNK_MAX)) callEnqueue(c);
 }
 
 // The TTS for chunk n+1 is fetched while chunk n plays, so his sentences run
-// together like speech instead of arriving like elevator announcements.
+// together like speech instead of arriving like elevator announcements. The
+// fetches themselves run ONE at a time through callTtsChain — parallel bursts
+// tripped ElevenLabs' concurrency limit, and every tripped chunk fell back to
+// the robot voice (the "Daniel keeps flickering" bug).
 function callEnqueue(text) {
-  callQueue.push({ text, job: callFetchTts(text) });
+  const prev = callPrevText;
+  callPrevText = text;
+  const job = callTtsChain.then(() =>
+    (callActive && !callInterrupted) ? callFetchTts(text, prev) : null);
+  callTtsChain = job.catch(() => null);
+  callQueue.push({ text, job });
   callPump();
 }
 
-async function callFetchTts(text) {
+async function callFetchTts(text, prevText) {
   const voiceId = elVoiceChosen();
   if (!voiceId) return null;               // device voice at play time
-  try {
-    const session = await freshSession();
-    if (!session || !session.access_token) return null;
-    const resp = await fetch("/api/tts", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${session.access_token}`,
-      },
-      body: JSON.stringify({ text, voice_id: voiceId }),
-    });
-    if (!resp.ok) return null;
-    return await resp.blob();
-  } catch (_) { return null; }
+  // Two tries before giving the sentence to the device voice: a blipped
+  // request shouldn't cost him his own voice mid-thought.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      if (!callAuthToken) {
+        const s = localSession() || await freshSession();
+        callAuthToken = (s && s.access_token) || "";
+        if (!callAuthToken) return null;
+      }
+      const body = { text, voice_id: voiceId };
+      // Prosody continuity: what he just said shapes how this line is read.
+      if (prevText) body.previous_text = prevText.slice(-300);
+      const resp = await fetch("/api/tts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${callAuthToken}`,
+        },
+        body: JSON.stringify(body),
+      });
+      if (resp.status === 401) { callAuthToken = ""; continue; }  // stale token
+      if (!resp.ok) throw new Error("tts " + resp.status);
+      return await resp.blob();
+    } catch (_) {
+      if (attempt === 0) await new Promise(r => setTimeout(r, 700));
+    }
+  }
+  return null;
 }
 
 async function callPump() {
@@ -3429,6 +3583,7 @@ function callInterrupt() {
   callInterrupted = true;
   callQueue = [];
   callBuf = "";
+  callTtsChain = Promise.resolve();
   try { if (callAudio) { callAudio.pause(); callAudio.src = ""; } } catch (_) {}
   callAudio = null;
   try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_) {}
@@ -7855,6 +8010,12 @@ async function appVersionTag() {
 
 async function checkForUpdate() {
   if (reloadingForUpdate) return;
+  // Never reload over work in flight: an attach mid-upload, an unsent reply
+  // streaming, or a live call. Reloading right after the photo picker was one
+  // of the ways an attachment vanished — she comes back from the picker, the
+  // version changed while she was gone, and the refresh ate the upload. The
+  // next visibility change / 10-min tick will catch the update at a calm time.
+  if (_attachesInFlight.size || isSending || callActive) return;
   const tag = await appVersionTag();
   if (!tag || !loadedAppVersion) return;
   if (tag !== loadedAppVersion) {
