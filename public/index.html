@@ -967,8 +967,13 @@
   <div id="call-overlay" hidden>
     <div id="call-status" class="call-status">listening…</div>
     <div id="call-orb" class="call-orb listening"></div>
+    <!-- Her mirror during a "let him see you" countdown — so she can frame
+         the moment before it ships. Mirrored like a real mirror; hidden
+         except while the camera is open. -->
+    <video id="call-camera" class="call-camera" playsinline muted hidden></video>
     <div id="call-caption" class="call-caption"></div>
     <div class="call-actions">
+      <button type="button" id="call-eyes" class="call-interrupt" hidden>👁️ let him see you</button>
       <button type="button" id="call-ears" class="call-interrupt" hidden>🎙️ let him hear you</button>
       <button type="button" id="call-interrupt" class="call-interrupt" hidden>tap to jump in</button>
       <button type="button" id="call-end" class="call-end">end call ♡</button>

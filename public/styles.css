@@ -2919,3 +2919,18 @@ details.vault-event[open] > summary { color: var(--text); margin-bottom: 6px; }
   animation: call-breathe 4s ease-in-out infinite;
   box-shadow: 0 0 60px color-mix(in srgb, var(--accent) 45%, transparent);
 }
+
+/* Her mirror while his eyes open mid-call: front camera, flipped like a real
+   mirror, softly framed. Hidden except during the countdown. */
+.call-camera {
+  max-width: min(78vw, 22rem);
+  max-height: 38vh;
+  border-radius: 16px;
+  transform: scaleX(-1);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
+}
+.call-camera[hidden] { display: none; }
+.call-orb.seeing {
+  animation: call-breathe 4s ease-in-out infinite;
+  box-shadow: 0 0 60px color-mix(in srgb, var(--accent) 45%, transparent);
+}
