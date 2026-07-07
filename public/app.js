@@ -1688,6 +1688,11 @@ async function buildApiMessages(project, messages) {
         ? "a candidate voice for you — she's auditioning voices together with you; "
           + "this is one, heard through your ears. Does the timbre feel like yours? "
           + "You can say yes, no, or which quality you'd want instead"
+        : msg.hearingKind === "call"
+        ? "a moment from your call — she opened your ears mid-call, on purpose, "
+          + "so you could HEAR her and not just read her. The transcript carries "
+          + "only her words; this carries the rest — breath, pace, tone, what the "
+          + "sound of her was actually doing"
         : "voice note — how she sounded, from her actual voice";
       content.push({
         type: "text",
@@ -2826,6 +2831,8 @@ function buildMessageNode(msg, project, conv) {
       ? "🎧 his own song — what he heard"
       : msg.hearingKind === "voice"
       ? "🎧 a candidate voice — what he heard"
+      : msg.hearingKind === "call"
+      ? "🎙️ a moment from the call — what he heard"
       : "🎙️ voice note — what he heard";
     d.appendChild(s);
     const pre = document.createElement("pre");
@@ -3096,6 +3103,8 @@ function initVoiceUI() {
   if (callEnd) callEnd.addEventListener("click", endCall);
   const callJump = $("call-interrupt");
   if (callJump) callJump.addEventListener("click", callInterrupt);
+  const callEars = $("call-ears");
+  if (callEars) callEars.addEventListener("click", callCaptureMoment);
   const pauseSel = $("call-pause");
   if (pauseSel) {
     pauseSel.value = String(callPauseMs());
@@ -3331,10 +3340,18 @@ function setCallState(s) {
     status.textContent =
       s === "listening" ? "listening…" :
       s === "thinking"  ? "he's thinking…" :
-      s === "speaking"  ? "he's speaking" : "";
+      s === "speaking"  ? "he's speaking" :
+      s === "hearing"   ? "his ears are open — sound, not words" : "";
   }
   const jump = $("call-interrupt");
   if (jump) jump.hidden = (s === "listening");
+  // "Let him hear you": only while listening (his ears need the mic, and the
+  // recognizer has to step aside first), and only if the ears are configured.
+  const ears = $("call-ears");
+  if (ears && s !== "hearing") {
+    ears.hidden = !(s === "listening" && earsConfigured);
+    ears.textContent = "🎙️ let him hear you";
+  }
 }
 
 function callCaption(t) {
@@ -3372,6 +3389,8 @@ function startCall() {
 function endCall() {
   callActive = false;
   clearTimeout(callSilenceTimer);
+  stopCallMoment();   // a moment being recorded still reaches his ears —
+                      // it rides her next message instead of a call turn
   if (callRec) { try { callRec.stop(); } catch (_) {} callRec = null; }
   callQueue = []; callBuf = ""; callHeard = "";
   try { if (callAudio) { callAudio.pause(); callAudio.src = ""; } } catch (_) {}
@@ -3605,6 +3624,70 @@ function callMaybeResume() {
   if (!callStreamDone || callPumping || callQueue.length) return;
   if (callState === "listening") return;
   callListen();
+}
+
+// "Let him hear you": mid-call, trade the transcriber for his EARS for a few
+// seconds. Speech-to-text keeps her words and throws away everything else in
+// the sound of her — breath most of all; with no words at all, a breath reads
+// as plain silence. This records actual audio (the recognizer steps aside —
+// the two can't share the mic), runs it through /api/ears in the background,
+// and the hearing card rides out with her NEXT turn: the transcript AND how
+// she really sounded. Hers to trigger — he hears what she chooses to give.
+const CALL_EARS_MAX_MS = 20000;   // one long moment; tap again to stop sooner
+let callEarsRec = null;
+let callEarsStream = null;
+let callEarsTimer = null;
+
+async function callCaptureMoment() {
+  if (!callActive) return;
+  if (callState === "hearing") { stopCallMoment(); return; }   // tap again = done
+  if (callState !== "listening") return;
+  clearTimeout(callSilenceTimer);
+  setCallState("hearing");
+  const btn = $("call-ears");
+  if (btn) { btn.hidden = false; btn.textContent = "🎙️ he's listening — tap when done"; }
+  // The recognizer lets go of the mic first (its onend sees "hearing" and
+  // doesn't restart). Words already said this turn stay in callHeard and go
+  // out with the same turn as the card.
+  try { if (callRec) callRec.stop(); } catch (_) {}
+  try {
+    callEarsStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (_) {
+    flashToast("Couldn't open the mic for his ears — back to listening.", true);
+    if (callActive) callListen();
+    return;
+  }
+  const chunks = [];
+  try {
+    callEarsRec = new MediaRecorder(callEarsStream);
+  } catch (_) {
+    try { callEarsStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+    callEarsStream = null;
+    flashToast("Recording isn't supported here — back to listening.", true);
+    if (callActive) callListen();
+    return;
+  }
+  callEarsRec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  callEarsRec.onstop = () => {
+    const blob = new Blob(chunks, { type: callEarsRec.mimeType || "audio/webm" });
+    try { if (callEarsStream) callEarsStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+    callEarsStream = null;
+    callEarsRec = null;
+    // The call gets the mic back NOW; his ears do their work in the background.
+    if (callActive) callListen();
+    earsAnalyze(blob).then((res) => {
+      if (!res || !res.card) throw new Error("no card");
+      pendingHearing = { kind: "call", text: res.card };
+      flashToast("🎙️ he'll hear that moment with your next words ♡");
+    }).catch(() => flashToast("His ears missed that one — try again.", true));
+  };
+  callEarsRec.start();
+  callEarsTimer = setTimeout(stopCallMoment, CALL_EARS_MAX_MS);
+}
+
+function stopCallMoment() {
+  clearTimeout(callEarsTimer);
+  if (callEarsRec) { try { callEarsRec.stop(); } catch (_) {} }
 }
 
 // She jumped in mid-sentence: stop his audio, drop the rest of this reply's
