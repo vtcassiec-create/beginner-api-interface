@@ -2934,3 +2934,54 @@ details.vault-event[open] > summary { color: var(--text); margin-bottom: 6px; }
   animation: call-breathe 4s ease-in-out infinite;
   box-shadow: 0 0 60px color-mix(in srgb, var(--accent) 45%, transparent);
 }
+
+/* ---------- The games corner ---------- */
+.games-form { max-width: 30rem; }
+.games-new-pick { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.games-new-btn {
+  display: flex; flex-direction: column; gap: 2px; text-align: left;
+  padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-elev); color: var(--text); cursor: pointer;
+}
+.games-new-btn:hover { border-color: var(--accent); }
+.games-mode-name { font-weight: 600; }
+.games-list { display: flex; flex-direction: column; gap: 8px; }
+.games-card {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-elev); color: var(--text); cursor: pointer; width: 100%;
+}
+.games-card:hover { border-color: var(--accent); }
+.games-card-title { font-weight: 600; }
+
+.games-play-head { display: flex; justify-content: space-between; margin-bottom: 10px; }
+
+/* The board: a fixed 8×8 grid that scales to the dialog width. */
+.games-board {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  width: min(88vw, 26rem);
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  touch-action: manipulation;
+}
+.games-sq {
+  display: flex; align-items: center; justify-content: center;
+  font-size: clamp(20px, 7.5vw, 34px);
+  line-height: 1; border: none; cursor: pointer; padding: 0;
+  color: #1c1c1c;                       /* pieces read on both square colours */
+  text-shadow: 0 0 1px rgba(255,255,255,0.35);
+}
+.games-sq.light { background: #e9d7b7; }
+.games-sq.dark  { background: #b58863; }
+.games-sq.selected { box-shadow: inset 0 0 0 3px var(--accent); }
+.games-sq.target::after {
+  content: ""; width: 26%; height: 26%; border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.games-sq.target:empty::after { display: block; }
+.games-status { text-align: center; margin-top: 12px; font-size: 15px; color: var(--text); min-height: 1.4em; }
+.games-say { text-align: center; margin-top: 2px; color: var(--text-muted); font-family: var(--font-his, Georgia, serif); font-style: italic; }

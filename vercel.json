@@ -6,7 +6,8 @@
     "api/tts.py": { "maxDuration": 60 },
     "api/ears.py": { "maxDuration": 60 },
     "api/keepwarm.py": { "maxDuration": 60 },
-    "api/sill.py": { "maxDuration": 30 }
+    "api/sill.py": { "maxDuration": 30 },
+    "api/chess.py": { "maxDuration": 30 }
   },
   "rewrites": [
     { "source": "/(.*)", "destination": "/public/$1" }
