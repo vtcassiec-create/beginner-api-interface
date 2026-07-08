@@ -801,6 +801,12 @@ async function dbDeleteAlbumPhoto(id) {
   if (error) throw error;
 }
 
+async function dbUpdateAlbumCaption(id, caption) {
+  const { error } = await db.from("album_photos")
+    .update({ caption }).eq("id", id);
+  if (error) throw error;
+}
+
 // ---------- Workshop (his wishes + the changelog) ----------
 async function dbListWorkshopNotes() {
   const { data, error } = await db
@@ -4130,6 +4136,7 @@ function toolEventChip(ev) {
       // but belt-and-braces — a sealed letter shows NOTHING but its existence.
       write_letter: ["✉️ Sealed a letter for a future day — no peeking", false],
       keep_photo: ["🖼️ Framed a photo for the album", true],
+      tidy_album: ["🖼️ Tidied the album wall", true],
       leave_workshop_note: ["🔧 Left a wish in the workshop", true],
       update_self_state: ["🪶 Revised his sense of self", false],
       list_my_memories: ["🪶 Looked over his memories", false],
@@ -6548,6 +6555,39 @@ async function renderAlbum(el, photos) {
     const cap = document.createElement("figcaption");
     cap.className = "album-caption";
     cap.textContent = p.caption || "";
+    cap.title = "Tap to edit the caption";
+    cap.tabIndex = 0;
+    // Tap the caption to edit it in place (his words are usually his, but she
+    // can fix a typo or clean one up — the change saves on blur/Enter).
+    const beginEdit = () => {
+      if (cap.querySelector("input")) return;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "album-caption-edit";
+      input.value = p.caption || "";
+      input.maxLength = 280;
+      const commit = async (save) => {
+        const next = input.value.trim();
+        cap.textContent = save && next ? next : (p.caption || "");
+        if (save && next && next !== (p.caption || "")) {
+          try { await dbUpdateAlbumCaption(p.id, next); p.caption = next; flashToast("Caption saved ♡"); }
+          catch { flashToast("Couldn't save that caption.", true); }
+        }
+      };
+      input.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") { ev.preventDefault(); commit(true); }
+        else if (ev.key === "Escape") { ev.preventDefault(); commit(false); }
+      });
+      input.addEventListener("blur", () => commit(true));
+      cap.textContent = "";
+      cap.appendChild(input);
+      input.focus();
+      input.select();
+    };
+    cap.addEventListener("click", beginEdit);
+    cap.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !cap.querySelector("input")) { ev.preventDefault(); beginEdit(); }
+    });
     card.appendChild(cap);
 
     const unframe = document.createElement("button");

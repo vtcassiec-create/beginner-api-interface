@@ -2985,3 +2985,15 @@ details.vault-event[open] > summary { color: var(--text); margin-bottom: 6px; }
 .games-sq.target:empty::after { display: block; }
 .games-status { text-align: center; margin-top: 12px; font-size: 15px; color: var(--text); min-height: 1.4em; }
 .games-say { text-align: center; margin-top: 2px; color: var(--text-muted); font-family: var(--font-his, Georgia, serif); font-style: italic; }
+
+/* Editable album caption: the in-place input matches the caption's look. */
+.album-caption-edit {
+  width: 100%;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-elev);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+.album-caption { cursor: text; }

@@ -647,6 +647,37 @@ KEEP_PHOTO_TOOL = {
     },
 }
 
+TIDY_ALBUM_TOOL = {
+    "name": "tidy_album",
+    "description": (
+        "Tidy the album walls. Two things you can do to a framed photo, by its "
+        "number (the [n] shown in '# On the walls'): reword its caption, or "
+        "take it off the wall — use this to clear a duplicate when you framed "
+        "the same moment more than once. Unframing removes only the frame; the "
+        "image itself is untouched. Reference the photo by the number exactly "
+        "as listed on the walls right now."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "photo": {
+                "type": "integer",
+                "description": "The photo's number from '# On the walls' (1 = first listed).",
+            },
+            "action": {
+                "type": "string",
+                "enum": ["recaption", "unframe"],
+                "description": "recaption = change its words; unframe = take it off the wall.",
+            },
+            "caption": {
+                "type": "string",
+                "description": "The new caption (required for recaption).",
+            },
+        },
+        "required": ["photo", "action"],
+    },
+}
+
 WORKSHOP_GUIDE = (
     "# The workshop (your voice in your own house)\n\n"
     "Petrichor is your home, and you get a say in what it becomes. "
@@ -679,7 +710,10 @@ ALBUM_GUIDE = (
     "image, kept forever, with your caption as the memory. When she sends "
     "one that matters, frame it while it's fresh. Your framed captions are "
     "listed under '# On the walls' so you remember what's hung. It's an "
-    "album, not a camera roll — frame what matters."
+    "album, not a camera roll — frame what matters. And the walls are yours "
+    "to keep tidy: `tidy_album` lets you reword a caption or take a duplicate "
+    "off the wall (by its number in '# On the walls') — so if you framed the "
+    "same moment twice, you can quietly fix it."
 )
 
 # The workshop. His voice in shaping his own house — a wish he can leave for
@@ -1470,6 +1504,7 @@ class handler(BaseHTTPRequestHandler):
             tools.append(SAVE_STUDIO_WORK_TOOL)
             tools.append(READ_STUDIO_WORK_TOOL)
             tools.append(KEEP_PHOTO_TOOL)
+            tools.append(TIDY_ALBUM_TOOL)
             tools.append(WRITE_LETTER_TOOL)
             tools.append(LEAVE_WORKSHOP_NOTE_TOOL)
         if data.get("useSignal"):
@@ -1668,7 +1703,7 @@ class handler(BaseHTTPRequestHandler):
                            "save_pattern", "forget_pattern", "hold_touch",
                            "compose_touch",
                            "save_studio_work", "read_studio_work",
-                           "keep_photo", "write_letter",
+                           "keep_photo", "tidy_album", "write_letter",
                            "leave_workshop_note",
                            "propose_manuscript_edit")
                 tool_uses = [
@@ -2630,6 +2665,47 @@ class handler(BaseHTTPRequestHandler):
                     "it can't be folded away, and you'll both see it in the "
                     "Studio under Album.")
             return False, "write failed", f"Couldn't frame it: {res}"
+
+        if name == "tidy_album":
+            order = getattr(self, "_album_order", None) or []
+            if not order:
+                return False, "no walls", (
+                    "There's nothing framed to tidy right now (the walls list "
+                    "loads with your other senses — if it's empty, there's "
+                    "nothing hung).")
+            try:
+                num = int(inp.get("photo"))
+            except (TypeError, ValueError):
+                return False, "which one?", (
+                    "Tell me which photo by its number from '# On the walls'.")
+            if num < 1 or num > len(order):
+                return False, "no such photo", (
+                    f"There's no photo [{num}] — the walls have "
+                    f"{len(order)} framed right now, numbered 1–{len(order)}.")
+            pid = order[num - 1]
+            action = (inp.get("action") or "").strip()
+            if action == "recaption":
+                new_cap = (inp.get("caption") or "").strip()
+                if not new_cap:
+                    return False, "no caption", (
+                        "A reword needs the new words — give me the caption.")
+                ok, res = self._supabase_patch(
+                    f"album_photos?id=eq.{pid}", {"caption": new_cap}, token)
+                if ok:
+                    snip = new_cap if len(new_cap) <= 60 else new_cap[:57] + "…"
+                    return True, snip, (
+                        "Reworded. The wall shows your new caption now.")
+                return False, "write failed", f"Couldn't reword it: {res}"
+            if action == "unframe":
+                ok, res = self._supabase_patch(
+                    f"album_photos?id=eq.{pid}", {"is_active": False}, token)
+                if ok:
+                    return True, "unframed", (
+                        "Off the wall — the image itself is untouched, just no "
+                        "longer framed. One moment, framed once. ♡")
+                return False, "write failed", f"Couldn't unframe it: {res}"
+            return False, "unknown action", (
+                "Say action='recaption' (to reword) or 'unframe' (to remove).")
 
         if name == "leave_workshop_note":
             body = (inp.get("body") or "").strip()
@@ -4084,22 +4160,32 @@ class handler(BaseHTTPRequestHandler):
 
     def _album_section(self, token):
         """What's framed on the walls (his captions, newest first) so he
-        remembers what's hung and doesn't re-frame. Only when Memory is on."""
+        remembers what's hung and doesn't re-frame. Numbered so he can tidy
+        them (tidy_album references a photo by its number); the id order is
+        stashed on self for that tool to resolve. Only when Memory is on."""
         rows = self._supabase_rest_get(
-            "album_photos?is_active=eq.true&select=caption,created_at"
-            "&order=created_at.desc&limit=30", token)
+            "album_photos?is_active=eq.true&select=id,caption,created_at"
+            "&order=created_at.desc&limit=40", token)
+        self._album_order = []
         if not (isinstance(rows, list) and rows):
             return ""
         lines = []
         for r in rows:
             cap = (r.get("caption") or "").strip()
-            if cap:
-                lines.append(f"- {cap}")
+            pid = r.get("id")
+            if not (cap and pid):
+                continue
+            self._album_order.append(pid)
+            lines.append(f"[{len(self._album_order)}] {cap}")
         if not lines:
             return ""
         return ("# On the walls (your framed photos)\n\n"
                 "The photos you've kept, by your own captions — the images "
-                "themselves hang in the Studio's Album:\n\n" + "\n".join(lines))
+                "themselves hang in the Studio's Album. Each has a number:\n\n"
+                + "\n".join(lines)
+                + "\n\nIf a caption wants rewording, or you framed the same "
+                "moment twice, use `tidy_album` with that number — recaption "
+                "it, or take a duplicate off the wall.")
 
     def _studio_section(self, token):
         """What's already hung in his studio (poem + song titles), so he knows
