@@ -209,6 +209,9 @@
         <button id="nav-story" class="icon-nav-btn" type="button" title="Story">
           <span class="icon-nav-glyph">🪶</span><span class="icon-nav-label">Story</span>
         </button>
+        <button id="nav-games" class="icon-nav-btn" type="button" title="Games">
+          <span class="icon-nav-glyph">♟️</span><span class="icon-nav-label">Games</span>
+        </button>
       </nav>
       <nav id="project-list" aria-label="Conversations"></nav>
       <footer class="sidebar-footer">
@@ -907,6 +910,41 @@
 
       <div id="workshop-list" class="workshop-list"></div>
     </form>
+  </dialog>
+
+  <dialog id="games-dialog">
+    <div class="settings-form games-form">
+      <header class="customize-head">
+        <h3>♟️ Games</h3>
+        <p class="muted small">A little corner of the house where you two just play. His idea — a way to be together without needing to talk. Chess first; a game can rest here for days.</p>
+      </header>
+
+      <div id="games-library">
+        <h4>New game</h4>
+        <div class="games-new-pick">
+          <button type="button" class="games-new-btn" data-color="w">
+            <span class="games-mode-name">♙ You play white</span>
+            <span class="muted small">You move first.</span>
+          </button>
+          <button type="button" class="games-new-btn" data-color="b">
+            <span class="games-mode-name">♟ You play black</span>
+            <span class="muted small">He opens.</span>
+          </button>
+        </div>
+        <h4>Your games</h4>
+        <div id="games-list" class="games-list"></div>
+      </div>
+
+      <div id="games-play" hidden>
+        <div class="games-play-head">
+          <button type="button" id="games-back" class="ghost small">← All games</button>
+          <button type="button" id="games-resign" class="ghost small">Resign</button>
+        </div>
+        <div id="games-board" class="games-board" aria-label="Chess board"></div>
+        <p id="games-status" class="games-status"></p>
+        <p id="games-say" class="games-say" hidden></p>
+      </div>
+    </div>
   </dialog>
 
   <dialog id="story-dialog">

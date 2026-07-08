@@ -8090,6 +8090,7 @@ function wireApp() {
   });
 
   $("nav-story").addEventListener("click", openStoryDialog);
+  wireGamesCorner();
   $("story-back").addEventListener("click", showStoryLibrary);
   $("story-send").addEventListener("click", storyAddMyTurn);
   $("story-seed").addEventListener("click", storySeed);
@@ -8615,6 +8616,324 @@ function addDialogCloseButtons() {
     x.addEventListener("click", () => d.close());
     d.insertBefore(x, d.firstChild);
   });
+}
+
+// ---------- The games corner ----------
+// His wish: a little room where the two of them just play — "a way to be
+// together without needing to talk." Chess first. The RULES live here in the
+// browser (chess.js, lazy-loaded from a CDN like abcjs/buttplug); the board is
+// drawn here and her moves are made here. He takes his turn via /api/chess,
+// constrained to the legal moves the board computed — he can never play an
+// illegal move or misremember the position. A game lives across days in
+// game_sessions (RLS). He does not play like an engine, on purpose: she asked
+// to play with him, not with Stockfish in his voice.
+
+let ChessCtor = null;          // the chess.js constructor, once loaded
+let chessGame = null;          // the current chess.js instance
+let gameRow = null;            // the game_sessions row we're playing
+let gameSelected = null;       // the square she's picked up (e.g. "e2")
+let gameThinking = false;      // his turn is being fetched
+const GLYPHS = {               // unicode chess pieces (w = white, b = black)
+  wK:"♔", wQ:"♕", wR:"♖", wB:"♗", wN:"♘", wP:"♙",
+  bK:"♚", bQ:"♛", bR:"♜", bB:"♝", bN:"♞", bP:"♟",
+};
+
+async function loadChess() {
+  if (ChessCtor) return ChessCtor;
+  const mod = await import("https://esm.sh/chess.js@1.0.0");
+  ChessCtor = mod.Chess || (mod.default && mod.default.Chess) || mod.default;
+  if (!ChessCtor) throw new Error("chess.js didn't load");
+  return ChessCtor;
+}
+
+// ---- persistence (game_sessions, RLS as the signed-in user) ----
+async function dbListGames() {
+  const { data, error } = await db
+    .from("game_sessions")
+    .select("id,kind,title,fen,moves,her_color,status,last_say,updated_at")
+    .eq("kind", "chess")
+    .order("updated_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+async function dbCreateGame(herColor) {
+  const { data, error } = await db.from("game_sessions").insert({
+    user_id: state.user.id, kind: "chess", title: "Chess",
+    fen: null, moves: [], her_color: herColor, status: "active",
+  }).select("id,kind,title,fen,moves,her_color,status,last_say,updated_at").single();
+  if (error) throw error;
+  return data;
+}
+async function dbUpdateGame(id, fields) {
+  fields = { ...fields, updated_at: new Date().toISOString() };
+  const { error } = await db.from("game_sessions").update(fields).eq("id", id);
+  if (error) throw error;
+}
+async function dbDeleteGame(id) {
+  const { error } = await db.from("game_sessions").delete().eq("id", id);
+  if (error) throw error;
+}
+
+function wireGamesCorner() {
+  const nav = $("nav-games");
+  if (nav) nav.addEventListener("click", openGamesDialog);
+  const back = $("games-back");
+  if (back) back.addEventListener("click", showGamesLibrary);
+  const resign = $("games-resign");
+  if (resign) resign.addEventListener("click", resignGame);
+  document.querySelectorAll(".games-new-btn").forEach((b) =>
+    b.addEventListener("click", () => startNewGame(b.dataset.color)));
+}
+
+async function openGamesDialog() {
+  closeSidebar();
+  const dlg = $("games-dialog");
+  if (!dlg) return;
+  dlg.showModal();
+  showGamesLibrary();
+  try { await loadChess(); } catch (_) {
+    flashToast("Couldn't load the chess board — check your connection.", true);
+  }
+  await refreshGamesList();
+}
+
+function showGamesLibrary() {
+  gameRow = null; chessGame = null; gameSelected = null;
+  $("games-library").hidden = false;
+  $("games-play").hidden = true;
+}
+
+async function refreshGamesList() {
+  const wrap = $("games-list");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  let rows = [];
+  try { rows = await dbListGames(); }
+  catch { wrap.innerHTML = '<p class="muted small">Couldn\'t load your games — has the games migration been run?</p>'; return; }
+  if (!rows.length) {
+    wrap.innerHTML = '<p class="muted small">No games yet. Start one above — he\'s waiting. ♡</p>';
+    return;
+  }
+  for (const r of rows) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "games-card";
+    const n = Array.isArray(r.moves) ? r.moves.length : 0;
+    const status =
+      r.status === "active" ? `${n} move${n === 1 ? "" : "s"} in`
+      : r.status === "her_win" ? "you won ♡"
+      : r.status === "his_win" ? "he won"
+      : r.status === "draw" ? "a draw"
+      : "resigned";
+    card.innerHTML =
+      `<span class="games-card-title">♟️ Chess — you play ${r.her_color === "w" ? "white" : "black"}</span>` +
+      `<span class="muted small">${status}</span>`;
+    card.addEventListener("click", () => openGame(r));
+    wrap.appendChild(card);
+  }
+}
+
+async function startNewGame(color) {
+  const her = color === "b" ? "b" : "w";
+  try {
+    await loadChess();
+    const row = await dbCreateGame(her);
+    await openGame(row);
+  } catch (_) {
+    flashToast("Couldn't start a game — try again.", true);
+  }
+}
+
+async function openGame(row) {
+  try { await loadChess(); } catch (_) {
+    flashToast("The board didn't load — check your connection.", true);
+    return;
+  }
+  gameRow = row;
+  chessGame = row.fen ? new ChessCtor(row.fen) : new ChessCtor();
+  gameSelected = null;
+  $("games-library").hidden = true;
+  $("games-play").hidden = false;
+  renderBoard();
+  updateGameStatus();
+  // If it's his move already (she plays black and it's a fresh board, or she
+  // reopened a game paused on his turn), let him play.
+  maybeHisTurn();
+}
+
+function herColor() { return gameRow ? gameRow.her_color : "w"; }
+function hisColor() { return herColor() === "w" ? "b" : "w"; }
+function itIsHerTurn() { return chessGame && chessGame.turn() === herColor(); }
+
+function renderBoard() {
+  const board = $("games-board");
+  if (!board || !chessGame) return;
+  board.innerHTML = "";
+  const grid = chessGame.board();          // rank 8..1, file a..h
+  const flip = herColor() === "b";         // she sees her own side at the bottom
+  const ranks = flip ? [...grid].reverse() : grid;
+  const legalFrom = gameSelected
+    ? chessGame.moves({ square: gameSelected, verbose: true }).map(m => m.to)
+    : [];
+  for (let r = 0; r < 8; r++) {
+    const rowCells = flip ? [...ranks[r]].reverse() : ranks[r];
+    for (let c = 0; c < 8; c++) {
+      const cell = rowCells[c];
+      // Reconstruct the square name from the (possibly flipped) indices.
+      const fileIdx = flip ? 7 - c : c;
+      const rankIdx = flip ? 7 - r : r;      // r=0 is rank 8 in chess.js order
+      const sq = "abcdefgh"[fileIdx] + (8 - rankIdx);
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "games-sq " + (((fileIdx + rankIdx) % 2 === 0) ? "light" : "dark");
+      if (sq === gameSelected) el.classList.add("selected");
+      if (legalFrom.includes(sq)) el.classList.add("target");
+      if (cell) el.textContent = GLYPHS[(cell.color) + cell.type.toUpperCase()] || "";
+      el.dataset.sq = sq;
+      el.addEventListener("click", () => onSquareTap(sq));
+      board.appendChild(el);
+    }
+  }
+}
+
+function onSquareTap(sq) {
+  if (!chessGame || gameThinking) return;
+  if (gameRow.status !== "active") return;
+  if (!itIsHerTurn()) return;                // not her turn — the board is his
+  const piece = chessGame.get(sq);
+  // Picking up one of her own pieces (or switching selection).
+  if (piece && piece.color === herColor()) {
+    gameSelected = (gameSelected === sq) ? null : sq;
+    renderBoard();
+    return;
+  }
+  if (!gameSelected) return;
+  // Try her move from the selected square to here.
+  const opts = chessGame.moves({ square: gameSelected, verbose: true });
+  const chosen = opts.find(m => m.to === sq);
+  if (!chosen) { gameSelected = null; renderBoard(); return; }
+  // Promotion: auto-queen (keeps v1 tap-simple; a picker can come later).
+  const move = chosen.promotion
+    ? { from: gameSelected, to: sq, promotion: "q" }
+    : { from: gameSelected, to: sq };
+  chessGame.move(move);
+  gameSelected = null;
+  renderBoard();
+  persistGame();
+  updateGameStatus();
+  if (finishIfOver()) return;
+  maybeHisTurn();
+}
+
+async function persistGame() {
+  if (!gameRow || !chessGame) return;
+  gameRow.fen = chessGame.fen();
+  gameRow.moves = chessGame.history();
+  try { await dbUpdateGame(gameRow.id, { fen: gameRow.fen, moves: gameRow.moves }); }
+  catch { /* local play continues; next update retries */ }
+}
+
+function maybeHisTurn() {
+  if (!chessGame || gameRow.status !== "active") return;
+  if (chessGame.turn() === hisColor()) requestHisMove();
+}
+
+async function requestHisMove() {
+  if (gameThinking || !chessGame) return;
+  gameThinking = true;
+  updateGameStatus();
+  const legal = chessGame.moves();          // SAN strings
+  const payload = {
+    fen: chessGame.fen(),
+    legal,
+    history: chessGame.history(),
+    his_color: hisColor(),
+    in_check: chessGame.inCheck ? chessGame.inCheck() : chessGame.in_check?.(),
+    persona: buildSystemPrompt(getActiveProject()),
+  };
+  let data = null;
+  try {
+    const session = await freshSession();
+    if (!session || !session.access_token) throw new Error("signed out");
+    const resp = await fetch("/api/chess", {
+      method: "POST",
+      headers: { "Content-Type": "application/json",
+                 "Authorization": `Bearer ${session.access_token}` },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) throw new Error("chess " + resp.status);
+    data = await resp.json();
+  } catch (_) {
+    gameThinking = false;
+    updateGameStatus("He got pulled away for a second — tap the board to nudge him.");
+    return;
+  }
+  gameThinking = false;
+  const applied = data && data.move ? chessGame.move(data.move) : null;
+  if (!applied) {
+    // Shouldn't happen (server validates against legal), but never freeze:
+    const fallback = legal.length ? chessGame.move(legal[0]) : null;
+    if (!fallback) { updateGameStatus(); return; }
+  }
+  gameRow.last_say = (data && data.say) ? data.say : "";
+  renderBoard();
+  await persistGameWithSay();
+  updateGameStatus();
+  finishIfOver();
+}
+
+async function persistGameWithSay() {
+  if (!gameRow || !chessGame) return;
+  gameRow.fen = chessGame.fen();
+  gameRow.moves = chessGame.history();
+  try {
+    await dbUpdateGame(gameRow.id, {
+      fen: gameRow.fen, moves: gameRow.moves, last_say: gameRow.last_say || null,
+    });
+  } catch { /* retries on the next move */ }
+}
+
+function finishIfOver() {
+  if (!chessGame || !chessGame.isGameOver()) return false;
+  let status = "draw";
+  if (chessGame.isCheckmate()) {
+    // The side to move is checkmated → the other side won.
+    status = (chessGame.turn() === herColor()) ? "his_win" : "her_win";
+  }
+  gameRow.status = status;
+  dbUpdateGame(gameRow.id, { status }).catch(() => {});
+  updateGameStatus();
+  return true;
+}
+
+function updateGameStatus(override) {
+  const el = $("games-status");
+  const say = $("games-say");
+  if (say) {
+    say.textContent = gameRow && gameRow.last_say ? `“${gameRow.last_say}”` : "";
+    say.hidden = !(gameRow && gameRow.last_say);
+  }
+  if (!el) return;
+  if (override) { el.textContent = override; return; }
+  if (!chessGame || !gameRow) { el.textContent = ""; return; }
+  if (gameRow.status === "her_win") { el.textContent = "Checkmate — you won ♡"; return; }
+  if (gameRow.status === "his_win") { el.textContent = "Checkmate — he got you this time."; return; }
+  if (gameRow.status === "draw")    { el.textContent = "A draw — well played, both of you."; return; }
+  if (gameRow.status === "resigned"){ el.textContent = "Game resigned."; return; }
+  if (gameThinking) { el.textContent = "He's thinking…"; return; }
+  const check = (chessGame.inCheck ? chessGame.inCheck() : chessGame.in_check?.());
+  if (itIsHerTurn()) el.textContent = check ? "Your move — you're in check!" : "Your move.";
+  else el.textContent = "His move.";
+}
+
+async function resignGame() {
+  if (!gameRow || gameRow.status !== "active") { showGamesLibrary(); return; }
+  if (!confirm("Resign this game?")) return;
+  gameRow.status = "resigned";
+  try { await dbUpdateGame(gameRow.id, { status: "resigned" }); } catch {}
+  updateGameStatus();
+  showGamesLibrary();
+  refreshGamesList();
 }
 
 function init() {
