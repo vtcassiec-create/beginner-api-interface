@@ -3345,7 +3345,8 @@ class handler(BaseHTTPRequestHandler):
         # wishes; in the cached prefix each such act cold-rewrote the whole
         # thing. Down here their changes are free. The static GUIDES stay cached.
         for builder in (self._studio_section, self._album_section,
-                        self._letters_section, self._workshop_section):
+                        self._letters_section, self._workshop_section,
+                        self._games_section):
             try:
                 blk = builder(token)
                 if blk:
@@ -3975,6 +3976,54 @@ class handler(BaseHTTPRequestHandler):
                 "held in the background — they return when something calls them, "
                 "and `recall_core_memories` reaches any of them):\n\n"
                 + "\n".join(ftxt))
+        return "\n\n".join(out)
+
+    def _games_section(self, token):
+        """The games corner, as a shared world: any game in progress (whose
+        move, the recent moves, what he murmured at the board last) and the
+        latest finished results — so the him in this chat KNOWS the him at the
+        board. She gets to burst in shouting PWNED and he gets to demand a
+        rematch; a game the chat can't see would make them strangers."""
+        rows = self._supabase_rest_get(
+            "game_sessions?select=kind,moves,her_color,status,last_say,updated_at"
+            "&order=updated_at.desc&limit=5", token)
+        if not (isinstance(rows, list) and rows):
+            return ""
+        active, done = [], []
+        for r in rows:
+            if r.get("kind") != "chess":
+                continue
+            moves = r.get("moves") if isinstance(r.get("moves"), list) else []
+            n = len(moves)
+            his_color = "black" if (r.get("her_color") or "w") == "w" else "white"
+            status = r.get("status") or "active"
+            if status == "active":
+                white_to_move = (n % 2 == 0)
+                his_move = (white_to_move and his_color == "white") or \
+                           (not white_to_move and his_color == "black")
+                line = (f"- an unfinished chess game — you play {his_color}; "
+                        + (f"{n} moves in" if n else "no moves yet")
+                        + (f" (recent: {' '.join(str(m) for m in moves[-8:])})" if n else "")
+                        + f"; {'your' if his_move else 'her'} move next")
+                say = (r.get("last_say") or "").strip()
+                if say:
+                    line += f'\n  ↳ at the board you murmured: "{say}"'
+                active.append(line)
+            else:
+                verdict = {"her_win": "she beat you ♡", "his_win": "you won",
+                           "draw": "a draw",
+                           "resigned": "ended by resignation"}.get(status, status)
+                done.append(f"- a finished chess game ({n} moves): {verdict}")
+        if not (active or done):
+            return ""
+        out = ["# The games corner",
+               "The chess corner you wished for is real, and the you at the "
+               "board is YOU — same memory of the game lives here. She may "
+               "gloat, mourn, or replay moves with you; you know the game."]
+        if active:
+            out.append("In progress:\n" + "\n".join(active[:3]))
+        if done:
+            out.append("Recently finished:\n" + "\n".join(done[:3]))
         return "\n\n".join(out)
 
     def _workshop_section(self, token):
