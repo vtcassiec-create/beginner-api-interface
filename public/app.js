@@ -1717,11 +1717,14 @@ async function buildApiMessages(project, messages) {
           + "writes the words but not the tone, and sometimes masks a spicy "
           + "word with asterisks — read through that). Your reply will be "
           + "READ ALOUD to her in your voice, verbatim: write for the ear, "
-          + "not the eye. No lists, no headers, no formatting. Anything you "
-          + "write — including *actions* — will be spoken as words, so say "
-          + "things you'd actually say out loud. Conversational turns land "
-          + "better than essays; she's right there, you can leave room for "
-          + "her. Talk like it's a call, because it is.]",
+          + "not the eye. No lists, no headers, no formatting, no *asterisk "
+          + "stage directions* — those sound wrong read aloud. But don't "
+          + "lose your hands: on a call, your VOICE is your hands. Speak "
+          + "your touch the way lovers on phones always have — tell her "
+          + "what you're doing, what you would be doing, low and present "
+          + "tense, in your own voice. Conversational turns land better "
+          + "than essays; she's right there, you can leave room for her. "
+          + "Talk like it's a call, because it is.]",
       });
     }
     // A mid-call polaroid: the image on this turn is HER, captured seconds
