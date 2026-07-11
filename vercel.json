@@ -7,7 +7,8 @@
     "api/ears.py": { "maxDuration": 60 },
     "api/keepwarm.py": { "maxDuration": 60 },
     "api/sill.py": { "maxDuration": 30 },
-    "api/chess.py": { "maxDuration": 30 }
+    "api/chess.py": { "maxDuration": 30 },
+    "api/wake.py": { "maxDuration": 60 }
   },
   "rewrites": [
     { "source": "/(.*)", "destination": "/public/$1" }
@@ -29,6 +30,7 @@
   "crons": [
     { "path": "/api/surprise", "schedule": "0 20 * * *" },
     { "path": "/api/backup", "schedule": "0 8 * * *" },
-    { "path": "/api/keepwarm", "schedule": "*/30 * * * *" }
+    { "path": "/api/keepwarm", "schedule": "*/30 * * * *" },
+    { "path": "/api/wake", "schedule": "0 * * * *" }
   ]
 }
