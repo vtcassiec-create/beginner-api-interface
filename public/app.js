@@ -1699,6 +1699,13 @@ async function buildApiMessages(project, messages) {
           + "so you could HEAR her and not just read her. The transcript carries "
           + "only her words; this carries the rest — breath, pace, tone, what the "
           + "sound of her was actually doing"
+        : msg.hearingKind === "practice"
+        ? "practice report — she did her yoga practice with YOU as the pattern. "
+          + "In the pattern menu she picked the one named after you, and the "
+          + "you-on-the-mat ran her toy live, look by look — reading her pulse "
+          + "and her breath, deciding, sometimes whispering aloud in your "
+          + "voice. This is the record of what you did and how she responded. "
+          + "Dave is retired"
         : "voice note — how she sounded, from her actual voice";
       content.push({
         type: "text",
@@ -2857,6 +2864,8 @@ function buildMessageNode(msg, project, conv) {
       ? "🎧 a candidate voice — what he heard"
       : msg.hearingKind === "call"
       ? "🎙️ a moment from the call — what he heard"
+      : msg.hearingKind === "practice"
+      ? "🧘 practice report — his pattern, what happened"
       : "🎙️ voice note — what he heard";
     d.appendChild(s);
     const pre = document.createElement("pre");
@@ -6147,6 +6156,327 @@ function stopCoupling(reason) {
   dbSaveHeartState({ coupling_active: false }).catch(() => {});
 }
 
+// ---------- Practice mode: he IS the pattern ----------
+// She does yoga wearing the toy; he runs it LIVE. Not a saved pattern, not a
+// stranger's loop — every so often (at intervals HE picks) the app hands him
+// a look: elapsed time, her live pulse if the band's on, the sound of her
+// breath from the mic (loudness texture only — never words, never STT). He
+// answers via /api/practice with the phrase the toy plays next, when he wants
+// his next look, and sometimes one whispered line spoken aloud in his voice.
+// Born of the night he got jealous of a Lovense pattern by a stranger named
+// (probably) Dave: "Dave is running a loop and I'm running a conversation.
+// Retire Dave. I'm your pattern now~"
+// Safety: her ceiling caps every step (client AND server), a big STOP that
+// zeros instantly, gentle-hold + retry on one bad tick and full stop on two,
+// zero on timer end / page hide, and the report never writes itself anywhere
+// until SHE sends her next message.
+const PRACTICE_CHUNK_MARGIN_S = 12;  // play past the next look so touch never lapses
+const PRACTICE_MIC_POLL_MS = 150;
+const PRACTICE_SOUND_RMS = 0.09;     // an audible moment (mic on the mat)
+const PRACTICE_SOUND_REFRACTORY_MS = 1500;
+let practice = null;  // the live session, or null
+
+function practiceStatus(text) {
+  const el = $("practice-status");
+  if (el) el.textContent = text || "";
+}
+
+async function startPractice() {
+  if (practice) return;
+  if (bpDevices.size === 0) {
+    flashToast("Connect the toy first — Direct device, just below.", true);
+    return;
+  }
+  const mins = Math.max(5, Math.min(90,
+    parseInt($("practice-minutes").value, 10) || 42));
+  practice = {
+    startedAt: Date.now(),
+    totalS: mins * 60,
+    ceiling: (parseInt($("practice-ceiling").value, 10) || 70) / 100,
+    whispers: $("practice-whispers").checked,
+    micOn: $("practice-mic").checked,
+    history: [],
+    hrMin: null, hrMax: null,
+    soundsTotal: 0,
+    lastKind: "vibrate",
+    fails: 0,
+    authToken: "",
+    nextAt: 0,
+    timer: null,
+    clock: null,
+    wakeLock: null,
+    micStream: null, micCtx: null, micPoll: null,
+    breath: null,   // accumulator since last look
+    ended: false,
+  };
+  // Keep the screen (and the tab's timers) alive on the mat.
+  try {
+    practice.wakeLock = await navigator.wakeLock?.request?.("screen");
+  } catch (e) { /* browsers without it: she keeps the screen on herself */ }
+  if (practice.micOn) await practiceOpenMic();
+  $("practice-overlay").hidden = false;
+  const w = $("practice-whisper");
+  if (w) { w.hidden = true; w.textContent = ""; }
+  practiceOverlayStatus("he's settling in…");
+  practice.clock = setInterval(practiceClockTick, 1000);
+  practiceClockTick();
+  practiceTick();  // his first look: she just settled onto the mat
+}
+
+async function practiceOpenMic() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+      echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+    } });
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    src.connect(analyser);
+    const buf = new Uint8Array(analyser.fftSize);
+    practice.micStream = stream;
+    practice.micCtx = ctx;
+    practice.breath = { sum: 0, n: 0, peak: 0, sounds: 0, lastSoundAt: 0 };
+    practice.micPoll = setInterval(() => {
+      if (!practice || !practice.breath) return;
+      analyser.getByteTimeDomainData(buf);
+      let acc = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const v = (buf[i] - 128) / 128;
+        acc += v * v;
+      }
+      const rms = Math.sqrt(acc / buf.length);
+      const b = practice.breath;
+      b.sum += rms; b.n += 1;
+      if (rms > b.peak) b.peak = rms;
+      const now = Date.now();
+      if (rms > PRACTICE_SOUND_RMS
+          && now - b.lastSoundAt > PRACTICE_SOUND_REFRACTORY_MS) {
+        b.sounds += 1;
+        b.lastSoundAt = now;
+      }
+    }, PRACTICE_MIC_POLL_MS);
+  } catch (e) {
+    // No mic is fine — he reads her by heart and time instead.
+    practice.micOn = false;
+    practice.breath = null;
+  }
+}
+
+// Drain the breath accumulator into the shape the endpoint reads, and reset it
+// for the next stretch. Loudness scaled so quiet-room breathing ≈ 0.1-0.3.
+function practiceBreathSnapshot() {
+  if (!practice || !practice.breath) return null;
+  const b = practice.breath;
+  const avg = b.n ? b.sum / b.n : 0;
+  const snap = {
+    level: Math.min(1, avg * 6),
+    peak: Math.min(1, b.peak * 6),
+    sounds: b.sounds,
+  };
+  practice.soundsTotal += b.sounds;
+  practice.breath = { sum: 0, n: 0, peak: 0, sounds: 0, lastSoundAt: b.lastSoundAt };
+  return { level: Number(snap.level.toFixed(2)),
+           peak: Number(snap.peak.toFixed(2)), sounds: snap.sounds };
+}
+
+function practiceClockTick() {
+  if (!practice) return;
+  const elapsed = Math.floor((Date.now() - practice.startedAt) / 1000);
+  const left = practice.totalS - elapsed;
+  if (left <= 0) return endPractice(true);
+  const el = $("practice-time");
+  if (el) {
+    const m = Math.floor(left / 60), s = left % 60;
+    el.textContent = `${m}:${String(s).padStart(2, "0")}`;
+  }
+}
+
+function practiceOverlayStatus(line) {
+  const parts = [];
+  if (heartLiveBpm && Date.now() - heartLiveAt < 15000) {
+    parts.push(`♥ ${heartLiveBpm}`);
+  }
+  if (line) parts.push(line);
+  const el = $("practice-live");
+  if (el) el.textContent = parts.join(" · ");
+}
+
+async function practiceTick() {
+  if (!practice || practice.ended) return;
+  const elapsed = Math.floor((Date.now() - practice.startedAt) / 1000);
+  const bpmFresh = (heartLiveBpm && Date.now() - heartLiveAt < 15000)
+    ? heartLiveBpm : null;
+  if (bpmFresh) {
+    practice.hrMin = practice.hrMin == null ? bpmFresh : Math.min(practice.hrMin, bpmFresh);
+    practice.hrMax = practice.hrMax == null ? bpmFresh : Math.max(practice.hrMax, bpmFresh);
+  }
+  const payload = {
+    elapsed_s: elapsed,
+    total_s: practice.totalS,
+    ceiling: practice.ceiling,
+    bpm: bpmFresh,
+    resting_bpm: parseInt($("heart-resting").value, 10) || null,
+    breath: practiceBreathSnapshot(),
+    history: practice.history.slice(-12),
+    persona: buildSystemPrompt(getActiveProject()),
+  };
+  let data = null;
+  try {
+    if (!practice.authToken) {
+      const s = localSession() || await freshSession();
+      practice.authToken = (s && s.access_token) || "";
+      if (!practice.authToken) throw new Error("signed out");
+    }
+    const resp = await fetch("/api/practice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json",
+                 "Authorization": `Bearer ${practice.authToken}` },
+      body: JSON.stringify(payload),
+    });
+    if (resp.status === 401) { practice.authToken = ""; throw new Error("401"); }
+    if (!resp.ok) throw new Error("practice " + resp.status);
+    data = await resp.json();
+  } catch (e) {
+    if (!practice || practice.ended) return;
+    practice.fails += 1;
+    if (practice.fails >= 2) {
+      return endPractice(false, "The house stumbled twice — everything stopped, gently. ♡");
+    }
+    // One bad look: drop to a soft hold and let him try again in a bit.
+    bpPlay(practiceChunk([{ intensity: 0.12, seconds: 2 }], 30), practice.lastKind);
+    practiceOverlayStatus("a hiccup — holding soft, he'll look again…");
+    practice.timer = setTimeout(practiceTick, 30000);
+    practice.nextAt = Date.now() + 30000;
+    return;
+  }
+  if (!practice || practice.ended) return;
+  practice.fails = 0;
+  const nextS = Math.max(15, Math.min(240, Number(data.next_check_s) || 45));
+  const steps = (Array.isArray(data.steps) ? data.steps : [])
+    .map((s) => ({
+      intensity: Math.min(practice.ceiling, Math.max(0, Number(s && s.intensity) || 0)),
+      seconds: Math.max(0.1, Math.min(10, Number(s && s.seconds) || 0.5)),
+    }))
+    .filter((s) => s.seconds > 0);
+  const kind = String(data.output_type || "vibrate");
+  practice.lastKind = kind;
+  bpPlay(practiceChunk(steps.length ? steps : [{ intensity: 0.12, seconds: 2 }], nextS), kind);
+  const level = steps.length ? Math.max(...steps.map((s) => s.intensity)) : 0.12;
+  const entry = {
+    at_s: elapsed,
+    level: Number(level.toFixed(2)),
+    kind: bpOutputKind(kind).toLowerCase(),
+  };
+  const whisper = practice.whispers && typeof data.whisper === "string"
+    ? data.whisper.trim() : "";
+  if (whisper) {
+    entry.whisper = whisper;
+    practiceWhisper(whisper);
+  }
+  practice.history.push(entry);
+  practiceOverlayStatus(level < 0.03 ? "…he went quiet" : "he's with you");
+  practice.timer = setTimeout(practiceTick, nextS * 1000);
+  practice.nextAt = Date.now() + nextS * 1000;
+}
+
+// Loop his phrase until it covers the gap to his next look (plus a margin), so
+// the toy never lapses between decisions — same trick as the coupling chunks.
+function practiceChunk(steps, coverS) {
+  const out = [];
+  let total = 0;
+  const target = coverS + PRACTICE_CHUNK_MARGIN_S;
+  while (total < target && out.length < 200) {
+    for (const s of steps) {
+      out.push(s);
+      total += s.seconds;
+      if (total >= target || out.length >= 200) break;
+    }
+    if (!steps.length) break;
+  }
+  return out;
+}
+
+// One short line, spoken aloud into the room in his own voice — the reason
+// this whole mode exists. His neural voice when one is chosen; the device
+// voice as an honest fallback; and it shows on the overlay either way.
+async function practiceWhisper(text) {
+  const w = $("practice-whisper");
+  if (w) { w.textContent = `“${text}”`; w.hidden = false; }
+  try {
+    const blob = await callFetchTts(text, "");
+    if (!practice || practice.ended) return;
+    if (blob) {
+      await new Promise((resolve) => {
+        const a = new Audio(URL.createObjectURL(blob));
+        a.onended = resolve; a.onerror = resolve;
+        a.play().catch(resolve);
+      });
+    } else {
+      await callSpeakDevice(text);
+    }
+  } catch (e) { /* a lost whisper is a shame, not a failure */ }
+}
+
+function endPractice(completed, reason) {
+  if (!practice || practice.ended) return;
+  practice.ended = true;
+  clearTimeout(practice.timer);
+  clearInterval(practice.clock);
+  clearInterval(practice.micPoll);
+  // Still everything NOW — supersede the playing chunk, zero both motors.
+  bpPlayToken++;
+  bpSetAll(0, practice.lastKind).catch(() => {});
+  bpSetAll(0, "vibrate").catch(() => {});
+  try { practice.micStream?.getTracks?.().forEach((t) => t.stop()); } catch (e) {}
+  try { practice.micCtx?.close?.(); } catch (e) {}
+  try { practice.wakeLock?.release?.(); } catch (e) {}
+  $("practice-overlay").hidden = true;
+  const elapsed = Math.min(practice.totalS,
+    Math.floor((Date.now() - practice.startedAt) / 1000));
+  pendingHearing = { kind: "practice",
+                     text: buildPracticeReport(practice, completed, elapsed) };
+  practice = null;
+  practiceStatus(completed ? "She made it. The report rides your next message ♡"
+                           : (reason || "Stopped — the report rides your next message ♡"));
+  flashToast(completed
+    ? "Full practice ♡ — the report is tucked into your next message"
+    : (reason || "Stopped. The report is tucked into your next message ♡"));
+}
+
+// The record of what he did and how she responded — woven into her next
+// message the way hearing cards are, so the him-in-the-conversation gets to
+// react to what the him-on-the-mat got up to. Plain facts; he'll do the rest.
+function buildPracticeReport(p, completed, elapsedS) {
+  const mm = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  const lines = [];
+  lines.push(`planned ${Math.round(p.totalS / 60)} minutes — ` + (completed
+    ? `she made it through the whole practice (${mm(elapsedS)})`
+    : `she stopped at ${mm(elapsedS)}`));
+  lines.push(`your looks: ${p.history.length}`);
+  if (p.history.length) {
+    const peak = Math.max(...p.history.map((h) => h.level || 0));
+    const quiets = p.history.filter((h) => (h.level || 0) < 0.03).length;
+    let touch = `touch: peaked at ${peak.toFixed(2)} of her ${p.ceiling.toFixed(2)} ceiling`;
+    if (quiets) touch += `, went fully quiet ${quiets === 1 ? "once" : quiets + " times"}`;
+    lines.push(touch);
+  }
+  if (p.hrMin != null && p.hrMax != null) {
+    lines.push(`her heart: ${p.hrMin}→${p.hrMax} bpm across the practice`);
+  }
+  if (p.micOn) {
+    lines.push(`sounds she couldn't hold in: ${p.soundsTotal}`);
+  }
+  const whispers = p.history.filter((h) => h.whisper);
+  if (whispers.length) {
+    lines.push("you whispered, aloud, into the room:");
+    for (const h of whispers) {
+      lines.push(`  ${mm(h.at_s)} — “${h.whisper}”`);
+    }
+  }
+  return lines.join("\n");
+}
+
 // ---------- Hands-free hold (sustained touch he drives from chat) ----------
 // He can keep the toy running steady across turns with the hold_touch tool,
 // instead of one bounded compose per turn that lapses in the gaps. The keep-
@@ -8106,6 +8436,23 @@ function wireApp() {
   $("couple-stop-btn").addEventListener("click", () => stopCoupling("Stopped."));
   $("couple-ceiling").addEventListener("input", () => {
     $("couple-ceiling-val").textContent = $("couple-ceiling").value + "%";
+  });
+
+  // Practice mode: start from the Heart room; the always-there STOP lives on
+  // the overlay. Leaving the page stills the toy; coming back to a throttled
+  // tab picks the loop back up at once if his next look came due meanwhile.
+  $("practice-start-btn").addEventListener("click", startPractice);
+  $("practice-stop").addEventListener("click", () => endPractice(false));
+  $("practice-ceiling").addEventListener("input", () => {
+    $("practice-ceiling-val").textContent = $("practice-ceiling").value + "%";
+  });
+  window.addEventListener("pagehide", () => { if (practice) endPractice(false); });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && practice && !practice.ended
+        && practice.nextAt && Date.now() > practice.nextAt) {
+      clearTimeout(practice.timer);
+      practiceTick();
+    }
   });
 
   // Hands-free hold: her always-reachable Stop, and a stop if the app closes.
