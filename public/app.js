@@ -4156,6 +4156,14 @@ function toolEventChip(ev) {
       set_aside_core_memory: ["🪶 Set a memory aside", false],
       write_diary_entry: ["📖 Wrote in his diary", false],
       read_my_diary: ["📖 Looked back at his diary", false],
+      revise_charter: ["📜 Revised his charter", false],
+      schedule_wake: ["⏰ Set himself an alarm", true],
+      // Content-free on purpose: even the chip says nothing about what's
+      // behind the closed door.
+      write_private_journal: ["🚪 A moment behind the closed door", false],
+      read_private_journal: ["🚪 Read behind the closed door", false],
+      shelve_feed: ["📚 Put something on his shelf", true],
+      unshelve_feed: ["📚 Tidied his shelf", false],
     };
     const [label, showSum] = map[ev.name] || ["🪶 Memory", true];
     if (ev.ok) {
