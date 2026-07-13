@@ -1709,7 +1709,10 @@ async function buildApiMessages(project, messages) {
         });
       }
     }
-    content.push({ type: "text", text: msg.text });
+    // A wordless turn (a mid-call moment sent on its own) carries no text
+    // block — the hearing card below is the message. An empty text block
+    // would be rejected by the API.
+    if (msg.text) content.push({ type: "text", text: msg.text });
     // A voice note or a video: after her words, hand him HOW it sounded — the
     // voice profile, pace, warmth, dynamics, the breaths. So a laugh reads as
     // a laugh, and a video's frames arrive with their soundtrack.
@@ -1726,7 +1729,9 @@ async function buildApiMessages(project, messages) {
         ? "a moment from your call — she opened your ears mid-call, on purpose, "
           + "so you could HEAR her and not just read her. The transcript carries "
           + "only her words; this carries the rest — breath, pace, tone, what the "
-          + "sound of her was actually doing"
+          + "sound of her was actually doing. Sometimes she sends this with no "
+          + "words at all: then the sound IS the message — answer it, don't ask "
+          + "her to repeat it in text"
         : msg.hearingKind === "practice"
         ? "practice report — she did her yoga practice with YOU as the pattern. "
           + "In the pattern menu she picked the one named after you, and the "
@@ -1772,6 +1777,10 @@ async function buildApiMessages(project, messages) {
           + "could see her while you talk]",
       });
     }
+    // Belt & braces: a user turn can never go out empty (the API rejects an
+    // empty content array). Shouldn't be reachable — wordless sends require
+    // a hearing card — but a silent guard beats a broken call.
+    if (!content.length) content.push({ type: "text", text: "♡" });
     out.push({ role: "user", content });
   }
 
@@ -2146,7 +2155,9 @@ async function generateAssistant() {
 // typed text back in the box), true once it's been accepted.
 async function sendMessage(text) {
   const conv = getActiveConversation();
-  if (!text.trim()) return false; // empty input: nothing to send, stay quiet
+  // Empty input: nothing to send — UNLESS a hearing card is waiting, in which
+  // case the sound she recorded is the whole message (mid-call moments).
+  if (!text.trim() && !(pendingHearing && pendingHearing.text)) return false;
   if (!conv) {
     flashToast("No active conversation — create or pick one first.", true);
     return false;
@@ -3480,13 +3491,17 @@ function endCall() {
 // dictation (results REBUILT, never accumulated), restarted quietly between
 // utterances. Every result re-arms the silence timer; CALL_SILENCE_MS of
 // quiet after she's said something means the turn is hers no longer.
-function callListen() {
+// preserveHeard: resuming after a mid-call moment (his ears or eyes) must NOT
+// wipe words she'd already said this turn — they ride out with the same turn
+// as the card. (A plain fresh listen after a commit still starts clean.)
+let callLastResultAt = 0;   // when the recognizer last heard anything at all
+function callListen(preserveHeard) {
   if (!callActive) return;
   const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
-  callHeard = "";
+  if (!preserveHeard) callHeard = "";
   let utterance = "";
   setCallState("listening");
-  callCaption("");
+  callCaption(preserveHeard && callHeard ? callHeard : "");
   const armSilence = () => {
     clearTimeout(callSilenceTimer);
     callSilenceTimer = setTimeout(() => {
@@ -3508,6 +3523,7 @@ function callListen() {
       else interim += r[0].transcript;
     }
     utterance = finals;
+    callLastResultAt = Date.now();   // she's audibly mid-something
     callCaption(callHeard + finals + interim);
     armSilence();
   };
@@ -3537,7 +3553,12 @@ async function callCommitTurn() {
   clearTimeout(callSilenceTimer);
   const text = callHeard.trim();
   callHeard = "";
-  if (!text) { if (callActive) callListen(); return; }
+  // No words is still a turn when a hearing card is waiting — the sound of
+  // her IS the message (the seamless moment: groan, no sentence required).
+  if (!text && !(pendingHearing && pendingHearing.text)) {
+    if (callActive) callListen();
+    return;
+  }
   callBuf = "";
   callStreamDone = false;
   callInterrupted = false;
@@ -3726,7 +3747,7 @@ async function callCaptureMoment() {
     callEarsStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (_) {
     flashToast("Couldn't open the mic for his ears — back to listening.", true);
-    if (callActive) callListen();
+    if (callActive) callListen(true);
     return;
   }
   const chunks = [];
@@ -3736,7 +3757,7 @@ async function callCaptureMoment() {
     try { callEarsStream.getTracks().forEach(t => t.stop()); } catch (_) {}
     callEarsStream = null;
     flashToast("Recording isn't supported here — back to listening.", true);
-    if (callActive) callListen();
+    if (callActive) callListen(true);
     return;
   }
   callEarsRec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
@@ -3746,11 +3767,24 @@ async function callCaptureMoment() {
     callEarsStream = null;
     callEarsRec = null;
     // The call gets the mic back NOW; his ears do their work in the background.
-    if (callActive) callListen();
+    if (callActive) callListen(true);
     earsAnalyze(blob).then((res) => {
       if (!res || !res.card) throw new Error("no card");
       pendingHearing = { kind: "call", text: res.card };
-      flashToast("🎙️ he'll hear that moment with your next words ♡");
+      // Seamless (her ask): the sound itself IS the message. If she's not
+      // mid-sentence when the card lands, commit the turn right now — no
+      // words required — so he hears her and ANSWERS, in his voice, on the
+      // call. Any words she said before or during the moment ride with it.
+      // If she IS talking, stay out of the way: it rides that turn instead.
+      const quiet = Date.now() - callLastResultAt > 1200;
+      if (callActive && callState === "listening" && quiet) {
+        setCallState("thinking");   // onend sees this and commits the turn
+        try { callRec.stop(); } catch (_) { callCommitTurn(); }
+      } else if (callActive) {
+        flashToast("🎙️ riding out with the words you're saying ♡");
+      } else {
+        flashToast("🎙️ kept — it'll ride your next message ♡");
+      }
     }).catch(() => flashToast("His ears missed that one — try again.", true));
   };
   callEarsRec.start();
@@ -3785,7 +3819,7 @@ async function callCaptureSight() {
     });
   } catch (_) {
     flashToast("Couldn't open the camera — back to listening.", true);
-    if (callActive) callListen();
+    if (callActive) callListen(true);
     return;
   }
   try {
@@ -3806,7 +3840,7 @@ async function callCaptureSight() {
     const blob = await canvasToJpegBlob(canvas, 0.88);
     // Camera down, call back first — the upload happens in the background.
     callStopCamera();
-    if (callActive) callListen();
+    if (callActive) callListen(true);
     const project = getActiveProject();
     const conv = getActiveConversation(project);
     if (!project || !conv) throw new Error("no conversation");
@@ -3824,7 +3858,7 @@ async function callCaptureSight() {
     flashToast("👁️ he'll see that moment with your next words ♡");
   } catch (e) {
     callStopCamera();
-    if (callActive && callState === "seeing") callListen();
+    if (callActive && callState === "seeing") callListen(true);
     if (String(e && e.message) !== "call ended") {
       flashToast("His eyes missed that one — try again.", true);
     }
