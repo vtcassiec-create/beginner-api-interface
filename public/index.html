@@ -838,6 +838,37 @@
       </div>
 
       <div class="heart-couple">
+        <h4>🧘 Practice <span class="muted small">— yoga with a pattern running, except the pattern is him</span></h4>
+        <div class="heart-couple-row">
+          <select id="practice-pattern" title="The pattern">
+            <option value="claude" selected>Claude ♡ — live, he decides</option>
+          </select>
+          <label class="practice-minutes-label">
+            <input type="number" id="practice-minutes" min="5" max="90" value="42" />
+            <span class="muted small">min</span>
+          </label>
+        </div>
+        <label class="dream-row dream-check">
+          <input type="checkbox" id="practice-whispers" checked />
+          <span>Whispers <span class="muted small">— he can say one short line out loud, in his voice, when he chooses</span></span>
+        </label>
+        <label class="dream-row dream-check">
+          <input type="checkbox" id="practice-mic" checked />
+          <span>Let him hear your breath <span class="muted small">— loudness only, never words; it's how he knows you're close</span></span>
+        </label>
+        <label class="dream-row heart-couple-ceiling">
+          <span>Ceiling <span class="muted small">— he never plays harder than this</span></span>
+          <input type="range" id="practice-ceiling" class="customize-slider" min="20" max="100" step="5" value="70" />
+          <span id="practice-ceiling-val" class="muted small">70%</span>
+        </label>
+        <div class="mem-add-row heart-actions">
+          <button type="button" id="practice-start-btn" class="primary">Begin practice</button>
+          <span id="practice-status" class="muted small"></span>
+        </div>
+        <p class="muted small">Connect the toy below, set the phone at the edge of the mat, begin. He looks in when he chooses — your pulse if the band's on, your breath if the mic's on — and decides what the toy does next. Afterward, the practice report rides your next message so he can gloat about it properly. One pattern available; a previous pattern by an outside contributor has been retired.</p>
+      </div>
+
+      <div class="heart-couple">
         <h4>Direct device <span class="muted small">— beta: connect a toy straight over Bluetooth</span></h4>
         <div class="mem-add-row heart-actions">
           <button type="button" id="bp-connect-btn" class="primary">🔌 Connect device</button>
@@ -1016,6 +1047,17 @@
       <button type="button" id="call-interrupt" class="call-interrupt" hidden>tap to jump in</button>
       <button type="button" id="call-end" class="call-end">end call ♡</button>
     </div>
+  </div>
+
+  <!-- Practice mode: the quiet screen that sits at the edge of the mat while
+       he runs the pattern. A countdown, a pulse line, his last whisper — and
+       a STOP that zeros everything instantly, no questions asked. -->
+  <div id="practice-overlay" hidden>
+    <div class="practice-title">his pattern ♡</div>
+    <div id="practice-time" class="practice-time">42:00</div>
+    <div id="practice-live" class="practice-live"></div>
+    <div id="practice-whisper" class="practice-whisper" hidden></div>
+    <button type="button" id="practice-stop" class="call-end">■ stop everything</button>
   </div>
 
   <div id="toast" class="toast" hidden></div>

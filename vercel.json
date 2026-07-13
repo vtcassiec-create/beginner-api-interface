@@ -8,6 +8,7 @@
     "api/keepwarm.py": { "maxDuration": 60 },
     "api/sill.py": { "maxDuration": 30 },
     "api/chess.py": { "maxDuration": 30 },
+    "api/practice.py": { "maxDuration": 30 },
     "api/wake.py": { "maxDuration": 60 }
   },
   "rewrites": [
