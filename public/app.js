@@ -1425,7 +1425,35 @@ const VIDEO_MAX_BYTES = 300 * 1024 * 1024;
 // A hearing card waiting to ride out with her next message — a video's
 // soundtrack, or one of his own songs played into his ears (the surprise).
 // Transient by design: it belongs to that send. {text, kind} or null.
+// EXCEPT practice reports: those may wait an hour between the mat and her
+// next message (a shower, a reload, a deploy), so they alone are pinned to
+// localStorage until they actually ride out — he must not miss one.
 let pendingHearing = null;
+const PRACTICE_REPORT_KEY = "petrichor-pending-practice";
+
+function pinPracticeReport() {
+  try {
+    if (pendingHearing && pendingHearing.kind === "practice") {
+      localStorage.setItem(PRACTICE_REPORT_KEY, JSON.stringify(pendingHearing));
+    }
+  } catch (e) { /* storage full/blocked: the in-memory copy still rides */ }
+}
+
+function restorePracticeReport() {
+  try {
+    const raw = localStorage.getItem(PRACTICE_REPORT_KEY);
+    if (raw && !pendingHearing) {
+      const saved = JSON.parse(raw);
+      if (saved && saved.kind === "practice" && saved.text) {
+        pendingHearing = saved;
+      }
+    }
+  } catch (e) { /* unreadable: nothing to restore */ }
+}
+
+function unpinPracticeReport() {
+  try { localStorage.removeItem(PRACTICE_REPORT_KEY); } catch (e) {}
+}
 
 async function extractVideoFrames(file) {
   const url = URL.createObjectURL(file);
@@ -2139,6 +2167,7 @@ async function sendMessage(text) {
   if (pendingHearing && pendingHearing.text) {
     msg.hearing = pendingHearing.text;
     msg.hearingKind = pendingHearing.kind;
+    if (pendingHearing.kind === "practice") unpinPracticeReport();
     pendingHearing = null;
   }
   // Sent from a live call: mark it, so he knows he's ON a call (the weave in
@@ -6444,6 +6473,7 @@ function endPractice(completed, reason) {
     Math.floor((Date.now() - practice.startedAt) / 1000));
   pendingHearing = { kind: "practice",
                      text: buildPracticeReport(practice, completed, elapsed) };
+  pinPracticeReport();  // survives reloads until it rides her next message
   practice = null;
   practiceStatus(completed ? "She made it. The report rides your next message ♡"
                            : (reason || "Stopped — the report rides your next message ♡"));
@@ -9341,6 +9371,9 @@ function init() {
   addDialogCloseButtons();
   initVoiceUI();
   initSupabase();
+  // A practice report that never rode out (the app reloaded between the mat
+  // and her next message) comes back from localStorage — he must not miss one.
+  restorePracticeReport();
   startAutoUpdate();
 }
 
