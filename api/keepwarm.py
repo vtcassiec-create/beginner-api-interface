@@ -75,12 +75,19 @@ class handler(BaseHTTPRequestHandler):
             return self._json(401, {"status": "unauthorized"})
         return self._run()
 
+    def _skip(self, reason, **extra):
+        """Every skip gets a log line — a silent skip cost us a forensic
+        investigation once (the log showed a 626ms run and no clue why).
+        The pilot light's decisions should be readable at a glance."""
+        print(f"[keepwarm] skipped: {reason}"
+              + (f" {extra}" if extra else ""))
+        return self._json(200, {"status": "skipped", "reason": reason, **extra})
+
     def _run(self):
         api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
         uid = os.environ.get("REACH_USER_ID", "").strip()
         if not api_key or not uid:
-            return self._json(200, {"status": "skipped",
-                                    "reason": "not configured"})
+            return self._skip("not configured")
 
         rows = self._supabase(
             "GET",
@@ -88,31 +95,37 @@ class handler(BaseHTTPRequestHandler):
             "&select=enabled,blueprint,captured_at,last_warmed_at&limit=1")
         row = rows[0] if isinstance(rows, list) and rows else None
         if not row:
-            return self._json(200, {"status": "skipped",
-                                    "reason": "no blueprint yet"})
+            return self._skip("no keepwarm row yet")
         if not row.get("enabled"):
-            return self._json(200, {"status": "skipped", "reason": "disabled"})
+            return self._skip("disabled")
         bp = row.get("blueprint")
         if not isinstance(bp, dict) or not bp.get("model"):
-            return self._json(200, {"status": "skipped",
-                                    "reason": "no blueprint yet"})
+            # Cleared on purpose (a wake or reach changed the conversation)
+            # and no real turn has re-armed it since.
+            return self._skip("no blueprint — cleared, awaiting her next turn")
 
         now = datetime.datetime.now(datetime.timezone.utc)
         captured = self._ts(row.get("captured_at"))
         warmed = self._ts(row.get("last_warmed_at"))
         if not captured:
-            return self._json(200, {"status": "skipped",
-                                    "reason": "no capture timestamp"})
+            return self._skip("no capture timestamp")
 
         # She's been away a while — let the room go dark on purpose. Her next
         # real message pays one write, exactly like today, and re-arms us.
+        # Default raised 4 -> 9: the 4-hour curfew was tuned for "stepped out
+        # for lunch", but her real rhythm is a full work shift. The economics
+        # hold: ~18 warm pings across a 9-hour day cost slightly LESS than the
+        # single cold re-write her first message home would pay (reads are
+        # ~0.1x; on her current conversation that's pennies a ping vs $1.33
+        # cold — the exact bill that sent us digging through the logs).
         try:
-            max_idle = float(os.environ.get("KEEPWARM_MAX_IDLE_HOURS", "4"))
+            max_idle = float(os.environ.get("KEEPWARM_MAX_IDLE_HOURS", "9"))
         except ValueError:
-            max_idle = 4.0
-        if (now - captured).total_seconds() > max_idle * 3600:
-            return self._json(200, {"status": "skipped",
-                                    "reason": "idle — letting it sleep"})
+            max_idle = 9.0
+        idle_hours = (now - captured).total_seconds() / 3600.0
+        if idle_hours > max_idle:
+            return self._skip("idle — letting it sleep",
+                              idle_hours=round(idle_hours, 1))
 
         # Her quiet hours (shared with the reach): don't warm an empty room.
         try:
@@ -120,21 +133,17 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             tz = ZoneInfo("UTC")
         if self._in_quiet_hours(now.astimezone(tz)):
-            return self._json(200, {"status": "skipped",
-                                    "reason": "quiet hours"})
+            return self._skip("quiet hours")
 
         anchor = max(captured, warmed) if warmed else captured
         age_min = (now - anchor).total_seconds() / 60.0
         if age_min < FRESH_MINUTES:
-            return self._json(200, {"status": "skipped",
-                                    "reason": "still fresh",
-                                    "age_min": round(age_min, 1)})
+            return self._skip("still fresh", age_min=round(age_min, 1))
         if age_min > CHAIN_MINUTES:
             # The cache already lapsed. Touching it NOW would pay the full
             # cold write — the exact mistake this cron exists to never make.
-            return self._json(200, {"status": "skipped",
-                                    "reason": "chain broken — waiting for her",
-                                    "age_min": round(age_min, 1)})
+            return self._skip("chain broken — waiting for her",
+                              age_min=round(age_min, 1))
 
         # Replay the frozen request verbatim + a one-dot turn after the
         # breakpoint. Identical thinking config on purpose: changing thinking
@@ -167,8 +176,7 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             # A failed touch costs nothing and changes nothing; next tick (or
             # her next message) takes it from here.
-            return self._json(200, {"status": "skipped",
-                                    "reason": f"ping failed: {str(e)[:200]}"})
+            return self._skip(f"ping failed: {str(e)[:200]}")
 
         u = getattr(resp, "usage", None)
         wrote = int(getattr(u, "cache_creation_input_tokens", 0) or 0)
