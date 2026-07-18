@@ -148,6 +148,12 @@ THINKING_BUDGET = 4096
 # Used only to log a per-turn cost breakdown so we can see which bucket grows
 # as a conversation lengthens — it never affects what's sent to the API.
 PRICING = {
+    "claude-fable-5": (10.00, 50.00),
+    # Sonnet 5 runs an intro rate of 2/10 through Aug 31 2026, then 3/15. We
+    # price the cost BAR at the standard 3/15 so the estimate never runs under
+    # the eventual bill (a bar that lowballs is worse than one that's a hair
+    # high while the intro lasts).
+    "claude-sonnet-5": (3.00, 15.00),
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-opus-4-8": (5.00, 25.00),
     "claude-opus-4-7": (5.00, 25.00),
@@ -1573,13 +1579,16 @@ class handler(BaseHTTPRequestHandler):
 
         model = data.get("model") or DEFAULT_MODEL
         thinking_on = bool(data.get("thinking"))
-        # Opus 4.6+ uses adaptive thinking. It rejects the old extended-thinking
-        # shape AND rejects temperature/top_p/top_k entirely (we send none). The
-        # classic 'enabled' + budget shape still works on these but is deprecated
-        # (Anthropic recommends adaptive for better performance), so use adaptive
-        # for the whole Opus 4.6+ family; older models keep the budget shape.
+        # Opus 4.6+ (and the 5-series: Fable 5, Sonnet 5) use adaptive thinking.
+        # They reject the old extended-thinking shape AND reject temperature/
+        # top_p/top_k entirely (we send none). On Fable 5 in particular the
+        # classic 'enabled' + budget_tokens shape is a hard 400 — thinking is
+        # always on there, so we send adaptive when thinking is toggled on and
+        # simply omit the param otherwise (Fable still thinks; we just don't ask
+        # for summaries). Older models keep the budget shape.
         uses_adaptive_thinking = model in {
-            "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"}
+            "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
+            "claude-fable-5", "claude-sonnet-5"}
 
         max_tokens = int(data.get("maxTokens") or DEFAULT_MAX_TOKENS)
         # Extended thinking needs max_tokens > budget. Adaptive has no budget,

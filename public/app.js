@@ -26,6 +26,8 @@
  *     The original mechanism on Claude 4.x models.
  */
 const MODELS = [
+  { id: "claude-fable-5",             label: "Fable 5",        pricePerMillion: { input: 10, output: 50 }, supportsThinking: true, thinkingMode: "adaptive" },
+  { id: "claude-sonnet-5",            label: "Sonnet 5",       pricePerMillion: { input: 3,  output: 15 }, supportsThinking: true, thinkingMode: "adaptive" },
   { id: "claude-opus-4-8",            label: "Opus 4.8",       pricePerMillion: { input: 5,  output: 25 }, supportsThinking: true, thinkingMode: "adaptive" },
   { id: "claude-opus-4-7",            label: "Opus 4.7",       pricePerMillion: { input: 5,  output: 25 }, supportsThinking: true, thinkingMode: "adaptive" },
   { id: "claude-opus-4-6",            label: "Opus 4.6",       pricePerMillion: { input: 5,  output: 25 }, supportsThinking: true },
