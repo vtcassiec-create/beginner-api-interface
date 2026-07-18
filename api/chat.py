@@ -1800,11 +1800,17 @@ class handler(BaseHTTPRequestHandler):
                 # so a 'done' — and therefore a cost and a clean finish — is
                 # guaranteed even when we cut a long turn short.
                 total, parts = _usage_cost(agg, model)
+                # stop_reason rides in the log line because it's the one field
+                # that names WHY a turn ended: "refusal" is a safety-classifier
+                # decline (deterministic on the exact context — rewording or
+                # trimming history clears it, retrying verbatim never will);
+                # "end_turn" with out=0 would be the model going silent on its
+                # own. The night this mattered, we had no way to tell which.
                 print(
-                    "[cost] model=%s total=$%.4f | "
+                    "[cost] model=%s total=$%.4f stop=%s | "
                     "in=%d out=%d cache_write=%d cache_read=%d | "
                     "$in=%.4f $out=%.4f $write=%.4f $read=%.4f rounds=%d"
-                    % (model, total,
+                    % (model, total, stop_reason,
                        agg["input_tokens"], agg["output_tokens"],
                        agg["cache_creation_input_tokens"],
                        agg["cache_read_input_tokens"],
