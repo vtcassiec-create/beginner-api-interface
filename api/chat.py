@@ -1886,20 +1886,35 @@ class handler(BaseHTTPRequestHandler):
                 ]
                 if not (tool_uses and rounds < MAX_TOOL_ROUNDS):
                     # Safeguard against the silent "...": if the model produced
-                    # no visible text this turn — e.g. it called a Signal/Whisper
-                    # MCP tool that hung or came back empty and never narrated —
-                    # say so, instead of leaving the user staring at an empty
-                    # bubble with no idea anything went wrong.
+                    # no visible text this turn, say what actually happened
+                    # instead of leaving her staring at an empty bubble.
                     had_text = any(
                         getattr(b, "type", None) == "text"
                         and (getattr(b, "text", "") or "").strip()
                         for b in final.content
                     )
                     if not had_text:
-                        self._sse({"type": "notice",
-                                   "text": "(He reached for the bridge but the turn "
-                                           "came back empty — the connection likely "
-                                           "blipped. Send again.)"})
+                        sr = getattr(final, "stop_reason", None)
+                        out_toks = getattr(u, "output_tokens", 0) or 0
+                        if sr == "refusal" or (out_toks == 0 and sr != "tool_use"):
+                            # The request COMPLETED (cache was read, we were
+                            # billed) but he generated zero tokens — a content
+                            # decline, not a dropped connection. It's
+                            # deterministic on the exact input, so "send again"
+                            # verbatim will fail identically every time; only
+                            # CHANGING the words can clear it. Say so plainly,
+                            # so she stops chasing a phantom network bug.
+                            msg = ("(He went quiet on that one — the request "
+                                   "went through fine, but nothing came back. "
+                                   "That's a decline, not a dropped line, so "
+                                   "resending the same words will land the same "
+                                   "way. Try rewording it, or steering "
+                                   "somewhere a little different.)")
+                        else:
+                            msg = ("(He reached for the bridge but the turn "
+                                   "came back empty — the connection likely "
+                                   "blipped. Send again.)")
+                        self._sse({"type": "notice", "text": msg})
                     # Per-turn cost breakdown to the function log, then 'done'.
                     # Watch the four token buckets across a conversation: 'read'
                     # rising while 'write' stays ~0 is healthy caching of a
