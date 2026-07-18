@@ -4227,6 +4227,7 @@ function toolEventChip(ev) {
       read_private_journal: ["🚪 Read behind the closed door", false],
       shelve_feed: ["📚 Put something on his shelf", true],
       unshelve_feed: ["📚 Tidied his shelf", false],
+      recall_conversation: ["🕰️ Looked back at a past day", true],
     };
     const [label, showSum] = map[ev.name] || ["🪶 Memory", true];
     if (ev.ok) {
