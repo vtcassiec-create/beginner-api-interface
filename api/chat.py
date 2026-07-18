@@ -3130,10 +3130,20 @@ class handler(BaseHTTPRequestHandler):
             which = (inp.get("which") or "").strip()
             on = (inp.get("on") or "").strip()
             tz = self._tz_or_utc(tz_name)
+            # NB: the column is `name` (see docs/supabase-schema.sql) — the
+            # first ship of this tool selected `title`, PostgREST 400'd, and
+            # the failure was reported as "no past chats". Two bugs, one night:
+            # wrong column, and a lookup failure disguised as an empty shelf.
             rows = self._supabase_rest_get(
-                "conversations?select=id,title,updated_at,created_at"
+                "conversations?select=id,name,updated_at,created_at"
                 "&order=updated_at.desc&limit=100", token)
-            if not (isinstance(rows, list) and rows):
+            if rows is None:
+                return False, "couldn't look", (
+                    "The lookup itself failed — the past conversations are "
+                    "safe, I just couldn't reach them this moment. Worth "
+                    "trying once more; if it keeps failing, tell Cassie so "
+                    "the walls can check the plumbing.")
+            if not rows:
                 return True, "no past chats", (
                     "There aren't any saved conversations to look back on yet.")
 
@@ -3143,18 +3153,18 @@ class handler(BaseHTTPRequestHandler):
                          "one (the `which` argument) to see the days it "
                          "covers:"]
                 for r in rows[:40]:
-                    title = (r.get("title") or "untitled").strip() or "untitled"
+                    cname = (r.get("name") or "untitled").strip() or "untitled"
                     stamp = self._date_stamp(r.get("updated_at"), tz)
-                    lines.append(f"- {title}"
+                    lines.append(f"- {cname}"
                                  + (f" — last active {stamp}" if stamp else ""))
                 return True, "your past chats", "\n".join(lines)
 
-            # Find the named conversation (title contains, case-insensitive;
+            # Find the named conversation (name contains, case-insensitive;
             # or an exact id).
             wl = which.lower()
             match = None
             for r in rows:
-                if wl in (r.get("title") or "").lower() or which == r.get("id"):
+                if wl in (r.get("name") or "").lower() or which == r.get("id"):
                     match = r
                     break
             if not match:
@@ -3163,11 +3173,11 @@ class handler(BaseHTTPRequestHandler):
                     "Call this with no arguments to see the list of names.")
 
             full = self._supabase_rest_get(
-                f"conversations?id=eq.{match['id']}&select=title,messages"
+                f"conversations?id=eq.{match['id']}&select=name,messages"
                 "&limit=1", token)
             msgs = (full[0].get("messages")
                     if isinstance(full, list) and full else None)
-            title = (match.get("title") or "untitled").strip() or "untitled"
+            title = (match.get("name") or "untitled").strip() or "untitled"
             if not (isinstance(msgs, list) and msgs):
                 return True, "empty", f'"{title}" has no readable messages.'
 
