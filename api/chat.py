@@ -779,6 +779,11 @@ RECALL_CONVERSATION_TOOL = {
                    "description": "A day to read, 'YYYY-MM-DD' in her "
                                   "timezone. Omit to see which days the "
                                   "conversation covers."},
+            "part": {"type": "integer",
+                     "description": "A long day is read in parts. Omit for "
+                                    "part 1; the reading tells you how many "
+                                    "parts the day has — ask for 2, 3, … to "
+                                    "keep going."},
         },
     },
 }
@@ -3207,7 +3212,9 @@ class handler(BaseHTTPRequestHandler):
                     lines.append(f"- {d}: {n} message{'s' if n != 1 else ''}")
                 return True, "days in this chat", "\n".join(lines)
 
-            # Name + date → read that day.
+            # Name + date → read that day, in parts if it's a long one. Pages
+            # are built the same way every call, so part 2 picks up exactly
+            # where part 1 stopped.
             day = by_date.get(on)
             if not day:
                 avail = ", ".join(sorted(by_date))
@@ -3216,9 +3223,7 @@ class handler(BaseHTTPRequestHandler):
                     f"messages: {avail}.")
 
             CAP = 18000
-            out = [f'"{title}" — {on}:']
-            used = 0
-            shown = 0
+            pieces = []
             for m in day:
                 who = "Cassie" if m.get("role") == "user" else "Claude"
                 text = (m.get("text") or "").strip()
@@ -3227,19 +3232,37 @@ class handler(BaseHTTPRequestHandler):
                         text = "[a photo]"
                     else:
                         continue
-                piece = f"{who}: {text}"
-                if used + len(piece) > CAP:
-                    break
-                out.append(piece)
-                used += len(piece) + 2
-                shown += 1
-            omitted = len(day) - shown
-            if omitted > 0:
-                out.append(
-                    f"\n(…{omitted} more from {on} — this is the first part of "
-                    "the day, from the start. Ask her if you want the rest read "
-                    "a different way.)")
-            return True, f"read {on}", "\n\n".join(out)
+                pieces.append(f"{who}: {text}")
+            if not pieces:
+                return True, "nothing readable", (
+                    f"{on} in \"{title}\" has messages, but nothing readable "
+                    "as text.")
+            pages = [[]]
+            used = 0
+            for p in pieces:
+                # An oversized single message still lands somewhere: start a
+                # fresh page for it rather than dropping it between pages.
+                if used + len(p) > CAP and pages[-1]:
+                    pages.append([])
+                    used = 0
+                pages[-1].append(p)
+                used += len(p) + 2
+            total = len(pages)
+            try:
+                part = int(inp.get("part") or 1)
+            except Exception:
+                part = 1
+            part = min(max(1, part), total)
+            head = f'"{title}" — {on}'
+            if total > 1:
+                head += f" (part {part} of {total})"
+            out = [head + ":"] + pages[part - 1]
+            if part < total:
+                out.append(f"\n(The day continues — ask for part {part + 1} "
+                           f"of {total} to keep reading.)")
+            return True, (f"read {on}" if total == 1
+                          else f"read {on} · part {part}/{total}"), \
+                "\n\n".join(out)
 
         if name == "write_letter":
             letter = (inp.get("body") or "").strip()
