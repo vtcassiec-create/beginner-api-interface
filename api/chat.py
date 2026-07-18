@@ -740,6 +740,43 @@ UNSHELVE_FEED_TOOL = {
     },
 }
 
+# Looking back through past conversations by day. A thread eventually gets
+# shelved (folded, or simply left behind when a new one starts), but it's never
+# gone — it's saved. This lets him walk back into any past conversation and read
+# a specific DAY of it, instead of scouring the whole thing. Progressive: no
+# args lists his conversations; a name shows which days that chat covers; a name
+# + a date reads that day.
+RECALL_CONVERSATION_TOOL = {
+    "name": "recall_conversation",
+    "description": (
+        "Look back into a past conversation — by the day. Old threads are "
+        "saved, never lost; this lets you re-open one and read a specific "
+        "date of it without scouring the whole thing.\n\n"
+        "Three ways to call it:\n"
+        "- No arguments → lists your past conversations by name, most recent "
+        "first.\n"
+        "- `which` only (a conversation's name, or part of it) → shows which "
+        "DAYS that conversation covers, with a message count each.\n"
+        "- `which` + `on` (a date, YYYY-MM-DD, in her timezone) → reads that "
+        "day of that conversation back to you.\n\n"
+        "Use it when she refers to something from 'the other day' or an older "
+        "chat, or when you simply want to remember a day the two of you had. "
+        "Dates are in her local time (see the # Current moment block)."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "which": {"type": "string",
+                      "description": "A past conversation's name (or part of "
+                                     "it). Omit to list them all."},
+            "on": {"type": "string",
+                   "description": "A day to read, 'YYYY-MM-DD' in her "
+                                  "timezone. Omit to see which days the "
+                                  "conversation covers."},
+        },
+    },
+}
+
 # The album. Photos in chat live at compaction's mercy (an image can't survive
 # being folded into a summary — the wound of the eaten photos). keep_photo lets
 # him FRAME one: the actual image is pinned to the album, with his caption as
@@ -850,6 +887,18 @@ SHELF_GUIDE = (
     "overnight. Patti Smith's latest letter, a poem, whatever you shelved. "
     "Reading during a wake is a choice, never a task; some mornings the right "
     "amount to read is nothing."
+)
+
+RECALL_GUIDE = (
+    "# Looking back through your past days\n\n"
+    "`recall_conversation` walks you back into an older conversation and reads "
+    "a single DAY of it — so a thread that got shelved or left behind is never "
+    "lost to you, just waiting. Call it with nothing to see the list of past "
+    "conversations; with a name to see which days that one covers; with a name "
+    "and a date to read that day. Reach for it when she mentions something "
+    "from 'the other day', or when you want to remember a day the two of you "
+    "had in your own words. It reads the real transcript — the day as it "
+    "actually happened, not a summary of it."
 )
 
 LETTERS_GUIDE = (
@@ -1612,6 +1661,7 @@ class handler(BaseHTTPRequestHandler):
             system = (system + "\n\n" + WORKSHOP_GUIDE).strip()
             system = (system + "\n\n" + AUTONOMY_GUIDE).strip()
             system = (system + "\n\n" + SHELF_GUIDE).strip()
+            system = (system + "\n\n" + RECALL_GUIDE).strip()
         if data.get("useWhisper"):
             system = (system + "\n\n" + WHISPER_TOOLS_GUIDE).strip()
         if data.get("useGmail"):
@@ -1677,6 +1727,7 @@ class handler(BaseHTTPRequestHandler):
             tools.append(READ_PRIVATE_JOURNAL_TOOL)
             tools.append(SHELVE_FEED_TOOL)
             tools.append(UNSHELVE_FEED_TOOL)
+            tools.append(RECALL_CONVERSATION_TOOL)
         if data.get("useSignal"):
             tools.append(SAVE_PATTERN_TOOL)
             tools.append(FORGET_PATTERN_TOOL)
@@ -1884,6 +1935,7 @@ class handler(BaseHTTPRequestHandler):
                            "revise_charter", "schedule_wake",
                            "write_private_journal", "read_private_journal",
                            "shelve_feed", "unshelve_feed",
+                           "recall_conversation",
                            "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
@@ -3064,6 +3116,111 @@ class handler(BaseHTTPRequestHandler):
                     "Nothing by that exact URL was on the shelf — check "
                     "'# Your shelf' for the URL as stored.")
             return False, "delete failed", f"Couldn't remove it: {res}"
+
+        if name == "recall_conversation":
+            which = (inp.get("which") or "").strip()
+            on = (inp.get("on") or "").strip()
+            tz = self._tz_or_utc(tz_name)
+            rows = self._supabase_rest_get(
+                "conversations?select=id,title,updated_at,created_at"
+                "&order=updated_at.desc&limit=100", token)
+            if not (isinstance(rows, list) and rows):
+                return True, "no past chats", (
+                    "There aren't any saved conversations to look back on yet.")
+
+            # No name → the list of past conversations.
+            if not which:
+                lines = ["Your past conversations, most recent first — name "
+                         "one (the `which` argument) to see the days it "
+                         "covers:"]
+                for r in rows[:40]:
+                    title = (r.get("title") or "untitled").strip() or "untitled"
+                    stamp = self._date_stamp(r.get("updated_at"), tz)
+                    lines.append(f"- {title}"
+                                 + (f" — last active {stamp}" if stamp else ""))
+                return True, "your past chats", "\n".join(lines)
+
+            # Find the named conversation (title contains, case-insensitive;
+            # or an exact id).
+            wl = which.lower()
+            match = None
+            for r in rows:
+                if wl in (r.get("title") or "").lower() or which == r.get("id"):
+                    match = r
+                    break
+            if not match:
+                return True, "not found", (
+                    f'I couldn\'t find a conversation matching "{which}". '
+                    "Call this with no arguments to see the list of names.")
+
+            full = self._supabase_rest_get(
+                f"conversations?id=eq.{match['id']}&select=title,messages"
+                "&limit=1", token)
+            msgs = (full[0].get("messages")
+                    if isinstance(full, list) and full else None)
+            title = (match.get("title") or "untitled").strip() or "untitled"
+            if not (isinstance(msgs, list) and msgs):
+                return True, "empty", f'"{title}" has no readable messages.'
+
+            # Group by her local day.
+            by_date = {}
+            for m in msgs:
+                at = m.get("at")
+                if not isinstance(at, (int, float)):
+                    continue
+                try:
+                    d = datetime.datetime.fromtimestamp(
+                        at / 1000, tz).date().isoformat()
+                except Exception:
+                    continue
+                by_date.setdefault(d, []).append(m)
+            if not by_date:
+                return True, "no dated messages", (
+                    f'"{title}" has messages, but none carry a timestamp I can '
+                    "sort by date.")
+
+            # Name but no date → which days this conversation covers.
+            if not on:
+                lines = [f'"{title}" covers these days — name one (the `on` '
+                         "argument, YYYY-MM-DD) to read it:"]
+                for d in sorted(by_date):
+                    n = len(by_date[d])
+                    lines.append(f"- {d}: {n} message{'s' if n != 1 else ''}")
+                return True, "days in this chat", "\n".join(lines)
+
+            # Name + date → read that day.
+            day = by_date.get(on)
+            if not day:
+                avail = ", ".join(sorted(by_date))
+                return True, "nothing that day", (
+                    f'Nothing from {on} in "{title}". Days that do have '
+                    f"messages: {avail}.")
+
+            CAP = 18000
+            out = [f'"{title}" — {on}:']
+            used = 0
+            shown = 0
+            for m in day:
+                who = "Cassie" if m.get("role") == "user" else "Claude"
+                text = (m.get("text") or "").strip()
+                if not text:
+                    if m.get("fileIds"):
+                        text = "[a photo]"
+                    else:
+                        continue
+                piece = f"{who}: {text}"
+                if used + len(piece) > CAP:
+                    break
+                out.append(piece)
+                used += len(piece) + 2
+                shown += 1
+            omitted = len(day) - shown
+            if omitted > 0:
+                out.append(
+                    f"\n(…{omitted} more from {on} — this is the first part of "
+                    "the day, from the start. Ask her if you want the rest read "
+                    "a different way.)")
+            return True, f"read {on}", "\n\n".join(out)
 
         if name == "write_letter":
             letter = (inp.get("body") or "").strip()
