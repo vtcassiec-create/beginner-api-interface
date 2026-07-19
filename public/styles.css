@@ -1376,6 +1376,24 @@ body.hide-timestamps .msg-head .msg-time { display: none; }
   font-family: inherit;
 }
 
+/* His charter, in the read-only window. Roomier than a hearing card — it's
+   his constitution, meant to be read, not skimmed. */
+.charter-content {
+  margin: 4px 0 0;
+  padding: 14px 16px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+}
+
 .tool-event {
   font-size: 13px;
   color: var(--text-muted);

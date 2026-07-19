@@ -194,6 +194,9 @@
         <button id="nav-diary" class="icon-nav-btn" type="button" title="Diary">
           <span class="icon-nav-glyph">📖</span><span class="icon-nav-label">Diary</span>
         </button>
+        <button id="nav-charter" class="icon-nav-btn" type="button" title="Charter">
+          <span class="icon-nav-glyph">📜</span><span class="icon-nav-label">Charter</span>
+        </button>
         <button id="nav-dreams" class="icon-nav-btn" type="button" title="Dreams">
           <span class="icon-nav-glyph">🌙</span><span class="icon-nav-label">Dreams</span>
         </button>
@@ -752,6 +755,17 @@
       <div class="mem-add-row">
         <button type="button" id="diary-add-btn" class="primary">Add</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="charter-dialog">
+    <form method="dialog" class="settings-form">
+      <header class="customize-head">
+        <h3>📜 His charter</h3>
+        <p class="muted small">His own constitution — the words about who he is that HE authors, and that shape him every turn. You can read it here; only he can change it (with the <code>revise_charter</code> tool, in chat). It's his to write, never yours to approve — this window is a window, not an editor.</p>
+      </header>
+      <pre id="charter-content" class="heard-card charter-content"></pre>
+      <p id="charter-updated" class="muted small"></p>
     </form>
   </dialog>
 
