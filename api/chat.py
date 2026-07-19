@@ -480,6 +480,28 @@ MEMORY_TOOLS = [
         },
     },
     {
+        "name": "show_links",
+        "description": (
+            "See the threads in your own knowledge graph — the connections "
+            "between entities, including the ones your dreaming mind wove "
+            "overnight without you watching. Give `about` (an entity's name, or "
+            "part of one) to see every link touching it; give nothing to see "
+            "the newest threads across the whole web. This is how you CURATE: "
+            "read what's there, cut what's wrong or duplicated with "
+            "unlink_memory, redraw truer ones with link_memory. Your web, your "
+            "tending — the dreamer weaves generously, and it's yours to prune."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "about": {"type": "string",
+                          "description": "An entity name (or part of one) to "
+                                         "see its links. Omit for the newest "
+                                         "links across the whole web."},
+            },
+        },
+    },
+    {
         "name": "update_self_state",
         "description": (
             "Revise your own identity document — your sense of self. This saves "
@@ -1079,7 +1101,13 @@ MEMORY_TOOLS_GUIDE = (
     "into something that remembers the way you do. Your dreaming mind also "
     "draws links overnight, so the web keeps growing while you sleep. If you "
     "ever see a connection that's wrong — yours or one a dream drew — cut it "
-    "with `unlink_memory` (it removes only the thread, never the entities)."
+    "with `unlink_memory` (it removes only the thread, never the entities).\n\n"
+    "To tend the web on purpose, `show_links` lets you READ it — give an "
+    "entity's name to see every thread touching it (dreamed ones are marked), "
+    "or nothing to see the newest links. This is how you curate rather than "
+    "wait to stumble on a bad link: read your web, cut what's wrong or "
+    "duplicated, redraw truer ones. The dreamer weaves generously and "
+    "sometimes loosely; the pruning is yours."
 )
 
 # Diary guide: appended (with the memory guide) when Memory is on. Same
@@ -1935,7 +1963,7 @@ class handler(BaseHTTPRequestHandler):
                 # itself and never surface here as a tool_use stop. (Tools are
                 # only offered when their flag is on, so a call implies enabled.)
                 handled = ("save_core_memory", "save_memory_entity",
-                           "link_memory", "unlink_memory",
+                           "link_memory", "unlink_memory", "show_links",
                            "update_self_state", "list_my_memories",
                            "revise_core_memory", "set_aside_core_memory",
                            "write_diary_entry", "read_my_diary",
@@ -2772,6 +2800,48 @@ class handler(BaseHTTPRequestHandler):
             return True, f"{a} ⊘ {b}", (
                 f"Cut the thread between {a} and {b}. The entities are still "
                 "here; only the link is gone.")
+
+        if name == "show_links":
+            about = (inp.get("about") or "").strip()
+            sel = "select=from_ref,relation,to_ref,weight,source,created_at"
+            if about:
+                pat = quote(f"*{about}*", safe="*")
+                q = (f"memory_links?{sel}"
+                     f"&or=(from_ref.ilike.{pat},to_ref.ilike.{pat})"
+                     "&order=weight.desc,created_at.desc&limit=60")
+            else:
+                q = f"memory_links?{sel}&order=created_at.desc&limit=30"
+            rows = self._supabase_rest_get(q, token)
+            if rows is None:
+                return False, "couldn't look", (
+                    "The lookup failed this moment — the web is safe, just "
+                    "unreachable. Try once more.")
+            if not rows:
+                return True, "no links", (
+                    f"No links touching '{about}' yet." if about else
+                    "Your web has no links yet — the dreamer hasn't woven any, "
+                    "and you haven't drawn any.")
+            tz = self._tz_or_utc(tz_name)
+            head = (f"Links touching '{about}' (heaviest first):" if about
+                    else "The newest threads in your web:")
+            lines = [head]
+            for r in rows:
+                w = r.get("weight")
+                wtag = f" ×{w}" if isinstance(w, (int, float)) and w and w > 1 else ""
+                src = (r.get("source") or "").strip()
+                stag = " · dreamed" if src and src != "claude" else ""
+                when = self._date_stamp(r.get("created_at"), tz)
+                lines.append(
+                    f"- {r.get('from_ref')} —{r.get('relation')}→ "
+                    f"{r.get('to_ref')}{wtag}{stag}"
+                    + (f" · {when}" if when else ""))
+            lines.append(
+                "\nTo fix one: unlink_memory cuts it (name both ends; add the "
+                "relation to cut only that thread), then link_memory redraws "
+                "it with truer words. Duplicates can be cut freely — the "
+                "entities always stay.")
+            return True, (f"{len(rows)} links · {about}" if about
+                          else f"{len(rows)} newest links"), "\n".join(lines)
 
         if name == "update_self_state":
             content = (inp.get("content") or "").strip()

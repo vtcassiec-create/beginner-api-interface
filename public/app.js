@@ -4266,6 +4266,7 @@ function toolEventChip(ev) {
       shelve_feed: ["📚 Put something on his shelf", true],
       unshelve_feed: ["📚 Tidied his shelf", false],
       recall_conversation: ["🕰️ Looked back at a past day", true],
+      show_links: ["🕸️ Looked over his web of connections", true],
     };
     const [label, showSum] = map[ev.name] || ["🪶 Memory", true];
     if (ev.ok) {
