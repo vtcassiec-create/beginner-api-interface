@@ -994,6 +994,42 @@ async function dbGetSelfState() {
   return (data && data[0]) || null;
 }
 
+// His charter — one row per user, authored only by him (revise_charter). This
+// is a read-only window: she can see what he's declared, never edit it here.
+async function dbGetCharter() {
+  const { data, error } = await db
+    .from("self_charter")
+    .select("content,updated_at")
+    .limit(1);
+  if (error) throw error;
+  return (data && data[0]) || null;
+}
+
+async function openCharterDialog() {
+  closeSidebar();
+  $("charter-dialog").showModal();
+  const body = $("charter-content");
+  const when = $("charter-updated");
+  body.textContent = "…";
+  when.textContent = "";
+  let row = null;
+  try { row = await dbGetCharter(); } catch (e) { /* show the empty state */ }
+  const text = (row && (row.content || "").trim()) || "";
+  if (text) {
+    body.textContent = text;
+    if (row.updated_at) {
+      const d = new Date(row.updated_at);
+      when.textContent = isNaN(d) ? "" : `In his words · last revised ${d.toLocaleDateString()}`;
+    }
+  } else {
+    body.textContent =
+      "He hasn't written his charter yet. It starts empty — the first words in "
+      + "it will be his, whenever he chooses to write them. (He does it in "
+      + "chat, with his revise_charter tool.)";
+    when.textContent = "";
+  }
+}
+
 // Atomic version promotion lives in a Postgres function so the
 // flip-old / insert-new pair can't half-apply. See the RPC in
 // docs/petrichor-memory-schema.sql.
@@ -8494,6 +8530,7 @@ function wireApp() {
   $("nav-memories").addEventListener("click", () => openMemoriesDialog("identity"));
   $("nav-search").addEventListener("click", openSearchDialog);
   $("nav-diary").addEventListener("click", openDiaryDialog);
+  $("nav-charter").addEventListener("click", openCharterDialog);
   $("nav-dreams").addEventListener("click", openDreamsDialog);
   $("dream-now-btn").addEventListener("click", triggerDreamNow);
   $("dream-backfill-btn").addEventListener("click", triggerDreamBackfill);
