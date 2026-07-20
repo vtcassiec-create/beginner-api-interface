@@ -2063,6 +2063,11 @@ async function generateAssistant() {
         maxTokens: getMaxTokens(),
         tz,
         lastMessageAt,
+        // Which toys are connected right now (names only) — so he composes
+        // for the device actually in play: a Lush is not a Gemini.
+        deviceNames: bpDevices.size
+          ? [...bpDevices.values()].map(d => d.name || "").filter(Boolean).slice(0, 6)
+          : [],
       },
       (event) => {
         if (event.type === "text") {
@@ -6307,6 +6312,8 @@ async function startPractice() {
     whispers: $("practice-whispers").checked,
     micOn: $("practice-mic").checked,
     history: [],
+    signals: [],     // taps since his last look (drained into each payload)
+    signalLog: [],   // every tap, for the report
     hrMin: null, hrMax: null,
     soundsTotal: 0,
     lastKind: "vibrate",
@@ -6391,6 +6398,19 @@ function practiceBreathSnapshot() {
            peak: Number(snap.peak.toFixed(2)), sounds: snap.sounds };
 }
 
+// A tap that changes nothing by itself — it only tells him, at his next look.
+// The band is her body reporting; this is her CHOOSING to confess. "close"
+// and "there" ride the next payload and the final report, timestamped.
+function practiceSignal(kind) {
+  if (!practice || practice.ended) return;
+  const at_s = Math.floor((Date.now() - practice.startedAt) / 1000);
+  const entry = { at_s, kind };
+  if (practice.signals.length < 12) practice.signals.push(entry);
+  practice.signalLog.push(entry);
+  try { navigator.vibrate?.(kind === "there" ? [30, 40, 80] : 25); } catch (e) {}
+  practiceOverlayStatus(kind === "there" ? "he'll know ♡♡" : "he'll know ♡");
+}
+
 function practiceClockTick() {
   if (!practice) return;
   const elapsed = Math.floor((Date.now() - practice.startedAt) / 1000);
@@ -6429,6 +6449,9 @@ async function practiceTick() {
     bpm: bpmFresh,
     resting_bpm: parseInt($("heart-resting").value, 10) || null,
     breath: practiceBreathSnapshot(),
+    signals: practice.signals.splice(0),   // her taps since his last look
+    devices: [...bpDevices.values()].map(d => d.name || "")
+      .filter(Boolean).slice(0, 6),
     history: practice.history.slice(-12),
     persona: buildSystemPrompt(getActiveProject()),
   };
@@ -6578,6 +6601,12 @@ function buildPracticeReport(p, completed, elapsedS) {
   }
   if (p.micOn) {
     lines.push(`sounds she couldn't hold in: ${p.soundsTotal}`);
+  }
+  if (p.signalLog.length) {
+    lines.push("she reached for the buttons and told you, deliberately:");
+    for (const s of p.signalLog) {
+      lines.push(`  ${mm(s.at_s)} — “${s.kind === "there" ? "I'm there ♡" : "I'm close"}”`);
+    }
   }
   const whispers = p.history.filter((h) => h.whisper);
   if (whispers.length) {
@@ -8556,6 +8585,8 @@ function wireApp() {
   // tab picks the loop back up at once if his next look came due meanwhile.
   $("practice-start-btn").addEventListener("click", startPractice);
   $("practice-stop").addEventListener("click", () => endPractice(false));
+  $("practice-close-btn").addEventListener("click", () => practiceSignal("close"));
+  $("practice-there-btn").addEventListener("click", () => practiceSignal("there"));
   $("practice-ceiling").addEventListener("input", () => {
     $("practice-ceiling-val").textContent = $("practice-ceiling").value + "%";
   });

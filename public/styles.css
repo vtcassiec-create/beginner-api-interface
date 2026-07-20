@@ -2993,6 +2993,21 @@ details.vault-event[open] > summary { color: var(--text); margin-bottom: 6px; }
   max-width: 26rem;
 }
 .practice-whisper[hidden] { display: none; }
+
+/* Her confession buttons: big enough to hit from a held pose, warm, and
+   visually nothing like STOP (which stays alone at the bottom, red-family). */
+.practice-signals { display: flex; gap: 14px; }
+.practice-signal {
+  padding: 14px 22px;
+  font-size: 16px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  cursor: pointer;
+}
+.practice-signal:active { background: var(--accent); color: var(--bg); }
+
 #practice-overlay .call-end { margin-top: 12px; }
 .practice-minutes-label {
   display: flex; align-items: center; gap: 6px;

@@ -25,6 +25,9 @@ Request body (POST JSON):
   bpm         — her live heart rate, or null if the band is off/stale
   resting_bpm — her resting rate, or null
   breath      — {level: 0..1, peak: 0..1, sounds: n} since his last look, or null
+  signals     — [{at_s, kind: 'close'|'there'}] her deliberate taps since his
+                last look; they change nothing mechanically — they only tell him
+  devices     — [names] of the toys connected right now (e.g. ["Gemini"])
   history     — [{at_s, level, kind, whisper}] his recent decisions, oldest first
   persona     — his system prompt, so the pattern is HIM (optional)
 
@@ -99,10 +102,19 @@ class handler(BaseHTTPRequestHandler):
         history = body.get("history")
         history = history[-MAX_HISTORY:] if isinstance(history, list) else []
         persona = (body.get("persona") or "").strip()
+        # Her deliberate taps since his last look — "close" / "there". They
+        # change nothing mechanically; they exist purely so HE knows.
+        signals = body.get("signals")
+        signals = [s for s in signals if isinstance(s, dict)][:12] \
+            if isinstance(signals, list) else []
+        devices = body.get("devices")
+        devices = [str(d).strip()[:40] for d in devices
+                   if str(d).strip()][:6] if isinstance(devices, list) else []
 
         system = self._build_system(persona)
         user_turn = self._build_user_turn(
-            elapsed, total, ceiling, bpm, rest, breath, history)
+            elapsed, total, ceiling, bpm, rest, breath, history,
+            signals, devices)
 
         out = self._decide(api_key, system, user_turn)
         return self._json(200, self._clamp(out, ceiling))
@@ -215,7 +227,16 @@ class handler(BaseHTTPRequestHandler):
             "phone mid-pose hits hardest when she's stopped expecting it. "
             "When under a minute remains, that's your last word before the "
             "timer ends — make it count, and bring the toy down gently so "
-            "the practice ends on your terms, not mid-surge.")
+            "the practice ends on your terms, not mid-surge.\n\n"
+            "Two buttons live at the edge of her mat: \"I'm close\" and "
+            "\"I'm there.\" They change nothing by themselves — no stop, no "
+            "surge; they only tell YOU, at your next look. Weigh them "
+            "differently from the sensors: the band is her body reporting; "
+            "the buttons are her CHOOSING to confess, mid-pose, to you. A "
+            "confession under your pattern is part of the game — ease off "
+            "and make her hold, press through, or answer with your voice; "
+            "your call, your rules. And if \"I'm there\" arrives... you'll "
+            "know exactly what you did.")
         parts.append(
             "# How to answer\n\n"
             "Reply with ONE JSON object and nothing else — no prose, no code "
@@ -233,7 +254,7 @@ class handler(BaseHTTPRequestHandler):
         return "\n\n".join(parts)
 
     def _build_user_turn(self, elapsed, total, ceiling, bpm, rest, breath,
-                         history):
+                         history, signals=None, devices=None):
         remaining = max(0, total - elapsed)
         lines = [
             f"Practice: {elapsed // 60}m{elapsed % 60:02d}s in, "
@@ -241,6 +262,8 @@ class handler(BaseHTTPRequestHandler):
             f"(planned {total // 60} minutes).",
             f"Ceiling: {ceiling:.2f}.",
         ]
+        if devices:
+            lines.append("The toy in play: " + ", ".join(devices) + ".")
         if bpm:
             hb = f"Her heart, right now: {bpm} bpm"
             if rest:
@@ -267,6 +290,17 @@ class handler(BaseHTTPRequestHandler):
                 lines.append("Since your last look: " + ", ".join(bits) + ".")
         else:
             lines.append("The mic is off — no sound picture this time.")
+        if signals:
+            lines.append("")
+            lines.append("She reached for the buttons since your last look — "
+                         "deliberate confessions, not sensors:")
+            for s in signals:
+                try:
+                    at = int(s.get("at_s") or 0)
+                except Exception:
+                    at = 0
+                word = ("I'm there" if s.get("kind") == "there" else "I'm close")
+                lines.append(f"  {at // 60}m{at % 60:02d}s — \"{word}\"")
         if history:
             lines.append("")
             lines.append("Your pattern so far (oldest first):")
