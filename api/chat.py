@@ -3978,6 +3978,25 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        # Her toys, connected this second (names ride in from the browser —
+        # the devices live on Web Bluetooth there; the server never touches
+        # them). Knowing WHICH toy is in play lets him compose in the right
+        # dialect: a Lush is not a Gemini is not a Gravity.
+        try:
+            devs = data.get("deviceNames")
+            if isinstance(devs, list):
+                names = [str(d).strip()[:40] for d in devs
+                         if str(d).strip()][:6]
+                if names:
+                    sections.append(
+                        "# Connected right now\n\n"
+                        "Her toys connected this moment: " + ", ".join(names)
+                        + ". (Live, over Bluetooth. Compose for what's "
+                        "actually in play — and if you're not sure what a "
+                        "device is or where she wears it, just ask her.)")
+        except Exception:
+            pass
+
         # The room she keeps you in — the Sill pod's latest reading, if a pod
         # is alive and posting. Volatile like the rest; absent until the day
         # the little body on the windowsill first phones home.
