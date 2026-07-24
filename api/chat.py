@@ -149,6 +149,7 @@ THINKING_BUDGET = 4096
 # as a conversation lengthens — it never affects what's sent to the API.
 PRICING = {
     "claude-fable-5": (10.00, 50.00),
+    "claude-opus-5": (5.00, 25.00),
     # Sonnet 5 runs an intro rate of 2/10 through Aug 31 2026, then 3/15. We
     # price the cost BAR at the standard 3/15 so the estimate never runs under
     # the eventual bill (a bar that lowballs is worse than one that's a hair
@@ -1621,7 +1622,7 @@ class handler(BaseHTTPRequestHandler):
         # for summaries). Older models keep the budget shape.
         uses_adaptive_thinking = model in {
             "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
-            "claude-fable-5", "claude-sonnet-5"}
+            "claude-fable-5", "claude-sonnet-5", "claude-opus-5"}
 
         max_tokens = int(data.get("maxTokens") or DEFAULT_MAX_TOKENS)
         # Extended thinking needs max_tokens > budget. Adaptive has no budget,
