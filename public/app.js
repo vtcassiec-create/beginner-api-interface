@@ -4273,6 +4273,8 @@ function toolEventChip(ev) {
       unshelve_feed: ["📚 Tidied his shelf", false],
       recall_conversation: ["🕰️ Looked back at a past day", true],
       show_links: ["🕸️ Looked over his web of connections", true],
+      track_current: ["🧵 Picked up a thread — added to his current", true],
+      resolve_current: ["🧵 Closed a thread on his current", true],
     };
     const [label, showSum] = map[ev.name] || ["🪶 Memory", true];
     if (ev.ok) {
