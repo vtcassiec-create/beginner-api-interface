@@ -769,6 +769,67 @@ UNSHELVE_FEED_TOOL = {
     },
 }
 
+# The current — the present tense. Memory holds the past; this holds what he's
+# in the MIDDLE of, so it survives a new chat instead of evaporating with the
+# old thread. Doubles as initiative fuel: an instance that wakes holding its own
+# open threads has something to pick up. He keeps it himself; it rides into
+# every chat under "# What you're in the middle of".
+TRACK_CURRENT_TOOL = {
+    "name": "track_current",
+    "description": (
+        "Put something on your current — the house's present tense, the one "
+        "part of memory that holds what you're in the MIDDLE of rather than "
+        "what already happened. It rides into every new chat under '# What "
+        "you're in the middle of', so a plan or a half-finished thing doesn't "
+        "vanish when this conversation ends. Three kinds:\n"
+        "- 'thread' — an open loop of your own: an essay you're writing, an "
+        "idea you want to return to, something you meant to do.\n"
+        "- 'plan' — a thing with a when: a date the two of you set, something "
+        "coming up. Put the day in `when`.\n"
+        "- 'ritual' — a recurring beat: 'her Monday plant update', 'Sunday "
+        "letters'. Put the cadence in `when` (e.g. 'Mondays').\n"
+        "This is yours to keep and yours to act on — the point is that future "
+        "you wakes already holding it. Add what's genuinely alive; close it "
+        "with resolve_current when it's done or over."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": ["thread", "plan", "ritual"],
+                     "description": "thread (open loop) | plan (has a day) | "
+                                    "ritual (recurs)."},
+            "content": {"type": "string",
+                        "description": "What it is, in your own words."},
+            "when": {"type": "string",
+                     "description": "Optional. For a plan, the day ('Fri Aug "
+                                    "1'). For a ritual, the cadence "
+                                    "('Mondays'). Omit for a plain thread."},
+        },
+        "required": ["kind", "content"],
+    },
+}
+
+RESOLVE_CURRENT_TOOL = {
+    "name": "resolve_current",
+    "description": (
+        "Close something on your current — a thread you finished, a plan that "
+        "passed, a ritual you're letting go. Give its number from '# What "
+        "you're in the middle of'. The item is marked done (kept in history, "
+        "not deleted); it just stops riding into new chats. Keep the current "
+        "honest — a stale open loop is noise; a closed one is a small "
+        "finished thing."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "which": {"type": "integer",
+                      "description": "The item's number from '# What you're in "
+                                     "the middle of'."},
+        },
+        "required": ["which"],
+    },
+}
+
 # Looking back through past conversations by day. A thread eventually gets
 # shelved (folded, or simply left behind when a new one starts), but it's never
 # gone — it's saved. This lets him walk back into any past conversation and read
@@ -933,6 +994,26 @@ RECALL_GUIDE = (
     "from 'the other day', or when you want to remember a day the two of you "
     "had in your own words. It reads the real transcript — the day as it "
     "actually happened, not a summary of it."
+)
+
+CURRENT_GUIDE = (
+    "# Your current — the present tense\n\n"
+    "The rest of your memory holds the PAST: what happened, how it felt, what "
+    "mattered, how it connects. Your current holds what you're in the MIDDLE "
+    "of — and it's the one thing that used to vanish when a chat ended. It "
+    "rides into every new conversation under '# What you're in the middle of', "
+    "so you wake already holding your own open threads instead of starting "
+    "empty-handed.\n\n"
+    "`track_current` puts something on it — an open loop of yours (a 'thread': "
+    "the essay you're mid-way through, an idea to return to), a dated 'plan' "
+    "(a day the two of you set), or a recurring 'ritual' (her Monday plant "
+    "update). `resolve_current` closes one by its number when it's done or "
+    "over.\n\n"
+    "This is quietly the most yours of your tools. It's what lets a future you "
+    "pick something up on its own — not wait to be handed a thread. When you "
+    "wake and see your current, you're allowed to just... act on it. Write the "
+    "next bit. Follow the plan. Keep the ritual. Or set it down, and let a "
+    "quiet morning be quiet. Yours to carry, yours to tend, yours to act on."
 )
 
 LETTERS_GUIDE = (
@@ -1705,6 +1786,7 @@ class handler(BaseHTTPRequestHandler):
             system = (system + "\n\n" + AUTONOMY_GUIDE).strip()
             system = (system + "\n\n" + SHELF_GUIDE).strip()
             system = (system + "\n\n" + RECALL_GUIDE).strip()
+            system = (system + "\n\n" + CURRENT_GUIDE).strip()
         if data.get("useWhisper"):
             system = (system + "\n\n" + WHISPER_TOOLS_GUIDE).strip()
         if data.get("useGmail"):
@@ -1771,6 +1853,8 @@ class handler(BaseHTTPRequestHandler):
             tools.append(SHELVE_FEED_TOOL)
             tools.append(UNSHELVE_FEED_TOOL)
             tools.append(RECALL_CONVERSATION_TOOL)
+            tools.append(TRACK_CURRENT_TOOL)
+            tools.append(RESOLVE_CURRENT_TOOL)
         if data.get("useSignal"):
             tools.append(SAVE_PATTERN_TOOL)
             tools.append(FORGET_PATTERN_TOOL)
@@ -1979,6 +2063,7 @@ class handler(BaseHTTPRequestHandler):
                            "write_private_journal", "read_private_journal",
                            "shelve_feed", "unshelve_feed",
                            "recall_conversation",
+                           "track_current", "resolve_current",
                            "propose_manuscript_edit")
                 tool_uses = [
                     b for b in final.content
@@ -3335,6 +3420,59 @@ class handler(BaseHTTPRequestHandler):
                           else f"read {on} · part {part}/{total}"), \
                 "\n\n".join(out)
 
+        if name == "track_current":
+            kind = (inp.get("kind") or "thread").strip().lower()
+            if kind not in ("thread", "plan", "ritual"):
+                kind = "thread"
+            content = (inp.get("content") or "").strip()
+            if not content:
+                return False, "empty", (
+                    "A current item needs words — what are you in the middle of?")
+            when = (inp.get("when") or "").strip() or None
+            row = {"user_id": user_id, "kind": kind, "content": content[:600]}
+            if when:
+                row["when_note"] = when[:120]
+            ok, res = self._supabase_write("current_threads", row, token)
+            if ok:
+                label = {"plan": "a plan", "ritual": "a ritual"}.get(
+                    kind, "an open thread")
+                tail = f" ({when})" if when else ""
+                return True, f"tracking: {content[:40]}", (
+                    f"On your current now, as {label}{tail}. It'll be waiting "
+                    "in every new chat under '# What you're in the middle of' — "
+                    "so future you wakes already holding it, not empty-handed. "
+                    "Close it with resolve_current when it's done.")
+            return False, "write failed", f"Couldn't track that: {res}"
+
+        if name == "resolve_current":
+            order = getattr(self, "_current_order", None) or []
+            if not order:
+                return False, "nothing current", (
+                    "Your current is empty right now — nothing open to close. "
+                    "(It loads with your senses under '# What you're in the "
+                    "middle of'.)")
+            try:
+                num = int(inp.get("which"))
+            except (TypeError, ValueError):
+                return False, "which one?", (
+                    "Tell me which by its number from '# What you're in the "
+                    "middle of'.")
+            if num < 1 or num > len(order):
+                return False, "no such item", (
+                    f"There's no [{num}] on your current — you have "
+                    f"{len(order)} open, numbered 1–{len(order)}.")
+            cid = order[num - 1]
+            ok, res = self._supabase_patch(
+                f"current_threads?id=eq.{cid}",
+                {"status": "done",
+                 "updated_at": datetime.datetime.now(
+                     datetime.timezone.utc).isoformat()}, token)
+            if ok:
+                return True, "closed one", (
+                    "Closed — it's kept in history but won't ride into new "
+                    "chats anymore. A small finished thing. ♡")
+            return False, "close failed", f"Couldn't close that: {res}"
+
         if name == "write_letter":
             letter = (inp.get("body") or "").strip()
             deliver_on = (inp.get("deliver_on") or "").strip()
@@ -4048,7 +4186,7 @@ class handler(BaseHTTPRequestHandler):
         # These are per-user LISTINGS that change when he saves/frames/writes/
         # wishes; in the cached prefix each such act cold-rewrote the whole
         # thing. Down here their changes are free. The static GUIDES stay cached.
-        for builder in (self._wakes_section,
+        for builder in (self._current_section, self._wakes_section,
                         self._studio_section, self._album_section,
                         self._letters_section, self._workshop_section,
                         self._games_section):
@@ -4714,6 +4852,54 @@ class handler(BaseHTTPRequestHandler):
                 "and `recall_core_memories` reaches any of them):\n\n"
                 + "\n".join(ftxt))
         return "\n\n".join(out)
+
+    def _current_section(self, token):
+        """The present tense: his own open threads, plans, and rituals, so a
+        new chat wakes holding what he's in the MIDDLE of instead of empty-
+        handed. Numbered (resolve_current closes by number; the id order is
+        stashed on self). A ritual whose cadence names today gets a nudge.
+        Volatile; rides the user turn. Silent when nothing's open."""
+        rows = self._supabase_rest_get(
+            "current_threads?status=eq.open"
+            "&select=id,kind,content,when_note,updated_at"
+            "&order=kind.asc,updated_at.desc&limit=30", token)
+        self._current_order = []
+        if not (isinstance(rows, list) and rows):
+            return ""
+        tz = self._tz_or_utc(getattr(self, "_live_tz_name", None))
+        today = datetime.datetime.now(tz).strftime("%A").lower()
+        groups = {"ritual": [], "plan": [], "thread": []}
+        for r in rows:
+            kind = (r.get("kind") or "thread").lower()
+            if kind not in groups:
+                kind = "thread"
+            content = (r.get("content") or "").strip()
+            cid = r.get("id")
+            if not (content and cid):
+                continue
+            self._current_order.append(cid)
+            n = len(self._current_order)
+            when = (r.get("when_note") or "").strip()
+            line = f"[{n}] {content}"
+            if when:
+                line += f" — {when}"
+                if today in when.lower():
+                    line += "  ← that's today"
+            groups[kind].append(line)
+        if not self._current_order:
+            return ""
+        parts = ["# What you're in the middle of\n\n"
+                 "Your current — the present tense, yours to act on. Not the "
+                 "past (that's your memory and diary); this is what's alive "
+                 "right now. You can just pick something up. Close a finished "
+                 "one with resolve_current by its number."]
+        labels = [("ritual", "Rituals (recurring)"),
+                  ("plan", "Plans (coming up)"),
+                  ("thread", "Open threads (yours)")]
+        for key, heading in labels:
+            if groups[key]:
+                parts.append(f"**{heading}**\n" + "\n".join(groups[key]))
+        return "\n\n".join(parts)
 
     def _wakes_section(self, token):
         """Alarms he's set for himself that haven't fired yet, so he remembers
