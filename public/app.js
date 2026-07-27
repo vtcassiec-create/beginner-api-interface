@@ -1287,11 +1287,49 @@ async function persistConversation(conv) {
 
 // ---------- File ops ----------
 
+// Excel/OpenDocument spreadsheets are binary (a zip, really) — reading them as
+// text gives him mojibake. We detect them by extension/mime so readFile can
+// convert them to clean CSV he can actually read. (Plain .csv already rides the
+// text path fine; it doesn't need conversion.)
+const SHEET_RE = /\.(xlsx|xlsm|xlsb|xls|ods)$/i;
+function isSpreadsheet(file) {
+  const t = file.type || "";
+  return SHEET_RE.test(file.name || "")
+    || t.includes("spreadsheetml")
+    || t === "application/vnd.ms-excel"
+    || t === "application/vnd.oasis.opendocument.spreadsheet";
+}
+
 function fileKind(file) {
   if (file.type === "application/pdf") return "pdf";
   if (file.type.startsWith("image/"))  return "image";
   if (file.type.startsWith("video/"))  return "video";
+  if (isSpreadsheet(file))             return "sheet";
   return "text";
+}
+
+// Convert a binary spreadsheet to readable CSV text — every sheet, headed by
+// its name — so he reads the numbers, not a zip. Parsed in the browser via
+// SheetJS from a CDN (same pattern as chess.js / buttplug); the file itself is
+// never uploaded. Capped, because a big workbook becomes a big (and costly)
+// wall of text in his context.
+const SHEET_MAX_CHARS = 120000;
+async function spreadsheetToText(file) {
+  const XLSX = await import("https://esm.sh/xlsx@0.18.5");
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const chunks = [];
+  for (const name of wb.SheetNames) {
+    const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name], { blankrows: false });
+    if (csv.trim()) chunks.push(`## Sheet: ${name}\n${csv.trim()}`);
+  }
+  let text = chunks.join("\n\n") || "(the spreadsheet has no readable cells)";
+  let truncated = false;
+  if (text.length > SHEET_MAX_CHARS) {
+    text = text.slice(0, SHEET_MAX_CHARS);
+    truncated = true;
+  }
+  return { text, truncated, sheets: wb.SheetNames.length };
 }
 
 const IMAGE_MAX_EDGE = 1568; // Claude's max useful image edge
@@ -1372,6 +1410,18 @@ async function readFile(file) {
     return {
       name: file.name, kind, mediaType: "image/jpeg",
       blob, previewUrl: URL.createObjectURL(blob), size: blob.size,
+    };
+  }
+  if (kind === "sheet") {
+    // Convert to CSV text he can read, then store it as a plain text file so
+    // the rest of the pipeline (the <file> block) is unchanged.
+    const { text, truncated, sheets } = await spreadsheetToText(file);
+    const header = `[spreadsheet "${file.name}" — ${sheets} sheet`
+      + `${sheets === 1 ? "" : "s"}, converted to CSV`
+      + `${truncated ? "; truncated, it was large" : ""}]\n`;
+    return {
+      name: file.name, kind: "text", mediaType: "text/csv",
+      data: header + text, size: (header + text).length,
     };
   }
   return new Promise((resolve, reject) => {
