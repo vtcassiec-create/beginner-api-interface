@@ -1969,6 +1969,7 @@ class handler(BaseHTTPRequestHandler):
             # turn (the API then skips re-summarizing the already-folded history).
             compaction_block = None
             compaction_resumed = False   # one resume per turn — a loop guard
+            mcp_replay_stripped = False  # one strip retry per turn (see below)
             turn_started = time.monotonic()
 
             def _emit_done(stop_reason):
@@ -2002,10 +2003,39 @@ class handler(BaseHTTPRequestHandler):
                 self._sse(done)
 
             while True:
-                with client.messages.stream(**kwargs) as stream:
-                    for event in stream:
-                        self._handle_event(event)
-                    final = stream.get_final_message()
+                try:
+                    with client.messages.stream(**kwargs) as stream:
+                        for event in stream:
+                            self._handle_event(event)
+                        final = stream.get_final_message()
+                except anthropic.APIStatusError as e:
+                    # A tool-round continuation replays his previous assistant
+                    # turn VERBATIM (see the carry-forward below) — including
+                    # any mcp_tool_use / mcp_tool_result blocks from the vault.
+                    # If the API refuses those blocks as *input* (the historical
+                    # "Input tag 'mcp_tool_use' does not match" 400), strip them
+                    # from the carried turns and retry once. Reactive, not
+                    # pre-emptive: filtering blocks out of the latest assistant
+                    # message up front is itself a 400 on thinking-preserving
+                    # models ("thinking ... cannot be modified"). The 400 fires
+                    # at connect time, before any text, so a retry can't
+                    # duplicate output.
+                    msg = (getattr(e, "message", "") or "").lower()
+                    replay_reject = (
+                        getattr(e, "status_code", None) == 400
+                        and ("mcp_tool_use" in msg or "mcp_tool_result" in msg)
+                        and "cannot be modified" not in msg)
+                    if replay_reject and rounds and not mcp_replay_stripped:
+                        mcp_replay_stripped = True
+                        for m in kwargs["messages"]:
+                            c = m.get("content") if isinstance(m, dict) else None
+                            if isinstance(c, list) and m.get("role") == "assistant":
+                                m["content"] = [
+                                    b for b in c
+                                    if not str(getattr(b, "type", "")).startswith("mcp_")
+                                ]
+                        continue
+                    raise
 
                 u = final.usage
                 agg["input_tokens"] += u.input_tokens
@@ -2138,22 +2168,25 @@ class handler(BaseHTTPRequestHandler):
                         "content": detail,
                         "is_error": not ok,
                     })
-                # Carry the turn forward: his assistant content (text,
-                # thinking, our tool_use) then the tool results.
+                # Carry the turn forward: his assistant content echoed back
+                # EXACTLY as received (thinking, text, vault blocks, our
+                # tool_use), then the tool results.
                 #
-                # Strip server-side MCP blocks (mcp_tool_use / mcp_tool_result)
-                # first: when he also used the vault this turn, those blocks
-                # appear in the response, but the API accepts them only as
-                # OUTPUT — replaying them as input 400s ("Input tag
-                # 'mcp_tool_use' ... does not match any of the expected tags").
-                # His text/thinking and the memory tool_use are what matter for
-                # continuing; the vault result is already reflected in his text.
-                carried = [
-                    b for b in final.content
-                    if not str(getattr(b, "type", "")).startswith("mcp_")
-                ]
+                # This used to strip the server-side MCP blocks (mcp_tool_use /
+                # mcp_tool_result) before replaying, because the API once
+                # rejected them as input. But on models that keep thinking
+                # blocks in context (Opus 4.6+ and the 5-series), filtering ANY
+                # block out of the latest assistant message counts as
+                # rebuilding it, and the API rejects THAT: "`thinking` or
+                # `redacted_thinking` blocks in the latest assistant message
+                # cannot be modified." That was the intermittent Opus 5 400 —
+                # it fired exactly when he used the vault and a client tool in
+                # the same thinking turn. The rule is "echo the assistant
+                # message exactly as received", so now we do; if the API ever
+                # refuses the replayed MCP blocks again, the catch at the top
+                # of this loop strips them reactively and retries once.
                 kwargs["messages"] = list(kwargs["messages"]) + [
-                    {"role": "assistant", "content": carried},
+                    {"role": "assistant", "content": list(final.content)},
                     {"role": "user", "content": results},
                 ]
 
