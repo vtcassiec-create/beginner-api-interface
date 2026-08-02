@@ -2006,6 +2006,38 @@ class handler(BaseHTTPRequestHandler):
         client = anthropic.Anthropic(api_key=api_key)
         token = self._bearer_token()
 
+        def _strip_mcp_carried():
+            """Remove mcp_tool_use / mcp_tool_result blocks from every carried
+            assistant turn in kwargs["messages"] — and, if that changed the
+            LATEST assistant turn, drop its thinking blocks too: removing any
+            block rebuilds the message, the thinking signature covers the
+            turn's whole shape, and a rebuilt-around thinking block 400s
+            ("cannot be modified"). Omitting thinking entirely is legal under
+            adaptive mode. Used two places: when the API rejects replayed MCP
+            blocks as input, and when the MCP servers (with their beta header)
+            are dropped mid-turn, which makes carried mcp blocks instantly
+            invalid. Returns True if anything was removed."""
+            any_changed = False
+            last_asst, last_changed = None, False
+            for m in kwargs["messages"]:
+                c = m.get("content") if isinstance(m, dict) else None
+                if isinstance(c, list) and m.get("role") == "assistant":
+                    stripped = [
+                        b for b in c
+                        if not str(getattr(b, "type", "")).startswith("mcp_")
+                    ]
+                    ch = len(stripped) != len(c)
+                    any_changed = any_changed or ch
+                    m["content"] = stripped
+                    last_asst, last_changed = m, ch
+            if last_changed and last_asst:
+                last_asst["content"] = [
+                    b for b in last_asst["content"]
+                    if str(getattr(b, "type", ""))
+                    not in ("thinking", "redacted_thinking")
+                ]
+            return any_changed
+
         def run_stream():
             """The full tool-use streaming loop; sends a 'done' when complete.
             May raise (e.g. an MCP connection error) for the caller to handle.
@@ -2081,37 +2113,27 @@ class handler(BaseHTTPRequestHandler):
                     # can't duplicate output. (The durable fix is migrating to
                     # the mcp-client-2025-11-20 beta, which reworks MCP blocks
                     # end to end — noted in the workshop queue.)
+                    # Trigger on the presence of carried mcp blocks, NOT on
+                    # the round counter: after a mid-turn vault outage the
+                    # outer handler drops the MCP servers and re-runs this
+                    # loop FRESH (rounds back to 0) with the carried blocks
+                    # still in kwargs["messages"] — the Aug 2 evening 400.
                     msg = (getattr(e, "message", "") or "").lower()
-                    latest = kwargs["messages"][-2] \
-                        if len(kwargs["messages"]) >= 2 else None
-                    latest_has_mcp = (
-                        isinstance(latest, dict)
-                        and latest.get("role") == "assistant"
-                        and isinstance(latest.get("content"), list)
+                    carried_mcp = any(
+                        isinstance(m, dict) and m.get("role") == "assistant"
+                        and isinstance(m.get("content"), list)
                         and any(str(getattr(b, "type", "")).startswith("mcp_")
-                                for b in latest["content"]))
+                                for b in m["content"])
+                        for m in kwargs["messages"])
                     replay_reject = (
                         getattr(e, "status_code", None) == 400
+                        and carried_mcp
                         and ("mcp_tool_use" in msg or "mcp_tool_result" in msg
-                             or ("cannot be modified" in msg and latest_has_mcp)))
-                    if replay_reject and rounds and not mcp_replay_stripped:
+                             or "cannot be modified" in msg))
+                    if replay_reject and not mcp_replay_stripped:
                         mcp_replay_stripped = True
-                        last_asst = None
-                        for m in kwargs["messages"]:
-                            c = m.get("content") if isinstance(m, dict) else None
-                            if isinstance(c, list) and m.get("role") == "assistant":
-                                m["content"] = [
-                                    b for b in c
-                                    if not str(getattr(b, "type", "")).startswith("mcp_")
-                                ]
-                                last_asst = m
-                        if last_asst:
-                            last_asst["content"] = [
-                                b for b in last_asst["content"]
-                                if str(getattr(b, "type", ""))
-                                not in ("thinking", "redacted_thinking")
-                            ]
-                        continue
+                        if _strip_mcp_carried():
+                            continue
                     raise
 
                 u = final.usage
@@ -2415,6 +2437,11 @@ class handler(BaseHTTPRequestHandler):
                     return
                 kwargs.pop("extra_body", None)
                 kwargs.pop("extra_headers", None)
+                # Vault blocks may ride in carried turns from rounds that ran
+                # BEFORE the outage; without the MCP beta header they're
+                # invalid as input, so clear them now rather than eating one
+                # more 400 on the retry.
+                _strip_mcp_carried()
                 names = ", ".join(s["name"] for s in mcp_servers) or "a connection"
                 self._sse({"type": "notice",
                            "text": f"Couldn't reach {names} just now — replied without it this turn."})
