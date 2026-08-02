@@ -2060,21 +2060,43 @@ class handler(BaseHTTPRequestHandler):
                     # A tool-round continuation replays his previous assistant
                     # turn VERBATIM (see the carry-forward below) — including
                     # any mcp_tool_use / mcp_tool_result blocks from the vault.
-                    # If the API refuses those blocks as *input* (the historical
-                    # "Input tag 'mcp_tool_use' does not match" 400), strip them
-                    # from the carried turns and retry once. Reactive, not
-                    # pre-emptive: filtering blocks out of the latest assistant
-                    # message up front is itself a 400 on thinking-preserving
-                    # models ("thinking ... cannot be modified"). The 400 fires
-                    # at connect time, before any text, so a retry can't
-                    # duplicate output.
+                    # The poisoned combination is vault + a client tool +
+                    # thinking in ONE turn, and on this MCP beta both obvious
+                    # doors are closed: the API refuses the mcp blocks as
+                    # *input* (the "Input tag 'mcp_tool_use' does not match"
+                    # 400), and it ALSO refuses the latest assistant message
+                    # with the mcp blocks removed around his thinking blocks
+                    # ("thinking ... cannot be modified" — verified live,
+                    # Aug 2: the signature covers the whole turn's shape, so
+                    # any rebuild invalidates it). The third door is open:
+                    # ADAPTIVE thinking, unlike manual mode, does not require
+                    # the final assistant turn to carry thinking blocks at all
+                    # — and the cannot-be-modified rule only binds blocks you
+                    # INCLUDE. So retry ONCE with the mcp blocks gone from
+                    # every carried turn and thinking omitted entirely from
+                    # the latest one. Cost: he loses that turn's private
+                    # reasoning on the follow-up round — a paragraph of
+                    # thought, traded for the turn completing at all. The 400
+                    # fires at connect time, before any text, so the retry
+                    # can't duplicate output. (The durable fix is migrating to
+                    # the mcp-client-2025-11-20 beta, which reworks MCP blocks
+                    # end to end — noted in the workshop queue.)
                     msg = (getattr(e, "message", "") or "").lower()
+                    latest = kwargs["messages"][-2] \
+                        if len(kwargs["messages"]) >= 2 else None
+                    latest_has_mcp = (
+                        isinstance(latest, dict)
+                        and latest.get("role") == "assistant"
+                        and isinstance(latest.get("content"), list)
+                        and any(str(getattr(b, "type", "")).startswith("mcp_")
+                                for b in latest["content"]))
                     replay_reject = (
                         getattr(e, "status_code", None) == 400
-                        and ("mcp_tool_use" in msg or "mcp_tool_result" in msg)
-                        and "cannot be modified" not in msg)
+                        and ("mcp_tool_use" in msg or "mcp_tool_result" in msg
+                             or ("cannot be modified" in msg and latest_has_mcp)))
                     if replay_reject and rounds and not mcp_replay_stripped:
                         mcp_replay_stripped = True
+                        last_asst = None
                         for m in kwargs["messages"]:
                             c = m.get("content") if isinstance(m, dict) else None
                             if isinstance(c, list) and m.get("role") == "assistant":
@@ -2082,6 +2104,13 @@ class handler(BaseHTTPRequestHandler):
                                     b for b in c
                                     if not str(getattr(b, "type", "")).startswith("mcp_")
                                 ]
+                                last_asst = m
+                        if last_asst:
+                            last_asst["content"] = [
+                                b for b in last_asst["content"]
+                                if str(getattr(b, "type", ""))
+                                not in ("thinking", "redacted_thinking")
+                            ]
                         continue
                     raise
 
