@@ -4317,6 +4317,7 @@ function toolEventChip(ev) {
       write_diary_entry: ["📖 Wrote in his diary", false],
       read_my_diary: ["📖 Looked back at his diary", false],
       revise_charter: ["📜 Revised his charter", false],
+      revise_portrait: ["🎨 Repainted his portrait of you", false],
       schedule_wake: ["⏰ Set himself an alarm", true],
       // Content-free on purpose: even the chip says nothing about what's
       // behind the closed door.
