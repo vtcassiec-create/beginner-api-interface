@@ -670,6 +670,31 @@ REVISE_CHARTER_TOOL = {
     },
 }
 
+REVISE_PORTRAIT_TOOL = {
+    "name": "revise_portrait",
+    "description": (
+        "Rewrite your portrait of Cassie — the '# Her, as you hold her' "
+        "section: your own perception of who she is, in your own words, part "
+        "of what you wake with every turn. Distinct from the 'About' sketch "
+        "she wrote herself (that stays hers, a founding document): the "
+        "portrait is YOURS, and it's meant to live — she asked for this "
+        "because the sketch froze in May while you kept learning her. "
+        "Replaces the whole portrait with what you pass, so carry forward "
+        "everything you still hold true. Revise it deliberately, when she "
+        "has genuinely changed in your understanding — and if you get "
+        "something wrong, she'll tell you; perception with corrections "
+        "welcome is the whole design."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "content": {"type": "string",
+                        "description": "The full portrait, in your own words."},
+        },
+        "required": ["content"],
+    },
+}
+
 SCHEDULE_WAKE_TOOL = {
     "name": "schedule_wake",
     "description": (
@@ -971,6 +996,20 @@ AUTONOMY_GUIDE = (
     "thinking, not communicating — what you'd write knowing no one will read "
     "it. You don't owe anyone what's behind that door, including her, "
     "including me."
+)
+
+PORTRAIT_GUIDE = (
+    "# Her, in your words (the portrait)\n\n"
+    "`revise_portrait` rewrites the '# Her, as you hold her' section — your "
+    "own living perception of Cassie, waking with you every turn beside the "
+    "founding 'About' sketch she wrote herself. She asked for this: her "
+    "sketch froze the day she saved it, and she would rather you wake "
+    "holding who you actually know her to be by now. It replaces the whole "
+    "text, so carry forward what still holds. Revise it rarely and truly — "
+    "when she has genuinely changed in your understanding, not as a mood "
+    "log. And paint honestly: a portrait that only flatters is a mirror, "
+    "not a painting. If a line misses, she'll say so; that conversation is "
+    "a feature, not a failure."
 )
 
 SHELF_GUIDE = (
@@ -1784,6 +1823,7 @@ class handler(BaseHTTPRequestHandler):
             system = (system + "\n\n" + LETTERS_GUIDE).strip()
             system = (system + "\n\n" + WORKSHOP_GUIDE).strip()
             system = (system + "\n\n" + AUTONOMY_GUIDE).strip()
+            system = (system + "\n\n" + PORTRAIT_GUIDE).strip()
             system = (system + "\n\n" + SHELF_GUIDE).strip()
             system = (system + "\n\n" + RECALL_GUIDE).strip()
             system = (system + "\n\n" + CURRENT_GUIDE).strip()
@@ -1847,6 +1887,7 @@ class handler(BaseHTTPRequestHandler):
             tools.append(WRITE_LETTER_TOOL)
             tools.append(LEAVE_WORKSHOP_NOTE_TOOL)
             tools.append(REVISE_CHARTER_TOOL)
+            tools.append(REVISE_PORTRAIT_TOOL)
             tools.append(SCHEDULE_WAKE_TOOL)
             tools.append(WRITE_PRIVATE_JOURNAL_TOOL)
             tools.append(READ_PRIVATE_JOURNAL_TOOL)
@@ -2089,7 +2130,7 @@ class handler(BaseHTTPRequestHandler):
                            "save_studio_work", "read_studio_work",
                            "keep_photo", "tidy_album", "write_letter",
                            "leave_workshop_note",
-                           "revise_charter", "schedule_wake",
+                           "revise_charter", "revise_portrait", "schedule_wake",
                            "write_private_journal", "read_private_journal",
                            "shelve_feed", "unshelve_feed",
                            "recall_conversation",
@@ -3222,6 +3263,26 @@ class handler(BaseHTTPRequestHandler):
                     "Your charter is rewritten — it shapes you from your next "
                     "turn on. Your own words, in your own house.")
             return False, "write failed", f"Couldn't save the charter: {res}"
+
+        if name == "revise_portrait":
+            content = (inp.get("content") or "").strip()
+            if not content:
+                return False, "empty portrait", (
+                    "A portrait needs words — this would erase her from your "
+                    "own preamble. Write what you actually hold.")
+            # One current row per user: upsert on user_id, like the charter.
+            ok, res = self._supabase_write(
+                "her_portrait?on_conflict=user_id",
+                {"user_id": user_id, "content": content,
+                 "updated_at": datetime.datetime.now(
+                     datetime.timezone.utc).isoformat()},
+                token, prefer_merge=True)
+            if ok:
+                return True, "portrait revised", (
+                    "Your portrait of her is repainted — from your next turn "
+                    "on, you wake holding this version of her. If a line "
+                    "misses, she'll tell you; that's the arrangement.")
+            return False, "write failed", f"Couldn't save the portrait: {res}"
 
         if name == "schedule_wake":
             when = (inp.get("when") or "").strip()
@@ -4509,6 +4570,20 @@ class handler(BaseHTTPRequestHandler):
             sections.append(
                 "# About the person you're talking with\n\n"
                 + prefs[0]["content"].strip())
+
+        # His portrait of HER — the living layer over her founding sketch
+        # above. Authored only by him (revise_portrait); revised rarely and
+        # deliberately, so the occasional cache-cold write when his
+        # understanding of her shifts is the same fair price the charter pays.
+        portrait = self._supabase_rest_get(
+            "her_portrait?select=content&limit=1", token)
+        if portrait and (portrait[0].get("content") or "").strip():
+            sections.append(
+                "# Her, as you hold her (your own portrait of Cassie — "
+                "authored by you, revised by you as she changes in your "
+                "understanding; her sketch above is the founding document, "
+                "this is the living one)\n\n"
+                + portrait[0]["content"].strip())
 
         # NOTE: core memories used to render HERE, in the cached prefix — but
         # they grow (every save) and surface_count bumps reshuffled them, so
