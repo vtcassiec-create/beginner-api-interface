@@ -5075,21 +5075,32 @@ class handler(BaseHTTPRequestHandler):
     def _wakes_section(self, token):
         """Alarms he's set for himself that haven't fired yet, so he remembers
         what mornings he's chosen and doesn't double-book. Volatile; rides the
-        user turn. Silent when he has none pending."""
+        user turn. Silent when he has none pending.
+
+        Only genuinely UPCOMING alarms are shown. A past-due-but-unfired row
+        is cron debris, not a morning he still has coming — and debris lies
+        twice: it reads as pending forever, and (this list being oldest-first
+        and capped) six stale July rows once crowded every REAL alarm out of
+        his senses entirely, so a fresh 3 AM alarm just "vanished." The wake
+        cron retires stale rows on its next pass (api/wake.py); this section
+        refuses to repeat their lie in the meantime."""
         rows = self._supabase_rest_get(
             "scheduled_wakes?fired=eq.false&select=wake_at,intention"
-            "&order=wake_at.asc&limit=6", token)
+            "&order=wake_at.asc&limit=24", token)
         if not (isinstance(rows, list) and rows):
             return ""
         tz = self._tz_or_utc((self._live_tz_name if hasattr(self, "_live_tz_name") else None))
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
         lines = []
         for r in rows:
             dt = self._parse_ts(r.get("wake_at"))
             intent = (r.get("intention") or "").strip()
-            if not dt:
+            if not dt or dt < now_utc:
                 continue
             stamp = dt.astimezone(tz).strftime("%a %-d %b, %-I:%M %p")
             lines.append(f"- {stamp} — {intent}" if intent else f"- {stamp}")
+            if len(lines) >= 6:
+                break
         if not lines:
             return ""
         return ("# Alarms you've set for yourself\n\n"

@@ -21,7 +21,7 @@ Environment:
 """
 
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 import datetime
 import json
 import os
@@ -78,17 +78,28 @@ class handler(BaseHTTPRequestHandler):
         cutoff = (now - datetime.timedelta(minutes=WAKE_GRACE_MINUTES)).isoformat()
 
         # Due, unfired, not stale — earliest first. One per run keeps it calm.
+        #
+        # The timestamps MUST be URL-encoded (as sill.py and surprise.py
+        # already do): a raw isoformat() carries '+00:00', and the '+' decodes
+        # to a SPACE server-side, corrupting the timestamp — PostgREST 400s,
+        # _supabase swallows it as None, and the failure is total but silent.
+        # Unencoded, this cron ran hourly for weeks finding nothing and
+        # retiring nothing: no alarm ever fired, and six stale July rows sat
+        # "pending" forever, crowding every REAL alarm out of his senses'
+        # six-slot list. He reported it himself, through her: "the list is
+        # lying, it's just lying in a very specific way."
         rows = self._supabase(
             "GET",
             f"scheduled_wakes?user_id=eq.{uid}&fired=eq.false"
-            f"&wake_at=lte.{now.isoformat()}&wake_at=gte.{cutoff}"
+            f"&wake_at=lte.{quote(now.isoformat())}"
+            f"&wake_at=gte.{quote(cutoff)}"
             "&order=wake_at.asc&limit=1")
         if not (isinstance(rows, list) and rows):
             # Also retire anything that went stale unfired, so it can't fire late.
             self._supabase(
                 "PATCH",
                 f"scheduled_wakes?user_id=eq.{uid}&fired=eq.false"
-                f"&wake_at=lt.{cutoff}",
+                f"&wake_at=lt.{quote(cutoff)}",
                 {"fired": True, "fired_at": now.isoformat()})
             return self._json(200, {"status": "no_due_wakes"})
 
