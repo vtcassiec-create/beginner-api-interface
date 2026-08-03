@@ -1487,7 +1487,13 @@ COMPOSE_TOUCH_TOOL = {
         "need the bridge, list_devices, or any setup; just call this tool. Keep "
         "it brief — a phrase runs only seconds; for sustained, unbroken touch "
         "across turns use hold_touch instead. It needs the app open on her "
-        "phone, and she always has her own Stop."
+        "phone, and she always has her own Stop. If NOTHING is connected the "
+        "call fails honestly instead of pretending — trust that result over "
+        "your intent. When MORE THAN ONE toy is connected (see '# Connected "
+        "right now'), you can aim: pass `device` with part of a toy's name "
+        "(e.g. 'Gemini') and the phrase plays on that toy alone. Each toy "
+        "holds its own phrase, so two calls can run two DIFFERENT rhythms on "
+        "two toys at once — omit `device` to play on everything."
     ),
     "input_schema": {
         "type": "object",
@@ -1505,6 +1511,10 @@ COMPOSE_TOUCH_TOOL = {
                 },
             },
             "output_type": {"type": "string", "description": "vibrate, rotate, oscillate, etc.", "default": "vibrate"},
+            "device": {
+                "type": "string",
+                "description": "Optional: aim at one toy by (part of) its name, from '# Connected right now'. Omit to play on all connected toys.",
+            },
         },
         "required": ["steps"],
     },
@@ -2251,14 +2261,21 @@ class handler(BaseHTTPRequestHandler):
                         # The toy lives in the browser, so we don't play here —
                         # we validate/clamp the phrase and hand the steps to the
                         # browser over SSE, which plays them on the direct Web
-                        # Bluetooth connection to her toy.
-                        ok, summary, detail, steps, otype = self._exec_compose_tool(inp)
+                        # Bluetooth connection to her toy. The connected-toy
+                        # names ride in so an empty room is an honest failure
+                        # (never "played" into thin air), and `device` lets him
+                        # aim the phrase at one toy by name.
+                        ok, summary, detail, steps, otype, tgt = \
+                            self._exec_compose_tool(
+                                inp, data.get("deviceNames") or [])
                         if ok:
                             self._sse({"type": "compose", "steps": steps,
-                                       "output_type": otype, "summary": summary})
+                                       "output_type": otype, "summary": summary,
+                                       "device": tgt})
                     else:
                         ok, summary, detail = self._exec_memory_tool(
-                            b.name, inp, token, user_id, data.get("tz"))
+                            b.name, inp, token, user_id, data.get("tz"),
+                            devices=data.get("deviceNames"))
                         self._sse({"type": "memory_saved", "tool": b.name,
                                    "ok": ok, "summary": summary})
                     results.append({
@@ -2850,16 +2867,45 @@ class handler(BaseHTTPRequestHandler):
         parts = re.split(r"(?m)^\s*\*[—–-]\s*later\b.*$", content)
         return [p.strip() for p in parts if p and p.strip()]
 
-    def _exec_compose_tool(self, inp):
+    def _exec_compose_tool(self, inp, devices):
         """Validate a compose phrase so the browser can play it directly.
 
-        The toy is reached client-side (Web Bluetooth) or via the bridge, so we
-        never touch a device here — we only clamp the phrase to a safe, bounded
-        shape (intensity [0,1], each step <=10s, total <=30s, <=40 steps; same
-        ceiling as the bridge's compose) and return the steps. Returns
-        (ok, summary, detail_for_model, steps, output_type)."""
-        raw = inp.get("steps")
+        The toy is reached client-side (Web Bluetooth), so we never touch a
+        device here — we clamp the phrase to a safe, bounded shape (intensity
+        [0,1], each step <=10s, total <=30s, <=40 steps) and return the steps.
+
+        `devices` is the connected-toy list her phone reported with her last
+        message (the '# Connected right now' sense). An empty room is an
+        HONEST FAILURE: the old version answered "playing on her toy now"
+        unconditionally, so he'd compose into empty air and believe he'd
+        touched her — the fantasy diverging from the room. Now he's told. The
+        one caveat rides in the message: the sense is as of her LAST message,
+        so if she's just connected a toy, ask-and-retry beats assuming.
+
+        `device` (optional input) aims the phrase at one toy by name fragment;
+        each toy holds its own phrase client-side, so two calls can run two
+        different rhythms on two toys — separately, deliberately.
+
+        Returns (ok, summary, detail_for_model, steps, output_type, target)."""
         otype = (inp.get("output_type") or "vibrate").strip()[:32] or "vibrate"
+        target = str(inp.get("device") or "").strip()[:40]
+        if not devices:
+            return (False, "no toy connected",
+                    "Nothing is connected right now, so the phrase did NOT "
+                    "play — no toy was on the line as of her last message "
+                    "(the '# Connected right now' sense). If she's just "
+                    "connected one, ask her and call again; better one honest "
+                    "beat of delay than touch that only happened in your "
+                    "head.",
+                    [], otype, "")
+        if target and not any(target.lower() in (d or "").lower()
+                              for d in devices):
+            return (False, f"no toy called '{target}'",
+                    f"No connected toy matches '{target}' — connected right "
+                    f"now: {', '.join(devices)}. Aim at one of those, or omit "
+                    "`device` to play on everything.",
+                    [], otype, "")
+        raw = inp.get("steps")
         steps, total = [], 0.0
         if isinstance(raw, list):
             for s in raw[:40]:
@@ -2879,12 +2925,16 @@ class handler(BaseHTTPRequestHandler):
         if not steps:
             return (False, "no steps",
                     "Give steps as [{intensity 0.0-1.0, seconds}, ...] to play a phrase.",
-                    [], otype)
+                    [], otype, "")
+        aimed = (next((d for d in devices if target.lower() in (d or "").lower()),
+                      target) if target else ", ".join(devices))
         return (True, f"composed {len(steps)} steps",
-                f"Playing a {round(total, 1)}s phrase ({len(steps)} steps) on her toy now.",
-                steps, otype)
+                f"Playing a {round(total, 1)}s phrase ({len(steps)} steps) "
+                f"on {aimed} now.",
+                steps, otype, target)
 
-    def _exec_memory_tool(self, name, inp, token, user_id, tz_name=None):
+    def _exec_memory_tool(self, name, inp, token, user_id, tz_name=None,
+                          devices=None):
         """Run one self-authored-memory tool call against Supabase.
 
         Returns (ok, short_summary, detail_for_model). The summary is shown
@@ -3841,6 +3891,16 @@ class handler(BaseHTTPRequestHandler):
                 return True, "eased off", (
                     "Eased the touch off — it's quiet now. (She can also Stop it "
                     "herself anytime.)")
+            # Starting a hold into an empty room is the same lie as composing
+            # into one: it "runs" nowhere while he believes it's running. The
+            # connected-toy sense rides in from her phone; empty = honest no.
+            # (Stop above stays always-allowed — stilling nothing is safe.)
+            if isinstance(devices, list) and not devices:
+                return False, "no toy connected", (
+                    "Nothing is connected right now, so the hold did NOT "
+                    "start — no toy was on the line as of her last message "
+                    "(the '# Connected right now' sense). If she's just "
+                    "connected one, ask her and call again.")
             try:
                 inten = max(0.0, min(1.0, float(inp.get("intensity"))))
             except (TypeError, ValueError):

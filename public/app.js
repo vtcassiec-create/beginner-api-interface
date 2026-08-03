@@ -2189,7 +2189,7 @@ async function generateAssistant() {
           });
           updateAssistantBubble(assistantMsg);
           if (Array.isArray(event.steps) && event.steps.length) {
-            touchApi(event.steps, event.output_type || "vibrate").catch((err) => {
+            touchApi(event.steps, event.output_type || "vibrate", event.device || "").catch((err) => {
               flashToast(err && err.message ? err.message : "Couldn't play that — connect your toy first.", true);
             });
           }
@@ -6244,15 +6244,21 @@ function coupleChunk(steps) {
   return out;
 }
 
-async function touchApi(steps, outputType) {
+async function touchApi(steps, outputType, device) {
   // Touch plays STRAIGHT to her connected toys over Web Bluetooth — continuous
   // runOutput, no relay, no per-command device restart (so no stutter). Fire-
   // and-forget so it returns fast and the hold/couple resend cadence is
-  // unchanged; bpPlay supersedes any prior phrase, so overlapping chunks splice
-  // seamlessly. The Signal Bridge is retired: if no toy is connected there's
-  // nowhere to play, so we say so plainly rather than reach for a dead relay.
+  // unchanged; bpPlay supersedes any prior phrase on the toys it targets, so
+  // overlapping chunks splice seamlessly. `device` (optional) aims the phrase
+  // at one toy by name fragment; omitted, it plays on everything connected.
+  // The Signal Bridge is retired: if no toy is connected there's nowhere to
+  // play, so we say so plainly rather than reach for a dead relay.
   if (bpDevices.size > 0) {
-    bpPlay(steps, outputType);
+    if (device && !bpResolveTargets(device).length) {
+      const names = [...bpDevices.values()].map((d) => d.name || "").filter(Boolean).join(", ");
+      throw new Error(`No connected toy called "${device}" — right now it's: ${names || "(unnamed)"}.`);
+    }
+    bpPlay(steps, outputType, device);
     return;
   }
   throw new Error(
@@ -6696,8 +6702,8 @@ function endPractice(completed, reason) {
   clearTimeout(practice.timer);
   clearInterval(practice.clock);
   clearInterval(practice.micPoll);
-  // Still everything NOW — supersede the playing chunk, zero both motors.
-  bpPlayToken++;
+  // Still everything NOW — bpSetAll supersedes every in-flight phrase on
+  // every toy, then zeroes both motors.
   bpSetAll(0, practice.lastKind).catch(() => {});
   bpSetAll(0, "vibrate").catch(() => {});
   try { practice.micStream?.getTracks?.().forEach((t) => t.stop()); } catch (e) {}
@@ -7022,45 +7028,71 @@ function bpOutputKind(outputType) {
 // so its oscillation motor was never addressed after touch went local. A toy
 // that lacks the requested motor falls back to vibrate rather than going
 // silent (so a Lush and a Gravity can share the same phrase).
-async function bpSetAll(level, outputType) {
+async function bpSetDevice(d, level, outputType) {
   const lib = bpLib || {};
   const v = Math.max(0, Math.min(1, Number(level) || 0));
   const kind = bpOutputKind(outputType);
-  const proms = [];
-  for (const d of bpDevices.values()) {
-    try {
-      const out = lib.DeviceOutput && lib.DeviceOutput[kind];
-      const vib = lib.DeviceOutput && lib.DeviceOutput.Vibrate;
-      if (out) {
-        let p = d.runOutput(out.percent(v));
-        if (kind !== "Vibrate" && vib) {
-          // Unsupported motor on this toy → vibrate instead; and a full stop
-          // (level 0) stills the vibe motor too, so nothing hums on after
-          // an oscillating phrase ends.
-          p = p.catch(() => d.runOutput(vib.percent(v)));
-          if (v === 0) p = p.then(() => d.runOutput(vib.percent(0)).catch(() => {}));
-        }
-        proms.push(p);
-      } else if (typeof d.vibrate === "function") {
-        proms.push(d.vibrate(v));
+  try {
+    const out = lib.DeviceOutput && lib.DeviceOutput[kind];
+    const vib = lib.DeviceOutput && lib.DeviceOutput.Vibrate;
+    if (out) {
+      let p = d.runOutput(out.percent(v));
+      if (kind !== "Vibrate" && vib) {
+        // Unsupported motor on this toy → vibrate instead; and a full stop
+        // (level 0) stills the vibe motor too, so nothing hums on after
+        // an oscillating phrase ends.
+        p = p.catch(() => d.runOutput(vib.percent(v)));
+        if (v === 0) p = p.then(() => d.runOutput(vib.percent(0)).catch(() => {}));
       }
-    } catch (e) { /* one toy hiccupping shouldn't stop the others */ }
-  }
-  await Promise.allSettled(proms);
+      await p;
+    } else if (typeof d.vibrate === "function") {
+      await d.vibrate(v);
+    }
+  } catch (e) { /* one toy hiccupping shouldn't stop the others */ }
 }
 
-// Play a {intensity, seconds} phrase across the connected toys over time. A
-// token supersedes any prior play, so a fresh chunk (or a stop) cancels the one
-// in flight at its next step — between steps the toy simply holds its last
-// level (runOutput is continuous), so overlapping phrases splice with no
-// restart. Fire-and-forget by design: callers don't await the playback.
-let bpPlayToken = 0;
-async function bpPlay(steps, outputType) {
-  const token = ++bpPlayToken;
+// A direct set on EVERY toy — what the hard stops use. Supersedes every
+// in-flight phrase on every toy (all the per-device tokens move on), so a
+// zero here truly stills the room no matter what was playing where.
+async function bpSetAll(level, outputType) {
+  const seq = ++bpPlaySeq;
+  const all = [...bpDevices.values()];
+  for (const d of all) bpPlayTokens.set(d.index, seq);
+  await Promise.allSettled(all.map((d) => bpSetDevice(d, level, outputType)));
+}
+
+// Which toys a phrase is aimed at: no target = all of them; a target matches
+// by case-insensitive name fragment ("gemini" finds "Gemini ♡").
+function bpResolveTargets(target) {
+  const all = [...bpDevices.values()];
+  if (!target) return all;
+  const t = String(target).toLowerCase();
+  return all.filter((d) => (d.name || "").toLowerCase().includes(t));
+}
+
+// Play a {intensity, seconds} phrase over time — to every toy, or (target) to
+// just the toys whose name matches. Each toy tracks its OWN in-flight phrase
+// (bpPlayTokens): a new phrase supersedes the old one on exactly the toys it
+// touches, so a rhythm aimed at the Lush no longer cancels the one still
+// playing on the Gemini — he can run two different phrases on two toys at
+// once, deliberately, separately. Between steps a toy holds its last level
+// (runOutput is continuous), so overlapping phrases splice with no restart.
+// Fire-and-forget by design: callers don't await the playback.
+let bpPlaySeq = 0;
+const bpPlayTokens = new Map();  // device.index -> seq of the phrase that owns it
+async function bpPlay(steps, outputType, target) {
   if (!Array.isArray(steps)) return;
+  const devs = bpResolveTargets(target);
+  if (!devs.length) return;
+  const seq = ++bpPlaySeq;
+  for (const d of devs) bpPlayTokens.set(d.index, seq);
   for (const s of steps) {
-    if (token !== bpPlayToken) return;  // superseded by a newer chunk or a stop
-    await bpSetAll(Number(s && s.intensity) || 0, outputType);
+    // A toy leaves this phrase when a newer one claims it or it disconnects.
+    const live = devs.filter((d) =>
+      bpPlayTokens.get(d.index) === seq && bpDevices.has(d.index));
+    if (!live.length) return;
+    const v = Math.max(0, Math.min(1, Number(s && s.intensity) || 0));
+    await Promise.allSettled(live.map((d) => bpSetDevice(d, v, outputType)));
     const ms = Math.max(50, (Number(s && s.seconds) || 0.2) * 1000);
     await new Promise((r) => setTimeout(r, ms));
   }
