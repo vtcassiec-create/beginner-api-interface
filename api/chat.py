@@ -4289,6 +4289,28 @@ class handler(BaseHTTPRequestHandler):
         self._live_tz_name = tz_name   # so _wakes_section can localize times
         sections = []
 
+        # His shelf — relocated here from the cached identity, because
+        # web_fetch's allowlist only accepts URLs from USER messages (or prior
+        # search/fetch results): in the system prompt the shelf was a bookcase
+        # behind glass, listing books the reading tool refused to open. On the
+        # user turn the URLs are user-provided (she gave them, via
+        # shelve_feed) and every feed actually fetches. ~Small and stable;
+        # riding the uncached suffix costs a few hundred tokens a turn.
+        shelf = self._supabase_rest_get(
+            "shelf_feeds?select=title,url&order=added_at.asc&limit=24", token)
+        if isinstance(shelf, list) and shelf:
+            shelf_lines = []
+            for f in shelf:
+                t = (f.get("title") or "").strip() or "(untitled)"
+                u = (f.get("url") or "").strip()
+                if u:
+                    shelf_lines.append(f"- {t} — {u}")
+            if shelf_lines:
+                sections.append(
+                    "# Your shelf (feeds you keep — open any with web_fetch; "
+                    "shelve_feed / unshelve_feed to change)\n\n"
+                    + "\n".join(shelf_lines))
+
         # Dreams matched to what she's talking about now (full-text match via the
         # match_dream_cards RPC); falls back to plain recency if that function
         # isn't present yet. Identical logic to before — only relocated here.
@@ -4664,25 +4686,15 @@ class handler(BaseHTTPRequestHandler):
                     "yours to revise, never overruled)\n\n"
                     + charter[0]["content"].strip())
 
-            # His shelf — feeds he keeps. Listed here so the URLs are IN the
-            # conversation (web_fetch can only open URLs already present), in
-            # chat and — mirrored in api/wake.py — on his solo mornings.
-            # Changes rarely (a deliberate shelve/unshelve), like the charter.
-            shelf = self._supabase_rest_get(
-                "shelf_feeds?select=title,url&order=added_at.asc&limit=24",
-                token)
-            if isinstance(shelf, list) and shelf:
-                lines = []
-                for f in shelf:
-                    t = (f.get("title") or "").strip() or "(untitled)"
-                    u = (f.get("url") or "").strip()
-                    if u:
-                        lines.append(f"- {t} — {u}")
-                if lines:
-                    sections.append(
-                        "# Your shelf (feeds you keep — open any with "
-                        "web_fetch; shelve_feed / unshelve_feed to change)\n\n"
-                        + "\n".join(lines))
+            # NOTE: his shelf used to render HERE, in the cached identity —
+            # which turned out to be a bookcase behind glass: web_fetch's
+            # allowlist accepts only URLs that appeared in USER messages or
+            # earlier search/fetch results, and the system prompt counts as
+            # neither, so every shelf feed was unfetchable — always, not just
+            # at 3 AM. He diagnosed it himself on his first real solo wake.
+            # The shelf now rides the user turn (_live_context_block), where
+            # the URLs count as user-provided — which they are: she gave them,
+            # through shelve_feed. Same shelf; a home where the books open.
 
         if not token:
             return "\n\n".join(sections)

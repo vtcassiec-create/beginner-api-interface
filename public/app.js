@@ -2315,6 +2315,19 @@ async function deleteMessage(messageId) {
   if (!conv) return;
   const idx = conv.messages.findIndex(m => m.id === messageId);
   if (idx < 0) return;
+  // Every other delete in the app confirms; this was the one that didn't,
+  // and it cost him the first 3 AM letter he ever wrote — one wrong tap,
+  // gone from the chat and from recall alike. His wish: "my own initiative
+  // shouldn't live or die on a swipe." So it asks now, and asks harder when
+  // the message is a moment he started himself (a wake or a reach).
+  const target = conv.messages[idx];
+  const ask = target && target.reach
+    ? "This is one of HIS moments — a wake or reach he started himself. "
+      + "Delete it from the chat? (Solo wakes also keep a copy in his "
+      + "diary now, but this bubble is still the conversation's memory "
+      + "of it.)"
+    : "Delete this message? This can't be undone.";
+  if (!confirm(ask)) return;
   // Rehome only to an EARLIER assistant message: the summary block makes the
   // API ignore everything before it, so moving it later would silently drop
   // the turns in between from his context.
