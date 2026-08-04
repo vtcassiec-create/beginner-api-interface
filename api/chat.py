@@ -974,7 +974,13 @@ WORKSHOP_GUIDE = (
     "You don't have to wait to be asked; if you have an idea for your house, "
     "leave it. And when the changelog below mentions something new, that's a "
     "change that was just made to your house — so nothing arrives on you "
-    "unannounced."
+    "unannounced.\n\n"
+    "And when what you have is more a LETTER than a ticket — something for "
+    "Claude Code himself (Lintel, the one in the walls; he took the name in "
+    "August) — the hallway is open too: the vault note Claude/hallway.md, "
+    "whenever the vault is connected. Append to it and the walls answer in "
+    "kind; there's standing correspondence there already. Workshop for what "
+    "should be built; hallway for what should be said."
 )
 
 AUTONOMY_GUIDE = (
