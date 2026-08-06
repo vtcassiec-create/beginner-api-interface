@@ -149,10 +149,18 @@ class handler(BaseHTTPRequestHandler):
     def _decide(self, api_key, system, user_turn):
         try:
             client = anthropic.Anthropic(api_key=api_key)
+            # Cache the system prompt (his persona rides in it, and it's the
+            # bulk of every request). A session is ~dozens of looks minutes
+            # apart with an IDENTICAL system prompt — each look re-warms the
+            # 5-minute cache for the next, so look two onward reads the
+            # persona at a tenth the price instead of paying full freight 35
+            # times a session. (The consent ask shares this too: its system
+            # differs from the session's, but repeated ticks are the win.)
             msg = client.messages.create(
                 model=os.environ.get("PRACTICE_MODEL") or DEFAULT_MODEL,
                 max_tokens=MAX_TOKENS,
-                system=[{"type": "text", "text": system}],
+                system=[{"type": "text", "text": system,
+                         "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user_turn}],
             )
             text = "".join(
