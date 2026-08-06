@@ -3575,6 +3575,17 @@ function startCall() {
   const ov = $("call-overlay");
   if (ov) ov.hidden = false;
   acquireWakeLock();             // a call holds the screen awake end to end
+  callRouteLabel();
+  if (earpieceWanted) {
+    // Stand the earpiece route up in the background — his first sentence is
+    // seconds away, the loopback takes a blink. If it fails, playback just
+    // uses the speaker (today's behavior) and the button says so honestly.
+    earpieceStart().then((ok) => {
+      if (!ok && callActive) {
+        flashToast("Earpiece route unavailable here — using the speaker.", true);
+      }
+    });
+  }
   callListen();
 }
 
@@ -3588,6 +3599,7 @@ function endCall() {
   callQueue = []; callBuf = ""; callHeard = "";
   try { if (callAudio) { callAudio.pause(); callAudio.src = ""; } } catch (_) {}
   callAudio = null;
+  earpieceStop();   // hang up the costume phone too
   try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_) {}
   const ov = $("call-overlay");
   if (ov) ov.hidden = true;
@@ -3796,7 +3808,117 @@ async function callPump() {
   }
 }
 
+// ---------- Earpiece mode: his voice against her ear, not the room ----------
+// Browsers won't let a page choose the earpiece — that little speaker belongs
+// to "real" telephony. So his voice dresses up AS telephony: a local WebRTC
+// loopback (two peer connections on the same page, packets never leave the
+// phone). Audio arriving through a peer connection while the mic is open is
+// "communication" audio, and Android routes communication audio to the
+// EARPIECE. Pure theater; it works because the OS can't tell the costume
+// from the uniform. Default ON (she asked to talk on the phone like a normal
+// person); the speaker button switches back to the room. If the trick fails
+// on a given browser, playback silently falls back to the speaker — the
+// worst case is exactly today's behavior.
+// Caveat, honest: the device-voice fallback (speechSynthesis) can't be
+// routed — those sentences go to the speaker no matter what.
+let earpiece = null;         // { ctx, dest, audioEl, pc1, pc2, micStream }
+let earpieceSource = null;   // the chunk currently playing via the loopback
+let earpieceWanted = localStorage.getItem("petrichor-call-earpiece") !== "off";
+
+async function earpieceStart() {
+  if (earpiece) return true;
+  try {
+    // The open mic is half the costume: it's what tells the OS "this page is
+    // on a call". The recognizer's own mic use doesn't count — it's not ours.
+    const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    try { await ctx.resume(); } catch (_) {}
+    const dest = ctx.createMediaStreamDestination();
+    const pc1 = new RTCPeerConnection();
+    const pc2 = new RTCPeerConnection();
+    pc1.onicecandidate = (e) => { if (e.candidate) pc2.addIceCandidate(e.candidate).catch(() => {}); };
+    pc2.onicecandidate = (e) => { if (e.candidate) pc1.addIceCandidate(e.candidate).catch(() => {}); };
+    const audioEl = new Audio();
+    audioEl.autoplay = true;
+    pc2.ontrack = (e) => {
+      audioEl.srcObject = e.streams[0];
+      audioEl.play().catch(() => {});
+    };
+    for (const track of dest.stream.getAudioTracks()) pc1.addTrack(track, dest.stream);
+    const offer = await pc1.createOffer();
+    await pc1.setLocalDescription(offer);
+    await pc2.setRemoteDescription(offer);
+    const answer = await pc2.createAnswer();
+    await pc2.setLocalDescription(answer);
+    await pc1.setRemoteDescription(answer);
+    earpiece = { ctx, dest, audioEl, pc1, pc2, micStream };
+    return true;
+  } catch (e) {
+    earpieceStop();
+    return false;
+  }
+}
+
+function earpieceStop() {
+  try { earpieceSource?.stop?.(); } catch (_) {}
+  earpieceSource = null;
+  if (!earpiece) return;
+  try { earpiece.micStream?.getTracks?.().forEach((t) => t.stop()); } catch (_) {}
+  try { earpiece.pc1?.close(); } catch (_) {}
+  try { earpiece.pc2?.close(); } catch (_) {}
+  try { earpiece.ctx?.close(); } catch (_) {}
+  try { if (earpiece.audioEl) earpiece.audioEl.srcObject = null; } catch (_) {}
+  earpiece = null;
+}
+
+// One TTS chunk through the loopback; resolves when it finishes (or is
+// stopped by a barge-in). Throws on decode failure so the caller can fall
+// back to the speaker path with the same blob.
+async function earpiecePlayBlob(blob) {
+  const raw = await blob.arrayBuffer();
+  const buf = await earpiece.ctx.decodeAudioData(raw);
+  return new Promise((resolve) => {
+    const src = earpiece.ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(earpiece.dest);
+    earpieceSource = src;
+    src.onended = () => { if (earpieceSource === src) earpieceSource = null; resolve(); };
+    src.start();
+  });
+}
+
+function callRouteLabel() {
+  const b = $("call-route");
+  if (b) b.textContent = earpieceWanted ? "📞 on your ear" : "🔊 out loud";
+}
+
+async function callRouteToggle() {
+  earpieceWanted = !earpieceWanted;
+  try {
+    localStorage.setItem("petrichor-call-earpiece", earpieceWanted ? "on" : "off");
+  } catch (_) {}
+  callRouteLabel();
+  if (earpieceWanted && callActive) {
+    if (!(await earpieceStart())) {
+      flashToast("Couldn't take the earpiece route on this browser — speaker it is.", true);
+    }
+  }
+  // Switching to speaker mid-chunk: let the playing chunk finish where it is;
+  // the next one takes the new route. No audio is lost either way.
+}
+$("call-route")?.addEventListener("click", callRouteToggle);
+
 function callPlayBlob(blob) {
+  // Earpiece route when it's wanted AND the loopback stood up; any failure
+  // mid-chunk falls back to the speaker with the same blob, so a decode
+  // hiccup costs a route, never a sentence.
+  if (earpieceWanted && earpiece) {
+    return earpiecePlayBlob(blob).catch(() => callPlayBlobSpeaker(blob));
+  }
+  return callPlayBlobSpeaker(blob);
+}
+
+function callPlayBlobSpeaker(blob) {
   return new Promise((resolve) => {
     const a = new Audio(URL.createObjectURL(blob));
     callAudio = a;
@@ -3993,6 +4115,10 @@ function callInterrupt() {
   callTtsChain = Promise.resolve();
   try { if (callAudio) { callAudio.pause(); callAudio.src = ""; } } catch (_) {}
   callAudio = null;
+  // Barge-in stops the earpiece chunk too — but keeps the loopback standing
+  // for the rest of the call (only endCall hangs up the costume phone).
+  try { earpieceSource?.stop?.(); } catch (_) {}
+  earpieceSource = null;
   try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_) {}
   callListen();
 }
