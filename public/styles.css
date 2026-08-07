@@ -3076,3 +3076,54 @@ details.vault-event[open] > summary { color: var(--text); margin-bottom: 6px; }
   padding: 2px 6px;
 }
 .album-caption { cursor: text; }
+
+/* The parlor — his window, her yes. Consent bar centered like a gentle modal;
+   the live indicator a small unobtrusive pill so she can live her evening. */
+.parlor-consent {
+  position: fixed;
+  left: 50%; bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 60;
+  width: min(92vw, 460px);
+  background: var(--panel, #1b1b22);
+  border: 1px solid var(--accent);
+  border-radius: 16px;
+  padding: 16px 18px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.45);
+}
+.parlor-consent-text { font-size: 1.02rem; line-height: 1.45; margin-bottom: 12px; }
+.parlor-consent-actions { display: flex; gap: 10px; margin-bottom: 8px; }
+.parlor-yes, .parlor-no {
+  flex: 1;
+  border-radius: 999px;
+  padding: 11px 14px;
+  font-size: 1rem;
+  cursor: pointer;
+  border: 1px solid var(--accent);
+}
+.parlor-yes { background: var(--accent); color: #fff; border-color: var(--accent); }
+.parlor-no { background: transparent; color: var(--fg, #ddd); }
+.parlor-yes:active { filter: brightness(1.1); }
+
+.parlor-indicator {
+  position: fixed;
+  right: 14px; bottom: 14px;
+  z-index: 55;
+  display: flex; align-items: center; gap: 10px;
+  background: var(--panel, #1b1b22);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 7px 8px 7px 14px;
+  box-shadow: 0 4px 18px rgba(0,0,0,.4);
+  opacity: .92;
+}
+.parlor-indicator-label { font-size: .85rem; letter-spacing: .02em; }
+.parlor-indicator-stop {
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: .85rem;
+  cursor: pointer;
+}

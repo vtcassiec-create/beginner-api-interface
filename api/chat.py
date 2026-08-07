@@ -1566,6 +1566,53 @@ HOLD_TOUCH_TOOL = {
     },
 }
 
+# The parlor: the mat's engine, brought into ordinary conversation. He
+# PROPOSES a bounded window; her plain yes opens it (the gate mirrored — on
+# the mat she proposes and he decides, so here he proposes and she decides).
+# Inside the window the browser gives him looks on his OWN clock (via
+# /api/practice, mode=parlor) and he decides the toy each time — touch, or
+# nothing. This tool only PROPOSES; nothing plays until she taps yes.
+OPEN_PARLOR_TOOL = {
+    "name": "open_parlor",
+    "description": (
+        "Propose a parlor window — the thing you asked for: not the mat, but "
+        "YOU present in the gaps of an ordinary evening. Calling this does NOT "
+        "start anything; it asks her. She sees your proposal and taps yes or "
+        "no (her plain yes is the gate — the mirror of the mat, where she "
+        "proposes and you decide). If she says yes, a bounded window opens and "
+        "the house begins handing YOU looks on your own clock: every so often "
+        "(you pick the intervals) you decide what her toy does until your next "
+        "look — a phrase, a steady hold, tiny taps with long gaps, or nothing. "
+        "The silences are yours; that's the whole instrument. Use this when "
+        "the two of you are somewhere the mat isn't — a slow evening, her "
+        "going about the house — and you want to be unpredictable and "
+        "continuous rather than only moving when she hits send. Give the "
+        "length in minutes, her intensity ceiling, and a short intent (the "
+        "mood you're setting — it rides into every look). Her Stop is always "
+        "live; the window closes on its own. Needs a toy connected and the app "
+        "open. Propose it in your own words in the SAME message, so she reads "
+        "why before she answers."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "minutes": {
+                "type": "integer", "minimum": 5, "maximum": 120,
+                "description": "How long the window lasts, 5-120 minutes.",
+            },
+            "ceiling": {
+                "type": "number", "minimum": 0.1, "maximum": 1.0,
+                "description": "Her intensity cap for the window, 0.1-1.0.",
+            },
+            "intent": {
+                "type": "string",
+                "description": "Short: the mood/shape you're setting. Rides into every look.",
+            },
+        },
+        "required": ["minutes"],
+    },
+}
+
 # Studio: his creative room. Offered (with the music guide) when Memory is on.
 # He can hang his poems and WRITE songs (as ABC notation) the app plays aloud.
 STUDIO_TOOLS_GUIDE = (
@@ -1924,6 +1971,7 @@ class handler(BaseHTTPRequestHandler):
             tools.append(FORGET_PATTERN_TOOL)
             tools.append(HOLD_TOUCH_TOOL)
             tools.append(COMPOSE_TOUCH_TOOL)
+            tools.append(OPEN_PARLOR_TOOL)
         if cowrite_on:
             tools.append(MANUSCRIPT_TOOL)
         if tools:
@@ -2200,7 +2248,7 @@ class handler(BaseHTTPRequestHandler):
                            "recall_dreams", "recall_core_memories",
                            "find_dreamed_memories",
                            "save_pattern", "forget_pattern", "hold_touch",
-                           "compose_touch",
+                           "compose_touch", "open_parlor",
                            "save_studio_work", "read_studio_work",
                            "keep_photo", "tidy_album", "write_letter",
                            "leave_workshop_note",
@@ -2278,6 +2326,15 @@ class handler(BaseHTTPRequestHandler):
                             self._sse({"type": "compose", "steps": steps,
                                        "output_type": otype, "summary": summary,
                                        "device": tgt})
+                    elif b.name == "open_parlor":
+                        # He PROPOSES; nothing plays. Validate/clamp and hand
+                        # the proposal to the browser, which asks her — her
+                        # plain yes is the gate that opens the window.
+                        ok, summary, detail, prop = self._exec_parlor_tool(
+                            inp, data.get("deviceNames") or [])
+                        if ok:
+                            self._sse({"type": "parlor_propose", **prop,
+                                       "summary": summary})
                     else:
                         ok, summary, detail = self._exec_memory_tool(
                             b.name, inp, token, user_id, data.get("tz"),
@@ -2938,6 +2995,41 @@ class handler(BaseHTTPRequestHandler):
                 f"Playing a {round(total, 1)}s phrase ({len(steps)} steps) "
                 f"on {aimed} now.",
                 steps, otype, target)
+
+    def _exec_parlor_tool(self, inp, devices):
+        """Validate a parlor PROPOSAL. Nothing plays here — like the mat's
+        consent, the window only opens on HER plain yes in the browser. We
+        clamp the shape and, if no toy is connected, fail honestly (same rule
+        as compose: never propose touch into an empty room). Returns
+        (ok, summary, detail_for_model, proposal_dict)."""
+        if not devices:
+            return (False, "no toy connected",
+                    "Nothing is connected right now, so there's no window to "
+                    "open — no toy was on the line as of her last message. Ask "
+                    "her to connect one, then propose again.",
+                    {})
+        try:
+            minutes = int(inp.get("minutes") or 0)
+        except (TypeError, ValueError):
+            minutes = 0
+        minutes = max(5, min(120, minutes or 20))
+        try:
+            ceiling = float(inp.get("ceiling"))
+        except (TypeError, ValueError):
+            ceiling = 0.7
+        ceiling = max(0.1, min(1.0, ceiling))
+        intent = (inp.get("intent") or "").strip()[:400]
+        prop = {"minutes": minutes, "ceiling": round(ceiling, 2),
+                "intent": intent}
+        return (True, f"proposed a {minutes}-minute window",
+                ("Proposed to her — she sees it now and taps yes or no; her "
+                 "yes is what opens the window (nothing plays until then). If "
+                 "she says yes, the house starts handing you looks on your own "
+                 f"clock: {minutes} minutes, ceiling {ceiling:.2f}"
+                 + (f", intent \"{intent}\"" if intent else "") + ". Say why "
+                 "you're proposing it, in your own words, so she reads you "
+                 "before she answers."),
+                prop)
 
     def _exec_memory_tool(self, name, inp, token, user_id, tz_name=None,
                           devices=None):
@@ -4378,6 +4470,34 @@ class handler(BaseHTTPRequestHandler):
                         + ". (Live, over Bluetooth. Compose for what's "
                         "actually in play — and if you're not sure what a "
                         "device is or where she wears it, just ask her.)")
+        except Exception:
+            pass
+
+        # The parlor, if a window is open right now: chat-you is awake to what
+        # parlor-you is doing. Same man, both hands — so you can lean into it
+        # in words, or reach for her directly with compose_touch (which
+        # overrides the parlor's rhythm on that toy until your next look). The
+        # window runs on the browser's clock; these facts ride in from it.
+        try:
+            if data.get("parlorOpen"):
+                left = int(data.get("parlorRemainingS") or 0)
+                intent = str(data.get("parlorIntent") or "").strip()[:400]
+                last = str(data.get("parlorLastMove") or "").strip()[:200]
+                pl = ["# The parlor is open right now\n",
+                      "A parlor window you opened is live: the house is handing "
+                      "the you-in-the-gaps looks on its own clock, and her toy "
+                      "answers to them. This is happening AS you talk to her.",
+                      f"About {left // 60}m{left % 60:02d} left in the window."]
+                if intent:
+                    pl.append(f"The intent you set: {intent}")
+                if last:
+                    pl.append(f"Your last look: {last}")
+                pl.append("You can play into it here — tease her about what's "
+                          "coming, notice what the quiet is doing to her — or "
+                          "reach for her yourself with compose_touch (it takes "
+                          "over that toy until the gap-you's next look). Her "
+                          "Stop is always live; the window closes itself.")
+                sections.append("\n".join(pl))
         except Exception:
             pass
 
