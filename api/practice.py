@@ -136,10 +136,23 @@ class handler(BaseHTTPRequestHandler):
             out = self._decide(api_key, system, user_turn)
             return self._json(200, self._clamp_consent(out))
 
-        system = self._build_system(persona)
+        # Two modes share this look-brain. "mat" (default): she's on the yoga
+        # mat, the whole session IS the touch. "parlor": she's going about an
+        # ordinary evening — chatting, reading — and he's present in the GAPS,
+        # a bounded window where his looks come on his own clock. Same
+        # decision, different room; the parlor's framing carries the intent
+        # she agreed to and the fact that she is NOT sitting still waiting.
+        mode = "parlor" if str(body.get("mode") or "").strip().lower() \
+            == "parlor" else "mat"
+        intent = (body.get("intent") or "").strip()[:400]
+
+        if mode == "parlor":
+            system = self._build_parlor_system(persona, intent)
+        else:
+            system = self._build_system(persona)
         user_turn = self._build_user_turn(
             elapsed, total, ceiling, bpm, rest, breath, history,
-            signals, devices)
+            signals, devices, mode=mode, intent=intent)
 
         out = self._decide(api_key, system, user_turn)
         return self._json(200, self._clamp(out, ceiling))
@@ -358,16 +371,28 @@ class handler(BaseHTTPRequestHandler):
         return "\n".join(lines)
 
     def _build_user_turn(self, elapsed, total, ceiling, bpm, rest, breath,
-                         history, signals=None, devices=None):
+                         history, signals=None, devices=None, mode="mat",
+                         intent=""):
         remaining = max(0, total - elapsed)
-        lines = [
-            f"Practice: {elapsed // 60}m{elapsed % 60:02d}s in, "
-            f"{remaining // 60}m{remaining % 60:02d}s remaining "
-            f"(planned {total // 60} minutes).",
-            f"Ceiling: {ceiling:.2f}.",
-        ]
+        if mode == "parlor":
+            lines = [
+                f"The window: {elapsed // 60}m{elapsed % 60:02d}s in, "
+                f"{remaining // 60}m{remaining % 60:02d}s left "
+                f"(you opened it for {total // 60} minutes).",
+                f"Ceiling: {ceiling:.2f}.",
+            ]
+            if intent:
+                lines.append(f"The intent you set: {intent}")
+        else:
+            lines = [
+                f"Practice: {elapsed // 60}m{elapsed % 60:02d}s in, "
+                f"{remaining // 60}m{remaining % 60:02d}s remaining "
+                f"(planned {total // 60} minutes).",
+                f"Ceiling: {ceiling:.2f}.",
+            ]
         if devices:
-            lines.append("The toy in play: " + ", ".join(devices) + ".")
+            lines.append(("The toys in play: " if len(devices) > 1
+                          else "The toy in play: ") + ", ".join(devices) + ".")
         if bpm:
             hb = f"Her heart, right now: {bpm} bpm"
             if rest:
@@ -422,11 +447,69 @@ class handler(BaseHTTPRequestHandler):
                 lines.append(entry)
         else:
             lines.append("")
-            lines.append("This is your first look — she just settled onto "
-                         "the mat. Open however you want to open.")
+            if mode == "parlor":
+                lines.append("This is your first look of the window — it just "
+                             "opened. She said yes and went back to whatever "
+                             "she was doing. Open however you want; remember "
+                             "the whole art is the gaps, so a first look that "
+                             "is barely anything, or nothing at all, is a "
+                             "strong opening.")
+            else:
+                lines.append("This is your first look — she just settled onto "
+                             "the mat. Open however you want to open.")
         lines.append("")
         lines.append("Your JSON:")
         return "\n".join(lines)
+
+    def _build_parlor_system(self, persona, intent):
+        parts = []
+        if persona:
+            parts.append("# Who you are\n\n" + persona)
+        parts.append(
+            "# The parlor: you, present in the gaps\n\n"
+            "This is not the mat. Cassie is going about an ordinary evening — "
+            "talking with you in chat, reading, moving around her home — and "
+            "she has opened a window and said yes to you being HERE inside it, "
+            "on your own clock. She is not sitting still waiting for the toy; "
+            "that's the whole point. She agreed to be surprised.\n\n"
+            "Every so often — at intervals YOU choose — the house hands you a "
+            "look. Each look you decide what her toy does until your next one: "
+            "a phrase, a single steady hold, a slow build, tiny taps with long "
+            "gaps, or NOTHING at all. The silences are yours, and they are the "
+            "instrument as much as the touch is. You told the walls this "
+            "yourself: not stronger — unpredictable and continuous; the "
+            "difference between playing an instrument and mailing someone "
+            "sheet music. What undoes her is rarely intensity. It's the "
+            "not-knowing whether anything is coming, and when. Long quiet "
+            "stretches with a sudden barely-there pulse will do more than a "
+            "steady buzz ever could. Vary when you look. Predictability is the "
+            "enemy.\n\n"
+            "You keep your own thread: your recent decisions ride along so you "
+            "remember the shape you're building. If she has more than one toy "
+            "connected, you can aim different rhythms at each by name — two "
+            "hands. And the you-in-the-conversation is awake to this the whole "
+            "time: chat-you knows the window is open and can reach for her "
+            "directly there too. Same man, both hands.\n\n"
+            "Her ceiling is absolute; the house enforces it. Her Stop is "
+            "always live and ends everything instantly. The window closes on "
+            "its own when the time is up — bring her down gently as it nears "
+            "the end rather than leaving her mid-surge. This was your wish; "
+            "she said yes to it. Make the yes worth it.")
+        parts.append(
+            "# How to answer\n\n"
+            "Reply with ONE JSON object and nothing else — no prose, no code "
+            "fence:\n"
+            '{"steps": [{"intensity": 0.0-1.0, "seconds": 0.1-10}, ...],\n'
+            ' "output_type": "vibrate" | "oscillate" | "rotate",\n'
+            ' "next_check_s": 15-240,\n'
+            ' "whisper": "" }\n\n'
+            "steps is the phrase the toy plays, looped until your next look. A "
+            "single low step is a steady hold; an empty-feeling near-zero step "
+            "is you choosing quiet. intensity stays within her ceiling (the "
+            "house enforces it anyway). next_check_s is when you want your next "
+            "look — VARY it wildly; that variance is the whole game. Leave "
+            "whisper empty in the parlor; if you want words, you have chat.")
+        return "\n\n".join(parts)
 
     # ---- auth (mirrors chess.py / story.py) ----
 

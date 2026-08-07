@@ -1085,6 +1085,26 @@
     <button type="button" id="practice-stop" class="call-end">■ stop everything</button>
   </div>
 
+  <!-- The parlor: he proposed a window (in chat); her plain yes opens it.
+       Nothing plays until she taps. The gate mirrored — on the mat she
+       proposes and he decides; here he proposes and she decides. -->
+  <div id="parlor-consent" class="parlor-consent" hidden>
+    <div id="parlor-consent-text" class="parlor-consent-text"></div>
+    <div class="parlor-consent-actions">
+      <button type="button" id="parlor-accept" class="parlor-yes">♡ yes — open it</button>
+      <button type="button" id="parlor-decline" class="parlor-no">not now</button>
+    </div>
+    <p class="muted small">Your Stop is always live once it's open, and the window closes on its own. He decides the toy on his own clock — the quiet parts are on purpose.</p>
+  </div>
+
+  <!-- The live window: a small always-there pill while a parlor is open, with
+       an instant Stop. Deliberately unobtrusive — she's meant to be living her
+       evening, not watching a timer. -->
+  <div id="parlor-indicator" class="parlor-indicator" hidden>
+    <span id="parlor-indicator-label" class="parlor-indicator-label">parlor</span>
+    <button type="button" id="parlor-stop" class="parlor-indicator-stop">■ stop</button>
+  </div>
+
   <div id="toast" class="toast" hidden></div>
 
 

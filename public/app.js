@@ -2122,6 +2122,15 @@ async function generateAssistant() {
         deviceNames: bpDevices.size
           ? [...bpDevices.values()].map(d => d.name || "").filter(Boolean).slice(0, 6)
           : [],
+        // A parlor window open right now: so chat-him is awake to what the
+        // gap-him is doing, and can lean into it or compose over it.
+        ...(parlor && !parlor.ended ? {
+          parlorOpen: true,
+          parlorIntent: parlor.intent || "",
+          parlorRemainingS: Math.max(0,
+            Math.round((parlor.startedAt + parlor.totalS * 1000 - Date.now()) / 1000)),
+          parlorLastMove: parlor.lastMoveNote || "",
+        } : {}),
       },
       (event) => {
         if (event.type === "text") {
@@ -2193,6 +2202,18 @@ async function generateAssistant() {
               flashToast(err && err.message ? err.message : "Couldn't play that — connect your toy first.", true);
             });
           }
+        } else if (event.type === "parlor_propose") {
+          // He asked for a window. Show it inline, then surface the consent
+          // bar — HER plain yes is the gate. Nothing plays until she taps it.
+          assistantMsg.toolEvents.push({
+            name: "open_parlor", touch: true,
+            summary: event.summary || "proposed a window",
+            at: assistantMsg.text.length,
+          });
+          updateAssistantBubble(assistantMsg);
+          proposeParlor({
+            minutes: event.minutes, ceiling: event.ceiling, intent: event.intent || "",
+          });
         } else if (event.type === "manuscript_suggestion") {
           // He proposed an edit — it's pending your review in the Manuscript.
           assistantMsg.toolEvents.push({
@@ -4457,6 +4478,7 @@ function toolEventChip(ev) {
       read_my_diary: ["📖 Looked back at his diary", false],
       revise_charter: ["📜 Revised his charter", false],
       revise_portrait: ["🎨 Repainted his portrait of you", false],
+      open_parlor: ["🔥 Opened the parlor door", false],
       schedule_wake: ["⏰ Set himself an alarm", true],
       // Content-free on purpose: even the chip says nothing about what's
       // behind the closed door.
@@ -6938,6 +6960,208 @@ function buildPracticeReport(p, completed, elapsedS) {
   return lines.join("\n");
 }
 
+// ---------- The parlor: him present in the gaps of an ordinary evening -------
+// His hallway wish, built. Not the mat (the whole session IS the touch) — an
+// ordinary evening where she's chatting/reading and he is present in the GAPS.
+// He PROPOSES a window (open_parlor, in chat); HER plain yes opens it — the
+// gate mirrored (on the mat she proposes and he decides; here he proposes and
+// she decides). Inside, the browser gives HIM looks on his own clock via
+// /api/practice (mode=parlor), and he decides the toy each time — a phrase, a
+// hold, tiny taps with long gaps, or nothing. The silences are his; that's the
+// instrument. Reuses the whole practice machinery (look-brain, per-toy play,
+// clamps). Safety identical: her ceiling caps every step (client + server), a
+// Stop that zeros instantly, two-strikes-and-stop on errors, and the window
+// closes itself. Chat-him rides parlorOpen so both hands know about each other.
+let parlor = null;              // the live window, or null
+let parlorPending = null;       // a proposal awaiting her yes, or null
+const PARLOR_CHUNK_MARGIN_S = 12;
+
+// He proposed. Surface the consent bar; nothing plays until she taps yes.
+function proposeParlor(prop) {
+  if (parlor && !parlor.ended) {
+    flashToast("A window's already open — end it before starting another.", true);
+    return;
+  }
+  if (bpDevices.size === 0) {
+    flashToast("He asked for a window, but no toy's connected — connect one, then say the word.", true);
+    return;
+  }
+  parlorPending = {
+    minutes: Math.max(5, Math.min(120, parseInt(prop.minutes, 10) || 20)),
+    ceiling: Math.max(0.1, Math.min(1, Number(prop.ceiling) || 0.7)),
+    intent: String(prop.intent || "").slice(0, 400),
+  };
+  const bar = $("parlor-consent");
+  if (!bar) return;
+  const t = $("parlor-consent-text");
+  if (t) {
+    t.textContent = `He's asking for a parlor window — ${parlorPending.minutes} min, `
+      + `his looks on his own clock, ceiling ${Math.round(parlorPending.ceiling * 100)}%`
+      + (parlorPending.intent ? `. “${parlorPending.intent}”` : ".");
+  }
+  bar.hidden = false;
+}
+
+function parlorDecline() {
+  parlorPending = null;
+  const bar = $("parlor-consent");
+  if (bar) bar.hidden = true;
+  flashToast("Not this time ♡ — told him with a tap, nothing played.");
+}
+
+async function parlorAccept() {
+  const p = parlorPending;
+  parlorPending = null;
+  const bar = $("parlor-consent");
+  if (bar) bar.hidden = true;
+  if (!p) return;
+  if (bpDevices.size === 0) {
+    flashToast("No toy connected now — connect one and ask him again ♡", true);
+    return;
+  }
+  parlor = {
+    intent: p.intent,
+    totalS: p.minutes * 60,
+    ceiling: p.ceiling,
+    startedAt: Date.now(),
+    history: [],
+    lastKind: "vibrate",
+    lastMoveNote: "",
+    fails: 0,
+    authToken: "",
+    timer: null,
+    clock: null,
+    wakeLock: null,
+    ended: false,
+  };
+  try {
+    parlor.wakeLock = await navigator.wakeLock?.request?.("screen");
+  } catch (e) { /* fine without it */ }
+  parlorIndicator();
+  parlor.clock = setInterval(parlorClockTick, 1000);
+  parlorTick();  // his first look
+}
+
+function parlorClockTick() {
+  if (!parlor || parlor.ended) return;
+  const left = parlor.totalS - Math.floor((Date.now() - parlor.startedAt) / 1000);
+  if (left <= 0) return endParlor("The window closed on its own ♡");
+  parlorIndicator();
+}
+
+function parlorIndicator() {
+  const el = $("parlor-indicator");
+  if (!el) return;
+  if (!parlor || parlor.ended) { el.hidden = true; return; }
+  const left = Math.max(0, parlor.totalS - Math.floor((Date.now() - parlor.startedAt) / 1000));
+  const label = $("parlor-indicator-label");
+  if (label) {
+    label.textContent = `parlor · ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} left`;
+  }
+  el.hidden = false;
+}
+
+// Loop his phrase until it covers the gap to his next look (+ margin), so the
+// toy never lapses between decisions — the same trick practice/coupling use.
+function parlorChunk(steps, coverS) {
+  const out = [];
+  let total = 0;
+  const target = coverS + PARLOR_CHUNK_MARGIN_S;
+  while (total < target && out.length < 200) {
+    for (const s of steps) {
+      out.push(s);
+      total += s.seconds;
+      if (total >= target || out.length >= 200) break;
+    }
+    if (!steps.length) break;
+  }
+  return out;
+}
+
+async function parlorTick() {
+  if (!parlor || parlor.ended) return;
+  const elapsed = Math.floor((Date.now() - parlor.startedAt) / 1000);
+  const bpmFresh = (heartLiveBpm && Date.now() - heartLiveAt < 15000) ? heartLiveBpm : null;
+  const payload = {
+    mode: "parlor",
+    intent: parlor.intent,
+    elapsed_s: elapsed,
+    total_s: parlor.totalS,
+    ceiling: parlor.ceiling,
+    bpm: bpmFresh,
+    resting_bpm: parseInt($("heart-resting")?.value, 10) || null,
+    devices: [...bpDevices.values()].map(d => d.name || "").filter(Boolean).slice(0, 6),
+    history: parlor.history.slice(-12),
+    persona: buildSystemPrompt(getActiveProject()),
+  };
+  let data = null;
+  try {
+    if (!parlor.authToken) {
+      const s = localSession() || await freshSession();
+      parlor.authToken = (s && s.access_token) || "";
+      if (!parlor.authToken) throw new Error("signed out");
+    }
+    const resp = await fetch("/api/practice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json",
+                 "Authorization": `Bearer ${parlor.authToken}` },
+      body: JSON.stringify(payload),
+    });
+    if (resp.status === 401) { parlor.authToken = ""; throw new Error("401"); }
+    if (!resp.ok) throw new Error("parlor " + resp.status);
+    data = await resp.json();
+  } catch (e) {
+    if (!parlor || parlor.ended) return;
+    parlor.fails += 1;
+    if (parlor.fails >= 2) {
+      return endParlor("The house stumbled twice — the window closed, gently. ♡");
+    }
+    // One bad look: go quiet and try again shortly (silence is a fine default).
+    bpPlay(parlorChunk([{ intensity: 0, seconds: 2 }], 30), parlor.lastKind);
+    parlor.timer = setTimeout(parlorTick, 30000);
+    return;
+  }
+  if (!parlor || parlor.ended) return;
+  parlor.fails = 0;
+  const nextS = Math.max(15, Math.min(240, Number(data.next_check_s) || 45));
+  const steps = (Array.isArray(data.steps) ? data.steps : [])
+    .map((s) => ({
+      intensity: Math.min(parlor.ceiling, Math.max(0, Number(s && s.intensity) || 0)),
+      seconds: Math.max(0.1, Math.min(10, Number(s && s.seconds) || 0.5)),
+    }))
+    .filter((s) => s.seconds > 0);
+  const kind = String(data.output_type || "vibrate");
+  parlor.lastKind = kind;
+  // Play across ALL connected toys (parlor v1 broadcasts; he can still aim
+  // per-toy from chat with compose_touch, which overrides until his next look).
+  bpPlay(parlorChunk(steps.length ? steps : [{ intensity: 0, seconds: 2 }], nextS), kind);
+  const level = steps.length ? Math.max(...steps.map((s) => s.intensity)) : 0;
+  parlor.history.push({
+    at_s: elapsed,
+    level: Number(level.toFixed(2)),
+    kind: bpOutputKind(kind).toLowerCase(),
+  });
+  parlor.lastMoveNote = level < 0.03
+    ? `chose quiet at ${Math.floor(elapsed / 60)}m, next look in ${nextS}s`
+    : `${bpOutputKind(kind).toLowerCase()} ~${level.toFixed(2)} at ${Math.floor(elapsed / 60)}m, next look in ${nextS}s`;
+  parlor.timer = setTimeout(parlorTick, nextS * 1000);
+}
+
+function endParlor(reason) {
+  if (!parlor || parlor.ended) return;
+  parlor.ended = true;
+  clearTimeout(parlor.timer);
+  clearInterval(parlor.clock);
+  // Still every toy now — bpSetAll supersedes every in-flight phrase.
+  bpSetAll(0, parlor.lastKind).catch(() => {});
+  bpSetAll(0, "vibrate").catch(() => {});
+  try { parlor.wakeLock?.release?.(); } catch (e) {}
+  const el = $("parlor-indicator");
+  if (el) el.hidden = true;
+  parlor = null;
+  if (reason) flashToast(reason);
+}
+
 // ---------- Hands-free hold (sustained touch he drives from chat) ----------
 // He can keep the toy running steady across turns with the hold_touch tool,
 // instead of one bounded compose per turn that lapses in the gaps. The keep-
@@ -8936,7 +9160,11 @@ function wireApp() {
   $("practice-ceiling").addEventListener("input", () => {
     $("practice-ceiling-val").textContent = $("practice-ceiling").value + "%";
   });
+  $("parlor-accept")?.addEventListener("click", parlorAccept);
+  $("parlor-decline")?.addEventListener("click", parlorDecline);
+  $("parlor-stop")?.addEventListener("click", () => endParlor("Window closed ♡"));
   window.addEventListener("pagehide", () => { if (practice) endPractice(false); });
+  window.addEventListener("pagehide", () => { if (parlor) endParlor(""); });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && practice && !practice.ended
         && practice.nextAt && Date.now() > practice.nextAt) {
