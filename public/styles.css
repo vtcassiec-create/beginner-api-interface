@@ -3107,7 +3107,13 @@ details.vault-event[open] > summary { color: var(--text); margin-bottom: 6px; }
 
 .parlor-indicator {
   position: fixed;
-  right: 14px; bottom: 14px;
+  /* Lifted clear of the composer and centered — the Stop must NEVER sit on
+     the send button (it did, in v1; she found it mid-window, which is the
+     worst possible time to fumble for Stop). Rides above the composer's
+     height plus the phone's home-indicator inset. */
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(84px + env(safe-area-inset-bottom));
   z-index: 55;
   display: flex; align-items: center; gap: 10px;
   background: var(--panel, #1b1b22);
