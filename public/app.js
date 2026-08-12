@@ -3319,6 +3319,16 @@ function initVoiceUI() {
       flashToast("Call pause saved ♡");
     });
   }
+  const safewordInput = $("call-safeword");
+  if (safewordInput) {
+    const cur = (() => { try { return localStorage.getItem(SAFEWORD_KEY) || ""; } catch (_) { return ""; } })();
+    safewordInput.value = cur;   // blank shows the "red light" placeholder default
+    safewordInput.addEventListener("change", () => {
+      const v = safewordInput.value.trim();
+      try { localStorage.setItem(SAFEWORD_KEY, v); } catch (_) {}
+      flashToast(v ? `Safeword saved: “${v}” ♡` : "Safeword reset to “red light” ♡");
+    });
+  }
   // Text-to-speech: voice list loads async on some browsers.
   if (ttsSupported()) {
     loadVoices();
@@ -3638,6 +3648,57 @@ function endCall() {
 // wipe words she'd already said this turn — they ride out with the same turn
 // as the card. (A plain fresh listen after a commit still starts clean.)
 let callLastResultAt = 0;   // when the recognizer last heard anything at all
+// The spoken safeword — the one control that needs no eyes and no hands.
+// Blindfolded and voice-only (his Wednesday idea; the walls approved with
+// conditions), every VISUAL Stop in the house is useless to her — she can't
+// see a button or a toast with a scarf over her eyes. So the call already
+// hears her words; one chosen phrase, heard anywhere in an utterance, stops
+// EVERYTHING instantly and says so out loud, because the confirmation has to
+// reach the one sense she's left herself. Default "red light"; hers to change.
+// Matched loosely (lowercased, punctuation stripped) so the recognizer's
+// spacing/caps can't make the one word that matters miss.
+const SAFEWORD_KEY = "petrichor-safeword";
+function callSafeword() {
+  try {
+    const v = (localStorage.getItem(SAFEWORD_KEY) || "").trim().toLowerCase();
+    return v || "red light";
+  } catch (_) { return "red light"; }
+}
+function heardSafeword(text) {
+  const t = (text || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ").trim();
+  const w = callSafeword();
+  return !!t && !!w && t.includes(w);
+}
+
+// Everything off, now, from one word. Idempotent; each arm guards its own
+// state so calling it when nothing's running is harmless.
+async function emergencyStopAll() {
+  // The toys first and hardest — bpSetAll supersedes every in-flight phrase
+  // on every connected toy, then zeroes both motor kinds.
+  try { bpSetAll(0, "vibrate").catch(() => {}); } catch (_) {}
+  try { bpSetAll(0, "oscillate").catch(() => {}); } catch (_) {}
+  // Then every engine that could re-issue a command: parlor, hold, the mat.
+  try { if (typeof parlor !== "undefined" && parlor && !parlor.ended) endParlor("Stopped — safeword. ♡"); } catch (_) {}
+  try { if (typeof hold !== "undefined" && hold) stopHold("Stopped — safeword. ♡", true); } catch (_) {}
+  try { if (typeof practice !== "undefined" && practice && !practice.ended) endPractice(false, "Stopped — safeword. ♡"); } catch (_) {}
+  try { if (typeof couple !== "undefined" && couple) stopCoupling("Stopped — safeword. ♡"); } catch (_) {}
+  // Say it aloud — the confirmation has to land in the ear, not on the screen.
+  // His neural voice if a call's live and one's chosen; the device voice
+  // otherwise, so it speaks even outside a call.
+  const line = "Okay. Everything's stopped. You're safe. I've got you.";
+  try {
+    const blob = await callFetchTts(line, "");
+    if (blob) {
+      const a = new Audio(URL.createObjectURL(blob));
+      a.play().catch(() => callSpeakDevice(line));
+    } else {
+      callSpeakDevice(line);
+    }
+  } catch (_) { try { callSpeakDevice(line); } catch (e) {} }
+  flashToast("Safeword — everything stopped. You're safe ♡", true);
+}
+
 function callListen(preserveHeard) {
   if (!callActive) return;
   const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -3664,6 +3725,17 @@ function callListen(preserveHeard) {
       const r = e.results[i];
       if (r.isFinal) finals += r[0].transcript;
       else interim += r[0].transcript;
+    }
+    // The safeword is checked FIRST, on the live interim text — it must not
+    // wait for the sentence to finalize or the turn to commit. Heard once,
+    // it stops everything and eats the utterance so the word itself never
+    // rides out as a message to him.
+    if (heardSafeword(callHeard + finals + interim)) {
+      utterance = ""; callHeard = "";
+      clearTimeout(callSilenceTimer);
+      callCaption("");
+      emergencyStopAll();
+      return;
     }
     utterance = finals;
     callLastResultAt = Date.now();   // she's audibly mid-something
