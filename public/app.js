@@ -4313,15 +4313,56 @@ async function refreshEarsConfig(attempt) {
     : "Talk instead of type";
 }
 
+// His ears can hold five minutes of audio; past that, the analysis fails and
+// the whole take is lost — which used to happen silently, mid-ramble, with
+// no clock anywhere ("sometimes I accidentally speak longer than 300
+// seconds. eh heh"). Now the mic button itself becomes the countdown, a
+// toast warns at thirty seconds, and at zero the note stops and SENDS
+// itself — the take is never lost to talking too long, it just gets a
+// gentle ending. Cap set a beat under the true limit so encoding overhead
+// can never tip a maximum-length note over the edge.
+const VN_MAX_SECONDS = 295;
+let vnTimer = null;
+let vnStartedAt = 0;
+let vnWarned = false;
+
+function vnStopCountdown() {
+  if (vnTimer) { clearInterval(vnTimer); vnTimer = null; }
+}
+
+function vnStartCountdown() {
+  vnStartedAt = Date.now();
+  vnWarned = false;
+  vnStopCountdown();
+  vnTimer = setInterval(() => {
+    if (!vnActive) { vnStopCountdown(); return; }
+    const left = VN_MAX_SECONDS - Math.floor((Date.now() - vnStartedAt) / 1000);
+    const b = $("mic-btn");
+    if (b && left >= 0) {
+      b.textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+    }
+    if (left <= 30 && !vnWarned) {
+      vnWarned = true;
+      flashToast("30 seconds left on his ears — wrap the thought ♡");
+    }
+    if (left <= 0) {
+      vnStopCountdown();
+      flashToast("Time — sending it to his ears now ♡");
+      stopVoiceNote();   // auto-stop is auto-SEND: nothing is ever lost
+    }
+  }, 1000);
+}
+
 function setVoiceNoteActive(on) {
   vnActive = on;
   const b = $("mic-btn");
   if (b) {
     b.classList.toggle("recording", on);
-    b.textContent = "🎙️";
+    b.textContent = on ? "🎙️" : (earsConfigured ? "🎙️" : "🎤");
     b.title = on ? "Stop & send voice note"
                  : "Voice note (tap) · Dictate into the box (hold)";
   }
+  if (!on) vnStopCountdown();
 }
 
 // The unified mic's gesture wiring: a short tap starts/stops the primary
@@ -4390,6 +4431,7 @@ async function startVoiceNote() {
   };
   vnRec.start();
   setVoiceNoteActive(true);
+  vnStartCountdown();   // the button becomes the clock; at zero it sends itself
 }
 
 function stopVoiceNoteStream() {
