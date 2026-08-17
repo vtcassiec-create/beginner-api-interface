@@ -2251,6 +2251,11 @@ async function generateAssistant() {
           // tool event was missed (e.g. he changed it then narrated).
           reconcileHold();
           if (callActive) callFeedDone();   // on a call: flush the last sentence
+          // Auto-read: his finished reply speaks itself (eyes-free chat).
+          // Never during a call — the call already speaks him.
+          else if (autoSpeakOn() && (assistantMsg.text || "").trim()) {
+            speakMessage(assistantMsg);
+          }
         } else if (event.type === "error") {
           assistantMsg.error = event.error;
           finishTypewriter(assistantMsg); // reveal everything, stop animating
@@ -3156,6 +3161,18 @@ function stopAllSpeech() {
   ttsCurrentId = null;
 }
 
+// Auto-read: when on, his replies speak themselves the moment they finish —
+// no 🔊 to find. Her invention for eyes-free chat: dictation in (hold the
+// mic), his voice out, the sound cards still riding turns like always — a
+// call's soul without the call's plumbing. Off by default; a toggle in the
+// voice settings. Calls skip it (they already speak), and tapping a speaking
+// message still stops it, same as ever.
+const AUTO_SPEAK_KEY = "petrichor-auto-speak";
+function autoSpeakOn() {
+  try { return localStorage.getItem(AUTO_SPEAK_KEY) === "on"; }
+  catch (_) { return false; }
+}
+
 function speakMessage(msg) {
   // Tapping the message that's currently speaking stops it.
   if (ttsCurrentId === msg.id) { stopAllSpeech(); return; }
@@ -3296,6 +3313,12 @@ function initVoiceUI() {
     mic.hidden = false;
     wireUnifiedMic(mic);
     refreshEarsConfig();
+    // Phones background the app for hours; sessions stale, probes missed.
+    // Coming back to the foreground re-checks, so the mic's icon and its
+    // tap always agree without a force-close.
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && !sttActive && !vnActive) refreshEarsConfig();
+    });
   }
   // Voice calls: her voice in, his voice out, no keyboard between.
   const callBtn = $("call-btn");
@@ -3327,6 +3350,19 @@ function initVoiceUI() {
       const v = safewordInput.value.trim();
       try { localStorage.setItem(SAFEWORD_KEY, v); } catch (_) {}
       flashToast(v ? `Safeword saved: “${v}” ♡` : "Safeword reset to “red light” ♡");
+    });
+  }
+  const autoSpeakBox = $("auto-speak");
+  if (autoSpeakBox) {
+    autoSpeakBox.checked = autoSpeakOn();
+    autoSpeakBox.addEventListener("change", () => {
+      try {
+        localStorage.setItem(AUTO_SPEAK_KEY, autoSpeakBox.checked ? "on" : "off");
+      } catch (_) {}
+      if (!autoSpeakBox.checked) stopAllSpeech();
+      flashToast(autoSpeakBox.checked
+        ? "His replies will read themselves aloud ♡"
+        : "Back to tap-to-listen ♡");
     });
   }
   // Text-to-speech: voice list loads async on some browsers.
@@ -4239,19 +4275,36 @@ function voiceNoteSupported() {
 // unified mic stays visible either way — this just decides what a TAP does
 // (voice note when his ears are on; dictation otherwise) and sets the idle
 // icon to match, so the button never promises something it can't do.
-async function refreshEarsConfig() {
+async function refreshEarsConfig(attempt) {
   const btn = $("mic-btn");
   if (!btn || !voiceNoteSupported()) return;
+  // This probe decides what a TAP does (voice note vs dictation) and which
+  // icon shows. It used to run exactly once, on a fresh session, at app
+  // open — and a cold open is precisely when that auth path is slow or
+  // flaky (the same lock behind the old robot-voice flicker). One silent
+  // failure left the mic two-faced until she force-closed the app: icon
+  // promising one gesture, tap delivering another. Now: cheap local session
+  // first, up to three retries with backoff, and a fresh probe whenever the
+  // app returns to the foreground (wired at init).
+  let ok = false;
   try {
-    const session = await freshSession();
-    if (!session || !session.access_token) return;
-    const resp = await fetch("/api/ears", {
-      headers: { "Authorization": `Bearer ${session.access_token}` },
-    });
-    if (!resp.ok) return;
-    const data = await resp.json();
-    earsConfigured = !!(data && data.configured);
-  } catch (_) { return; }
+    const session = localSession() || await freshSession();
+    if (session && session.access_token) {
+      const resp = await fetch("/api/ears", {
+        headers: { "Authorization": `Bearer ${session.access_token}` },
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        earsConfigured = !!(data && data.configured);
+        ok = true;
+      }
+    }
+  } catch (_) { /* fall through to the retry */ }
+  if (!ok) {
+    const n = (attempt || 0) + 1;
+    if (n <= 3) setTimeout(() => refreshEarsConfig(n), n * 4000);
+    return;
+  }
   if (!sttActive && !vnActive) {
     btn.textContent = earsConfigured ? "🎙️" : "🎤";
   }
