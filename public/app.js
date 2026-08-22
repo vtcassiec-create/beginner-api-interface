@@ -7470,9 +7470,17 @@ async function stopHold(reason, writeRow) {
 }
 
 // ---------- Direct device control ----------
-// Connects a Lovense toy straight from the browser over Web Bluetooth via
+// Connects her toys straight from the browser over Web Bluetooth via
 // buttplug-js's in-browser WASM engine — no Intiface, no droplet, the same
 // shape as the heart-band connect above. Lazy-loaded from a CDN on first use.
+// NOT Lovense-only, and never was: the engine carries the full community
+// device library (the same one behind Signal Bridge's compatibility list —
+// Svakom, WeVibe, Magic Motion, Kiiroo, hundreds more), and startScanning()
+// below runs with no brand filter. The only real boundary is the browser's:
+// Web Bluetooth means BLE toys only. Toys are matched by their ADVERTISED
+// name (often a model code, not the box name) — a brand-new model the
+// library hasn't learned yet shows in the Bluetooth popup but never becomes
+// a device; that's a user-config shim away, not a dead end.
 // This is how ALL touch reaches her now — compose, hold, and heart-coupling
 // all play through here; the old Signal Bridge / droplet path is retired.
 let bpClient = null;
