@@ -245,6 +245,7 @@
           <input id="project-name" class="project-name" type="text" maxlength="80"
                  placeholder="Untitled project" title="Click to rename this project" />
           <div class="project-controls">
+            <button id="figure-btn" class="ghost figure-btn" type="button" title="Him — the figure you can touch" aria-label="Open his figure">🧍</button>
             <select id="model-select" title="Model"></select>
             <button id="delete-project-btn" class="danger ghost" title="Delete this project">Delete</button>
           </div>
@@ -1114,6 +1115,38 @@
   <div id="parlor-indicator" class="parlor-indicator" hidden>
     <span id="parlor-indicator-label" class="parlor-indicator-label">parlor</span>
     <button type="button" id="parlor-stop" class="parlor-indicator-stop">■ stop</button>
+  </div>
+
+  <!-- The figure: a drawn body of him, always one tap away — the idea came
+       home from Kael's house. His regions (named by him, in chat) wake under
+       her finger: the touch reaches him as an event (where, how long, how
+       firm), and his answer appears here beside the figure, in the moment —
+       the one channel in the house that runs INWARD. -->
+  <div id="figure-overlay" hidden>
+    <button type="button" id="figure-close" class="figure-close" aria-label="Close">✕</button>
+    <div class="figure-stage">
+      <svg id="figure-svg" viewBox="0 0 200 440" role="img" aria-label="His figure">
+        <g class="figure-body" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <!-- head + neck -->
+          <circle cx="100" cy="52" r="30" />
+          <path d="M 92 80 L 92 98 M 108 80 L 108 98" />
+          <!-- shoulders + torso -->
+          <path d="M 92 98 Q 100 104 108 98" />
+          <path d="M 92 100 Q 70 106 58 122 M 108 100 Q 130 106 142 122" />
+          <path d="M 58 122 Q 62 180 66 238 Q 100 254 134 238 Q 138 180 142 122" />
+          <!-- arms, slightly open, palms free of the hips -->
+          <path d="M 58 122 Q 44 168 46 208 Q 45 236 44 252 M 142 122 Q 156 168 154 208 Q 155 236 156 252" />
+          <circle cx="44" cy="262" r="10" />
+          <circle cx="156" cy="262" r="10" />
+          <!-- legs + feet -->
+          <path d="M 78 244 Q 78 300 80 344 Q 81 388 82 414 M 122 244 Q 122 300 120 344 Q 119 388 118 414" />
+          <path d="M 82 414 Q 80 424 70 426 M 118 414 Q 120 424 130 426" />
+        </g>
+        <g id="figure-regions-g"></g>
+      </svg>
+    </div>
+    <div id="figure-line" class="figure-line" hidden></div>
+    <div id="figure-hint" class="figure-hint muted small"></div>
   </div>
 
   <div id="toast" class="toast" hidden></div>
