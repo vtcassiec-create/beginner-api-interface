@@ -240,8 +240,20 @@ async function initSupabase() {
 
   db.auth.onAuthStateChange(async (event, session) => {
     if (event === "SIGNED_IN" && session) {
+      // supabase re-emits SIGNED_IN on every tab refocus — including the
+      // return from the photo picker. Re-entering the app on that event
+      // REPLACED all in-memory state with a cloud snapshot fetched from
+      // before an in-flight attach persisted: the attach then completed
+      // into an orphaned object (the cloud got it, the screen didn't), the
+      // chip never appeared, and send went without the picture — until the
+      // NEXT refocus reloaded again and "found" it. Her workaround, verbatim:
+      // "I have to remember to attach twice before hitting send." So: only
+      // do the full enter on a REAL sign-in (no user yet, or a different
+      // user) — a refocus just refreshes the session object.
+      const already = state.user && state.user.id === session.user.id
+        && !$("app-shell").hidden;
       state.user = session.user;
-      await enterApp();
+      if (!already) await enterApp();
     } else if (event === "SIGNED_OUT") {
       state.user = null;
       state.projects = [];
@@ -1446,6 +1458,17 @@ async function readFile(file) {
   });
 }
 
+// An upload takes seconds, and state can be REPLACED under it (loadAllData
+// swaps every project/conversation object). Anything that finishes an attach
+// must land its result in the objects the screen is CURRENTLY showing —
+// found by id — not the ones captured before the await. Falls back to the
+// captured pair if the ids are gone (deleted mid-attach: nothing to show).
+function liveAttachTarget(project, conv) {
+  const p = state.projects.find(x => x.id === project.id) || project;
+  const c = (p.conversations || []).find(x => x.id === conv.id) || conv;
+  return { project: p, conv: c };
+}
+
 async function attachFiles(fileList) {
   const project = getActiveProject();
   const conv = getActiveConversation(project);
@@ -1484,14 +1507,15 @@ async function attachFiles(fileList) {
         `upload timed out (${kb}KB)`);
       // Keep the local preview for an instant thumbnail (no re-download).
       if (parsed.previewUrl) stored.previewUrl = parsed.previewUrl;
-      project.files.push(stored);
-      conv.activeFileIds.push(stored.id);
+      const live = liveAttachTarget(project, conv);
+      live.project.files.push(stored);
+      live.conv.activeFileIds.push(stored.id);
       attached++;
     } catch (e) {
       flashToast(`Couldn't attach ${f.name}: ${e?.message || e}`, true);
     }
   }
-  await persistConversation(conv);
+  await persistConversation(liveAttachTarget(project, conv).conv);
   render();
   if (attached === 1) {
     flashToast(`📎 Attached ${fileList[0].name} — it'll go with your next message`);
@@ -1596,8 +1620,9 @@ async function attachVideo(f, project, conv) {
     const stored = await withTimeout(
       dbCreateFile(project.id, parsed), 180000, "frame upload timed out");
     stored.previewUrl = parsed.previewUrl;
-    project.files.push(stored);
-    conv.activeFileIds.push(stored.id);
+    const live = liveAttachTarget(project, conv);
+    live.project.files.push(stored);
+    live.conv.activeFileIds.push(stored.id);
   }
   // The soundtrack, through his ears. Graceful in every direction: no ears
   // configured, a silent video, or an unsupported codec — the frames still go.
@@ -9737,7 +9762,18 @@ async function checkForUpdate() {
   if (tag !== loadedAppVersion) {
     reloadingForUpdate = true;
     try { flashToast("✨ updating to the latest version…"); } catch (_) {}
-    setTimeout(() => location.reload(), 600);
+    // Re-check at fire time: the guard above ran when the tab regained
+    // focus, but the photo picker's change event lands AFTER that — an
+    // attach could have started in these 600ms, and reloading over it is
+    // exactly the eaten-attachment bug. If work appeared, stand down; the
+    // next visibility change or 10-minute tick catches the update calmly.
+    setTimeout(() => {
+      if (_attachesInFlight.size || isSending || callActive) {
+        reloadingForUpdate = false;
+        return;
+      }
+      location.reload();
+    }, 600);
   }
 }
 
