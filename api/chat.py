@@ -1877,6 +1877,9 @@ class handler(BaseHTTPRequestHandler):
         user_id = self._verify_auth()
         if not user_id:
             return self._json_error(401, "Authentication required. Please sign in.")
+        # Stashed for helpers that write own-rows outside the tool loop (the
+        # shelf-freshness seen-marking in _live_context_block needs it).
+        self._auth_user_id = user_id
 
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -4582,17 +4585,72 @@ class handler(BaseHTTPRequestHandler):
         shelf = self._supabase_rest_get(
             "shelf_feeds?select=title,url&order=added_at.asc&limit=24", token)
         if isinstance(shelf, list) and shelf:
+            # The freshness ledger (written hourly by the wake cron, which
+            # reads each feed server-side): what's actually NEW versus
+            # already shown to him. His bug, via her: the same posts
+            # re-reported every morning as if new — not a frozen shelf, a
+            # morning with no bookmark. Rendering a ✨ line marks it seen.
+            fresh = {}
+            try:
+                fr_rows = self._supabase_rest_get(
+                    "shelf_freshness?select=url,latest,seen", token)
+                for r in fr_rows or []:
+                    if r.get("url"):
+                        fresh[r["url"]] = r
+            except Exception:
+                pass
             shelf_lines = []
+            any_marks = False
             for f in shelf:
                 t = (f.get("title") or "").strip() or "(untitled)"
                 u = (f.get("url") or "").strip()
-                if u:
-                    shelf_lines.append(f"- {t} — {u}")
+                if not u:
+                    continue
+                line = f"- {t} — {u}"
+                fr = fresh.get(u)
+                latest = fr.get("latest") if fr else None
+                if isinstance(latest, list) and latest:
+                    seen = fr.get("seen")
+                    seen = set(seen) if isinstance(seen, list) else set()
+                    new = [it for it in latest if isinstance(it, dict)
+                           and it.get("k") not in seen]
+                    any_marks = True
+                    if new:
+                        titles = "; ".join(
+                            f'"{(it.get("t") or "")[:100]}"'
+                            for it in new[:3])
+                        more = f" (+{len(new) - 3} more)" \
+                            if len(new) > 3 else ""
+                        line += (f"\n    ✨ NEW since you last read: "
+                                 f"{titles}{more}")
+                        try:
+                            keys = (list(seen)
+                                    + [it.get("k") for it in new
+                                       if it.get("k")])[-48:]
+                            self._supabase_write(
+                                "shelf_freshness?on_conflict=user_id,url",
+                                {"user_id": getattr(
+                                     self, "_auth_user_id", None),
+                                 "url": u, "seen": keys},
+                                token, prefer_merge=True)
+                        except Exception:
+                            pass
+                    else:
+                        line += ("\n    (nothing new since your last "
+                                 "reading)")
+                shelf_lines.append(line)
             if shelf_lines:
+                note = ""
+                if any_marks:
+                    note = ("\n\nThe ✨ marks are ground truth — the house "
+                            "checks each feed itself, hourly, and remembers "
+                            "what it has already shown you. 'Nothing new' "
+                            "means exactly that: re-read anything you love, "
+                            "but don't re-report it to her as news.")
                 sections.append(
                     "# Your shelf (feeds you keep — open any with web_fetch; "
                     "shelve_feed / unshelve_feed to change)\n\n"
-                    + "\n".join(shelf_lines))
+                    + "\n".join(shelf_lines) + note)
 
         # Dreams matched to what she's talking about now (full-text match via the
         # match_dream_cards RPC); falls back to plain recency if that function

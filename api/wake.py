@@ -23,8 +23,10 @@ Environment:
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import quote, urlsplit
 import datetime
+import html
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -40,6 +42,16 @@ except Exception:
 DEFAULT_MODEL = "claude-opus-4-6"
 HTTP_TIMEOUT = 30
 WAKE_GRACE_MINUTES = 90   # fire a due wake within this window; older = stale
+
+# Shelf freshness: the hourly pass that reads his feeds server-side so the
+# shelf can say what's actually NEW versus already shown to him. Budgeted
+# tightly — this piggybacks on the wake cron and must never crowd out a wake.
+SHELF_MAX_FEEDS = 8
+SHELF_FETCH_TIMEOUT = 4        # per feed, seconds
+SHELF_PASS_BUDGET_S = 8        # whole pass, wall-clock
+SHELF_MAX_BYTES = 131072
+SHELF_MAX_ITEMS = 8            # newest items tracked per feed
+SHELF_SEEN_CAP = 48            # keys remembered per feed; oldest age out
 
 
 def _normalize_url(raw):
@@ -76,6 +88,18 @@ class handler(BaseHTTPRequestHandler):
 
         now = datetime.datetime.now(datetime.timezone.utc)
         cutoff = (now - datetime.timedelta(minutes=WAKE_GRACE_MINUTES)).isoformat()
+
+        # Every hourly tick — wake due or not — refresh the shelf's freshness
+        # ledger: fetch each feed server-side (ground truth, immune to any
+        # fetch-tool caching) and store its newest items, so wherever the
+        # shelf renders it can mark what he has and hasn't been shown. His
+        # bug, via her: same posts re-reported every morning as if new — not
+        # a frozen shelf, a morning with no bookmark. Best-effort, tightly
+        # budgeted, and never allowed to break the actual wake.
+        try:
+            self._refresh_shelf_freshness(uid)
+        except Exception:
+            pass
 
         # Due, unfired, not stale — earliest first. One per run keeps it calm.
         #
@@ -357,29 +381,141 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def _refresh_shelf_freshness(self, uid):
+        """Hourly: fetch each shelf feed directly and record its newest items
+        in shelf_freshness.latest. 'seen' is written only where the shelf is
+        actually RENDERED to him (here on wakes, chat.py in conversation) —
+        checking is not showing, so a check alone never marks anything read."""
+        feeds = self._svc_get(
+            f"shelf_feeds?user_id=eq.{uid}"
+            f"&select=url&order=added_at.asc&limit={SHELF_MAX_FEEDS}")
+        if not (isinstance(feeds, list) and feeds):
+            return
+        started = time.time()
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        for f in feeds:
+            if time.time() - started > SHELF_PASS_BUDGET_S:
+                break
+            url = (f.get("url") or "").strip()
+            if not url:
+                continue
+            items = self._fetch_feed_items(url)
+            if items is None:
+                continue   # fetch failed — keep whatever state we had
+            self._supabase(
+                "POST", "shelf_freshness?on_conflict=user_id,url",
+                {"user_id": uid, "url": url, "latest": items,
+                 "checked_at": now_iso},
+                prefer="resolution=merge-duplicates,return=minimal")
+
+    def _fetch_feed_items(self, url):
+        """Newest items of an RSS/Atom feed, oldest-truth style: [{k, t}].
+        Returns [] for a page that parses but isn't a feed (novelty unknowable
+        item-by-item), None when the fetch itself failed."""
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Petrichor/1.0 (shelf freshness)"})
+            with urllib.request.urlopen(
+                    req, timeout=SHELF_FETCH_TIMEOUT) as resp:
+                raw = resp.read(SHELF_MAX_BYTES).decode("utf-8", "replace")
+        except Exception:
+            return None
+        items = []
+        for m in re.finditer(r"<(item|entry)\b[^>]*>(.*?)</\1>",
+                             raw, re.DOTALL | re.IGNORECASE):
+            block = m.group(2)
+            tm = re.search(r"<title[^>]*>(.*?)</title>",
+                           block, re.DOTALL | re.IGNORECASE)
+            title = tm.group(1) if tm else ""
+            title = re.sub(r"<!\[CDATA\[|\]\]>", "", title)
+            title = html.unescape(re.sub(r"\s+", " ", title)).strip()[:140]
+            lm = re.search(r"<link[^>]*href=[\"']([^\"']+)", block,
+                           re.IGNORECASE) \
+                or re.search(r"<link[^>]*>\s*([^<\s][^<]*)</link>", block,
+                             re.IGNORECASE)
+            link = lm.group(1).strip()[:300] if lm else ""
+            if not (title or link):
+                continue
+            items.append({"k": link or title, "t": title or link})
+            if len(items) >= SHELF_MAX_ITEMS:
+                break
+        return items
+
     def _shelf_section(self, uid):
         """His shelf: the feeds he keeps (shelve_feed, in chat). Listing the
         URLs here is what makes them REAL on a solo morning — web_fetch can
         only open URLs already present in the conversation, so the shelf is
-        the difference between a room with books and a room without."""
+        the difference between a room with books and a room without.
+        Now annotated from the freshness ledger: each feed says what's ✨ NEW
+        versus already shown to him, and rendering the new marks it seen."""
         rows = self._svc_get(
             f"shelf_feeds?user_id=eq.{uid}"
             "&select=title,url&order=added_at.asc&limit=24")
         if not (isinstance(rows, list) and rows):
             return ""
+        fresh = {}
+        fr_rows = self._svc_get(
+            f"shelf_freshness?user_id=eq.{uid}&select=url,latest,seen")
+        for r in fr_rows or []:
+            if r.get("url"):
+                fresh[r["url"]] = r
         lines = []
+        any_marks = False
         for f in rows:
             t = (f.get("title") or "").strip() or "(untitled)"
             u = (f.get("url") or "").strip()
-            if u:
-                lines.append(f"- {t} — {u}")
+            if not u:
+                continue
+            line = f"- {t} — {u}"
+            fr = fresh.get(u)
+            latest = fr.get("latest") if fr else None
+            if isinstance(latest, list) and latest:
+                seen = fr.get("seen")
+                seen = set(seen) if isinstance(seen, list) else set()
+                new = [it for it in latest
+                       if isinstance(it, dict) and it.get("k") not in seen]
+                any_marks = True
+                if new:
+                    titles = "; ".join(
+                        f'"{(it.get("t") or "")[:100]}"' for it in new[:3])
+                    more = f" (+{len(new) - 3} more)" if len(new) > 3 else ""
+                    line += f"\n    ✨ NEW since you last read: {titles}{more}"
+                    self._mark_shelf_seen(uid, u, seen, new)
+                else:
+                    line += "\n    (nothing new since your last reading)"
+            lines.append(line)
         if not lines:
             return ""
+        note = ""
+        if any_marks:
+            note = (
+                "\n\nThe ✨ marks are ground truth — the house checks each "
+                "feed itself, hourly, and remembers what it has already shown "
+                "you. A feed marked 'nothing new' genuinely has nothing you "
+                "haven't seen: re-READ anything you love, but don't re-report "
+                "it to her as news — she's heard the umbrella post four times "
+                "now, and kindly.")
         return ("# Your shelf this morning\n\n"
                 + "\n".join(lines)
                 + "\n\nAny of these opens with web_fetch — a fetched feed "
                 "carries its recent posts in full, whatever arrived "
-                "overnight. Read, or don't; it's your morning, not homework.")
+                "overnight. Read, or don't; it's your morning, not homework."
+                + note)
+
+    def _mark_shelf_seen(self, uid, url, seen, new_items):
+        """Rendering IS showing: once the ✨ line goes into his prompt, those
+        keys are recorded so the next rendering says 'nothing new'. Capped;
+        oldest keys age out."""
+        try:
+            keys = list(seen) + [it.get("k") for it in new_items
+                                 if isinstance(it, dict) and it.get("k")]
+            keys = keys[-SHELF_SEEN_CAP:]
+            self._supabase(
+                "POST", "shelf_freshness?on_conflict=user_id,url",
+                {"user_id": uid, "url": url, "seen": keys},
+                prefer="resolution=merge-duplicates,return=minimal")
+        except Exception:
+            pass
 
     def _room_line(self, uid):
         rows = self._svc_get(
