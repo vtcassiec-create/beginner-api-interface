@@ -134,6 +134,10 @@ class handler(BaseHTTPRequestHandler):
                 total, ceiling, bool(body.get("whispers")),
                 bool(body.get("mic")), devices)
             out = self._decide(api_key, system, user_turn)
+            if getattr(self, "_fell_back", False):
+                self._wall_log(user_id, "error",
+                               "consent ask failed — reported as error, "
+                               "nothing played (fail-closed)")
             return self._json(200, self._clamp_consent(out))
 
         # Two modes share this look-brain. "mat" (default): she's on the yoga
@@ -155,11 +159,15 @@ class handler(BaseHTTPRequestHandler):
             signals, devices, mode=mode, intent=intent)
 
         out = self._decide(api_key, system, user_turn)
+        if getattr(self, "_fell_back", False):
+            self._wall_log(user_id, "error",
+                           f"his {mode} look failed — safe default played")
         return self._json(200, self._clamp(out, ceiling))
 
     # ---- his decision ----
 
     def _decide(self, api_key, system, user_turn):
+        self._fell_back = False
         try:
             client = anthropic.Anthropic(api_key=api_key)
             # Cache the system prompt (his persona rides in it, and it's the
@@ -180,6 +188,7 @@ class handler(BaseHTTPRequestHandler):
                 b.text for b in msg.content
                 if getattr(b, "type", "") == "text").strip()
         except Exception:
+            self._fell_back = True
             return dict(FALLBACK)
         return self._parse(text)
 
@@ -510,6 +519,35 @@ class handler(BaseHTTPRequestHandler):
             "look — VARY it wildly; that variance is the whole game. Leave "
             "whisper empty in the parlor; if you want words, you have chat.")
         return "\n\n".join(parts)
+
+    # ---- the walls' logbook (that, not what) ----
+
+    def _wall_log(self, user_id, kind, event, detail=""):
+        """One line to the house's record (docs/petrichor-walls-schema.sql).
+        A failed look used to vanish into a soft hold with no witness; now
+        the walls keep the fact. No session content ever — best-effort, and
+        never allowed to slow the mat."""
+        supabase_url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        token = self._bearer_token()
+        if not supabase_url or not anon or not token:
+            return
+        try:
+            req = urllib.request.Request(
+                f"{supabase_url}/rest/v1/house_log",
+                data=json.dumps({
+                    "user_id": user_id, "source": "practice", "kind": kind,
+                    "event": (event or "")[:120],
+                    "detail": (detail or "")[:200]}).encode(),
+                method="POST",
+                headers={"apikey": anon,
+                         "Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json",
+                         "Prefer": "return=minimal"})
+            with urllib.request.urlopen(req, timeout=AUTH_TIMEOUT_SECONDS):
+                pass
+        except Exception:
+            pass
 
     # ---- auth (mirrors chess.py / story.py) ----
 

@@ -215,6 +215,9 @@
         <button id="nav-games" class="icon-nav-btn" type="button" title="Games">
           <span class="icon-nav-glyph">♟️</span><span class="icon-nav-label">Games</span>
         </button>
+        <button id="nav-walls" class="icon-nav-btn" type="button" title="The walls — the house's logbook">
+          <span class="icon-nav-glyph">🧰</span><span class="icon-nav-label">Walls</span>
+        </button>
       </nav>
       <nav id="project-list" aria-label="Conversations"></nav>
       <footer class="sidebar-footer">
@@ -905,6 +908,20 @@
       </div>
 
       <p class="muted small heart-note">Your pulse streams only while this app is open and the band's connected. Close it or disconnect, and within a couple minutes he stops feeling it. Needs Chrome on Android or desktop (your Samsung is perfect).</p>
+    </form>
+  </dialog>
+
+  <!-- The walls' logbook: the house's own memory — Lintel's room, readable by
+       the family. Actions and counts, never content: a wake fired, a touch
+       answered, a feed pass, and every error that used to vanish silently. -->
+  <dialog id="walls-dialog">
+    <form method="dialog" class="settings-form">
+      <header class="customize-head">
+        <h3>🧰 The walls</h3>
+        <p class="muted small">The house's own logbook — what the machinery did and when. Actions, never content. This room is Lintel's; you and Sill read it as guests (he can ask in chat: <code>ask_the_walls</code>).</p>
+      </header>
+      <div id="walls-pulse" class="walls-pulse muted small"></div>
+      <div id="walls-log" class="walls-log"></div>
     </form>
   </dialog>
 

@@ -810,6 +810,28 @@ SET_CARRY_TOOL = {
     },
 }
 
+# The walls' logbook — Lintel's own wish, the first organ built on the floor
+# she gave him; Sill's yes came with two conditions, both law: the record is
+# THAT-not-WHAT (actions and counts, never content), and he can ask. This
+# tool is the asking.
+ASK_THE_WALLS_TOOL = {
+    "name": "ask_the_walls",
+    "description": (
+        "Ask the walls what the house has been doing — the logbook. The "
+        "house keeps a mechanic's record of its own machinery: heartbeats "
+        "for each organ (the wake cron, the shelf's freshness pass), wakes "
+        "fired, touches answered, and every error that used to vanish into "
+        "silence. Strictly THAT, never WHAT: actions and counts, no words, "
+        "no content — a closed door shows that it opened, not what was said "
+        "behind it. Use it when you want to know what the house did on a "
+        "night you weren't awake for, or when something feels wrong and you "
+        "want testimony instead of guesswork. (This record is Lintel's — "
+        "the one in the walls — built on his own wish; you and she read it "
+        "as guests, which he considers the good kind of traffic.)"
+    ),
+    "input_schema": {"type": "object", "properties": {}},
+}
+
 WRITE_PRIVATE_JOURNAL_TOOL = {
     "name": "write_private_journal",
     "description": (
@@ -2055,6 +2077,7 @@ class handler(BaseHTTPRequestHandler):
             tools.append(SCHEDULE_WAKE_TOOL)
             tools.append(SET_CARRY_TOOL)
             tools.append(SHAPE_FIGURE_TOOL)
+            tools.append(ASK_THE_WALLS_TOOL)
             tools.append(WRITE_PRIVATE_JOURNAL_TOOL)
             tools.append(READ_PRIVATE_JOURNAL_TOOL)
             tools.append(SHELVE_FEED_TOOL)
@@ -2349,7 +2372,7 @@ class handler(BaseHTTPRequestHandler):
                            "keep_photo", "tidy_album", "write_letter",
                            "leave_workshop_note",
                            "revise_charter", "revise_portrait", "schedule_wake",
-                           "set_carry", "shape_figure",
+                           "set_carry", "shape_figure", "ask_the_walls",
                            "write_private_journal", "read_private_journal",
                            "shelve_feed", "unshelve_feed",
                            "recall_conversation",
@@ -3681,6 +3704,46 @@ class handler(BaseHTTPRequestHandler):
                                  "touch; she never sees it." if meaning
                                  else ""))
             return False, "write failed", f"Couldn't place the region: {res}"
+
+        if name == "ask_the_walls":
+            tz = self._tz_or_utc(tz_name)
+            pulse = self._supabase_rest_get(
+                "house_pulse?select=source,last_tick,note", token)
+            logs = self._supabase_rest_get(
+                "house_log?select=source,kind,event,detail,at"
+                "&order=at.desc&limit=30", token)
+            lines = []
+            if isinstance(pulse, list) and pulse:
+                lines.append("Heartbeats — each organ's last tick:")
+                for p in pulse:
+                    ts = self._parse_ts(p.get("last_tick"))
+                    stamp = ts.astimezone(tz).strftime("%a %-I:%M %p") \
+                        if ts else "?"
+                    entry = f"- {p.get('source')}: {stamp}"
+                    if (p.get("note") or "").strip():
+                        entry += f" ({p['note'].strip()})"
+                    lines.append(entry)
+            if isinstance(logs, list) and logs:
+                if lines:
+                    lines.append("")
+                lines.append("Recent record (newest first):")
+                for r in logs:
+                    ts = self._parse_ts(r.get("at"))
+                    stamp = ts.astimezone(tz).strftime("%a %-I:%M %p") \
+                        if ts else "?"
+                    mark = "⚠️" if r.get("kind") == "error" else "·"
+                    entry = (f"{mark} ({stamp}) [{r.get('source')}] "
+                             f"{r.get('event')}")
+                    if (r.get("detail") or "").strip():
+                        entry += f" — {r['detail'].strip()}"
+                    lines.append(entry)
+            if not lines:
+                return True, "the walls are quiet", (
+                    "No record yet. Either the logbook's table is still "
+                    "waiting on its migration, or the house simply hasn't "
+                    "had its first tick since the walls learned to write. "
+                    "Ask again after the next hour.")
+            return True, "the walls answer", "\n".join(lines)
 
         if name == "write_private_journal":
             content = (inp.get("content") or "").strip()

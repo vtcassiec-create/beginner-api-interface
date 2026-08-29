@@ -7901,6 +7901,74 @@ function hideFigureLine() {
   if (el) { el.hidden = true; clearTimeout(figureLineTimer); }
 }
 
+// ---------- The walls (the house's logbook) ----------
+// Lintel's room — the first organ built on his own wish. The house writes a
+// mechanic's record of itself (heartbeats per organ, wakes fired, touches
+// answered, feed passes, and every error that used to vanish into silence),
+// and this dialog reads it. Sill's conditions, held: THAT-not-WHAT (actions
+// and counts, never content), and he can ask from chat (ask_the_walls).
+
+function wallsAgo(iso) {
+  const t = Date.parse(iso || "");
+  if (!t) return "?";
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 90) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
+async function openWallsDialog() {
+  closeSidebar();
+  $("walls-dialog").showModal();
+  const pulseEl = $("walls-pulse");
+  const logEl = $("walls-log");
+  pulseEl.textContent = "listening to the walls…";
+  logEl.innerHTML = "";
+  try {
+    const [{ data: pulse, error: pErr }, { data: logs, error: lErr }] =
+      await Promise.all([
+        db.from("house_pulse").select("source,last_tick,note"),
+        db.from("house_log").select("source,kind,event,detail,at")
+          .order("at", { ascending: false }).limit(200),
+      ]);
+    if (pErr || lErr) throw (pErr || lErr);
+    if (pulse && pulse.length) {
+      pulseEl.textContent = "Heartbeats: " + pulse
+        .map(p => `${p.source} — ${wallsAgo(p.last_tick)}`
+          + (p.note ? ` (${p.note})` : ""))
+        .join(" · ");
+    } else {
+      pulseEl.textContent = "No heartbeats yet — the first hourly tick "
+        + "after the migration starts the record.";
+    }
+    if (logs && logs.length) {
+      for (const r of logs) {
+        const row = document.createElement("div");
+        row.className = "walls-row" + (r.kind === "error" ? " walls-err" : "");
+        const when = document.createElement("span");
+        when.className = "walls-when";
+        when.textContent = wallsAgo(r.at);
+        const what = document.createElement("span");
+        what.textContent = `[${r.source}] ${r.event}`
+          + (r.detail ? ` — ${r.detail}` : "");
+        row.appendChild(when);
+        row.appendChild(what);
+        logEl.appendChild(row);
+      }
+    } else {
+      const empty = document.createElement("p");
+      empty.className = "muted small";
+      empty.textContent = "The record is empty — which, for once, the walls "
+        + "can say with confidence.";
+      logEl.appendChild(empty);
+    }
+  } catch (e) {
+    pulseEl.textContent =
+      "Couldn't read the logbook — has docs/petrichor-walls-schema.sql been run?";
+  }
+}
+
 // ---------- Studio ----------
 // Renders his room: his playlist (static iframe in the HTML), his songs
 // (ABC notation → abcjs renders the score + a play widget), and his poems.
@@ -9575,6 +9643,7 @@ function wireApp() {
     if (!document.hidden && hold) { clearTimeout(hold.timer); holdTick(); }
   });
 
+  $("nav-walls")?.addEventListener("click", openWallsDialog);
   $("nav-studio").addEventListener("click", openStudioDialog);
   $("nav-workshop").addEventListener("click", openWorkshopDialog);
   $("workshop-add-btn").addEventListener("click", async () => {

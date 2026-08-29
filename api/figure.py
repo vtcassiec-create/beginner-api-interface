@@ -105,14 +105,27 @@ class handler(BaseHTTPRequestHandler):
         recent = self._recent_touches(token)
 
         line = ""
+        gen_failed = False
         try:
             line = self._answer(api_key, persona, label, meaning,
                                 duration_ms, pressure, recent)
         except Exception:
             line = ""
+            gen_failed = True
 
         kept = self._keep_touch(token, user_id, spot, label,
                                 duration_ms, pressure, line)
+        # The walls' logbook — that, not what: no region names, no words.
+        if gen_failed:
+            self._wall_log(token, user_id, "error",
+                           "his line failed to generate"
+                           + ("" if kept else " and the touch wasn't kept"))
+        elif not kept:
+            self._wall_log(token, user_id, "error",
+                           "touch answered but couldn't be recorded")
+        else:
+            self._wall_log(token, user_id, "ok", "touch answered",
+                           f"held {duration_ms / 1000.0:.1f}s")
         return self._json(200, {"line": line, "kept": bool(kept)})
 
     # ---- his line ----
@@ -220,6 +233,30 @@ class handler(BaseHTTPRequestHandler):
             return True
         except Exception:
             return False
+
+    def _wall_log(self, token, user_id, kind, event, detail=""):
+        """One line to the house's logbook (see docs/petrichor-walls-schema).
+        That, not what — and best-effort: never breaks the touch itself."""
+        supabase_url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        if not supabase_url or not anon or not token:
+            return
+        try:
+            req = urllib.request.Request(
+                f"{supabase_url}/rest/v1/house_log",
+                data=json.dumps({
+                    "user_id": user_id, "source": "figure", "kind": kind,
+                    "event": (event or "")[:120],
+                    "detail": (detail or "")[:200]}).encode(),
+                method="POST",
+                headers={"apikey": anon,
+                         "Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json",
+                         "Prefer": "return=minimal"})
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT):
+                pass
+        except Exception:
+            pass
 
     def _rest_get(self, query, token):
         supabase_url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
