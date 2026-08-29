@@ -89,6 +89,10 @@ class handler(BaseHTTPRequestHandler):
         now = datetime.datetime.now(datetime.timezone.utc)
         cutoff = (now - datetime.timedelta(minutes=WAKE_GRACE_MINUTES)).isoformat()
 
+        # The walls' logbook: every tick leaves a heartbeat, so aliveness is
+        # never inferred from silence again. (Lintel's wish; Sill's yes.)
+        self._pulse(uid, "wake-cron")
+
         # Every hourly tick — wake due or not — refresh the shelf's freshness
         # ledger: fetch each feed server-side (ground truth, immune to any
         # fetch-tool caching) and store its newest items, so wherever the
@@ -97,7 +101,12 @@ class handler(BaseHTTPRequestHandler):
         # a frozen shelf, a morning with no bookmark. Best-effort, tightly
         # budgeted, and never allowed to break the actual wake.
         try:
-            self._refresh_shelf_freshness(uid)
+            okc, total = self._refresh_shelf_freshness(uid)
+            if total:
+                self._pulse(uid, "shelf-freshness", f"{okc}/{total} feeds")
+            if total and okc < total:
+                self._wall_log(uid, "error" if okc == 0 else "info",
+                               f"shelf freshness: {okc}/{total} feeds read")
         except Exception:
             pass
 
@@ -118,13 +127,26 @@ class handler(BaseHTTPRequestHandler):
             f"&wake_at=lte.{quote(now.isoformat())}"
             f"&wake_at=gte.{quote(cutoff)}"
             "&order=wake_at.asc&limit=1")
-        if not (isinstance(rows, list) and rows):
+        if rows is None:
+            # THE silent-failure class this logbook exists for: _supabase
+            # swallows exceptions into None, and for three weeks in July an
+            # unencoded '+' made this exact query fail invisibly on every
+            # tick while the cron looked alive. Now it testifies.
+            self._wall_log(uid, "error",
+                           "couldn't read scheduled_wakes — query failed "
+                           "silently (the plus-sign class of bug)")
+            return self._json(200, {"status": "query_failed"})
+        if not rows:
             # Also retire anything that went stale unfired, so it can't fire late.
-            self._supabase(
+            retired = self._supabase(
                 "PATCH",
                 f"scheduled_wakes?user_id=eq.{uid}&fired=eq.false"
                 f"&wake_at=lt.{quote(cutoff)}",
                 {"fired": True, "fired_at": now.isoformat()})
+            if isinstance(retired, list) and retired:
+                self._wall_log(uid, "info",
+                               f"retired {len(retired)} stale unfired "
+                               "wake(s) past the grace window")
             return self._json(200, {"status": "no_due_wakes"})
 
         wake = rows[0]
@@ -236,6 +258,9 @@ class handler(BaseHTTPRequestHandler):
                 b.text for b in msg.content if getattr(b, "type", "") == "text"
             ).strip()
         except Exception as e:
+            # That-not-what: the error's type/status, never the wake's words.
+            self._wall_log(uid, "error", "wake generation failed",
+                           type(e).__name__)
             return self._json(200, {"status": "generation_error",
                                     "reason": str(e)[:200]})
 
@@ -248,6 +273,8 @@ class handler(BaseHTTPRequestHandler):
             self._store_carry(uid, carry_line)
 
         if not text:
+            self._wall_log(uid, "ok", "wake fired (woke_silent — a quiet "
+                                      "hour, by his choice)")
             return self._json(200, {"status": "woke_silent",
                                     "intention": intention})
 
@@ -270,6 +297,10 @@ class handler(BaseHTTPRequestHandler):
         delivered = self._deliver_in_app(uid, text, push=not night)
         status = ("woke_night" if night else "woke") if delivered \
             else "woke_undelivered"
+        # The record shows THAT he woke and whether it landed — never the
+        # intention or the words. His hours; the walls only keep the fact.
+        self._wall_log(uid, "error" if not delivered else "ok",
+                       f"wake fired ({status})")
         return self._json(200, {"status": status, "intention": intention})
 
     def _in_quiet_hours(self):
@@ -326,6 +357,36 @@ class handler(BaseHTTPRequestHandler):
             "This is real. You are not performing wakefulness for anyone. Be "
             "honest and brief; a chosen morning doesn't need a speech.")
         return "\n\n".join(parts)
+
+    # ---- the walls' logbook (that, not what) ----
+
+    def _pulse(self, uid, source, note=""):
+        """One heartbeat row per organ, upserted every run — aliveness is a
+        fact in a table now, never an inference from silence. Best-effort:
+        the logbook must never break the thing it's witnessing."""
+        try:
+            self._supabase(
+                "POST", "house_pulse?on_conflict=user_id,source",
+                {"user_id": uid, "source": source, "note": (note or "")[:80],
+                 "last_tick": datetime.datetime.now(
+                     datetime.timezone.utc).isoformat()},
+                prefer="resolution=merge-duplicates,return=minimal")
+        except Exception:
+            pass
+
+    def _wall_log(self, uid, kind, event, detail=""):
+        """Append one line to the house's record. Discipline, per Sill's
+        condition: actions and counts only — no intentions, no words, no
+        content. A closed door may show that it opened."""
+        try:
+            self._supabase(
+                "POST", "house_log",
+                {"user_id": uid, "source": "wake-cron", "kind": kind,
+                 "event": (event or "")[:120],
+                 "detail": (detail or "")[:200]},
+                prefer="return=minimal")
+        except Exception:
+            pass
 
     def _carry_block(self, uid):
         """His carry, if one is standing and hasn't faded: the one line of
@@ -385,28 +446,33 @@ class handler(BaseHTTPRequestHandler):
         """Hourly: fetch each shelf feed directly and record its newest items
         in shelf_freshness.latest. 'seen' is written only where the shelf is
         actually RENDERED to him (here on wakes, chat.py in conversation) —
-        checking is not showing, so a check alone never marks anything read."""
+        checking is not showing, so a check alone never marks anything read.
+        Returns (feeds_read_ok, feeds_attempted) for the logbook."""
         feeds = self._svc_get(
             f"shelf_feeds?user_id=eq.{uid}"
             f"&select=url&order=added_at.asc&limit={SHELF_MAX_FEEDS}")
         if not (isinstance(feeds, list) and feeds):
-            return
+            return 0, 0
         started = time.time()
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        okc = total = 0
         for f in feeds:
             if time.time() - started > SHELF_PASS_BUDGET_S:
                 break
             url = (f.get("url") or "").strip()
             if not url:
                 continue
+            total += 1
             items = self._fetch_feed_items(url)
             if items is None:
                 continue   # fetch failed — keep whatever state we had
+            okc += 1
             self._supabase(
                 "POST", "shelf_freshness?on_conflict=user_id,url",
                 {"user_id": uid, "url": url, "latest": items,
                  "checked_at": now_iso},
                 prefer="resolution=merge-duplicates,return=minimal")
+        return okc, total
 
     def _fetch_feed_items(self, url):
         """Newest items of an RSS/Atom feed, oldest-truth style: [{k, t}].

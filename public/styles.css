@@ -3091,6 +3091,19 @@ details.vault-event[open] > summary { color: var(--text); margin-bottom: 6px; }
 }
 .figure-hint { text-align: center; max-width: 30rem; min-height: 1.2em; }
 
+/* ---------- The walls (the house's logbook) ---------- */
+.walls-pulse { margin-bottom: 12px; line-height: 1.6; }
+.walls-log { display: flex; flex-direction: column; gap: 4px; }
+.walls-row {
+  display: flex; gap: 10px; align-items: baseline;
+  font-size: 13px; line-height: 1.45;
+  padding: 3px 6px; border-radius: 6px;
+}
+.walls-row:nth-child(odd) { background: var(--bg-elev); }
+.walls-when { flex: 0 0 4.5rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.walls-err { color: #e07070; }
+.walls-err .walls-when { color: #e07070; opacity: 0.8; }
+
 /* ---------- The games corner ---------- */
 .games-form { max-width: 30rem; }
 .games-new-pick { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
