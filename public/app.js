@@ -2257,6 +2257,7 @@ async function generateAssistant() {
           applyManuscriptUpdate(event);
         } else if (event.type === "done") {
           assistantMsg.usage = event.usage;
+          if (event.anatomy) assistantMsg.anatomy = event.anatomy;
           // If the API compacted this turn, keep its summary block on this
           // message so buildApiMessages can thread it back next turn (and the
           // older history it folded isn't re-summarized from scratch). Persists
@@ -2457,7 +2458,20 @@ function messageUsageLabel(msg, project) {
     ? `${formatTokens(inTok)} in (${formatTokens(cachedRead)} cached) · ${formatTokens(msg.usage.output_tokens)} out`
     : `${formatTokens(inTok)} in · ${formatTokens(msg.usage.output_tokens)} out`;
   const dollars = formatCost(messageCost(msg.usage, info));
-  return dollars ? `${tokens} · ${dollars}` : tokens;
+  const base = dollars ? `${tokens} · ${dollars}` : tokens;
+  // The cache-line audit, on the line she already reads: what rode the
+  // volatile turn this message, biggest sections first (chars ≈ tokens×4).
+  // Ground truth for "why is message two 15¢" — measured, not guessed.
+  const a = msg.anatomy;
+  if (a && Array.isArray(a.live) && a.live.length) {
+    const k = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
+    const top = [...a.live].sort((x, y) => (y[1] || 0) - (x[1] || 0));
+    const shown = top.slice(0, 5).map(([name, n]) => `${name} ${k(n)}`);
+    const more = top.length > 5 ? ` +${top.length - 5} more` : "";
+    return `${base} · 🔍 turn ${k(a.user_turn_chars || 0)}ch / prefix `
+      + `${k(a.system_chars || 0)}ch — ${shown.join(", ")}${more}`;
+  }
+  return base;
 }
 
 // ---------- Export / Import ----------
