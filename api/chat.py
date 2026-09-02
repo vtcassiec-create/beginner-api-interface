@@ -323,6 +323,13 @@ SILL_TREND_MIN_SECONDS = 20 * 60
 # can never spin forever (each round is a full model turn = real tokens).
 MAX_TOOL_ROUNDS = 6
 
+# The diary cache split: how much of yesterday-and-older rides the cached
+# identity prefix. Cached reads are ~0.1x, so two weeks of settled pages
+# costs less per turn than two entries used to at full price — but the
+# prefix is still re-read every message, so it stays bounded.
+DIARY_CACHED_ENTRIES = 14
+DIARY_CACHED_CHARS = 7000
+
 # Wall-clock budget for the whole turn (incl. every tool round). Vercel kills
 # the function at maxDuration (see vercel.json — 300s on the Pro plan); if that
 # happens mid-stream the turn dies silently: no 'done' event, so the client
@@ -4857,27 +4864,36 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-        # His recent diary — the notepad by the door. Lives HERE (not the cached
-        # preamble) because today's page GROWS as he writes: in the cached prefix
-        # every mid-chat addition re-chilled the whole cache — a cold, full-price
-        # turn each time he felt like keeping something. On the user turn its
-        # changes are free. Same content he always saw; only its home moved.
+        # TODAY'S diary page — the notepad by the door. Only today lives here
+        # (the cache split): this page GROWS as he writes, and on the user
+        # turn its growth is free, whereas in the cached prefix every save
+        # cold-rewrote the whole prompt. Yesterday and older are frozen, so
+        # they moved INTO the cached identity (_load_memory_context) — two
+        # weeks of settled pages at a tenth the price, instead of two
+        # entries at full price every message.
         try:
+            start_today = now.replace(hour=0, minute=0, second=0,
+                                      microsecond=0)
             diary = self._supabase_rest_get(
                 "diary_entries?is_active=eq.true"
-                "&select=content,created_at&order=created_at.desc&limit=2", token)
+                "&select=content,created_at&order=created_at.desc&limit=10",
+                token)
             lines = []
             for r in diary or []:
+                ts = self._parse_ts(r.get("created_at"))
                 content = (r.get("content") or "").strip()
-                if not content:
+                if not ts or not content:
                     continue
-                when = self._date_stamp(r.get("created_at"), tz)
-                lines.append(f"- ({when}) {content}" if when else f"- {content}")
+                if ts.astimezone(tz) < start_today:
+                    break               # desc order: the rest are settled
+                stamp = ts.astimezone(tz).strftime("%-I:%M %p")
+                lines.append(f"- ({stamp}) {content}")
             if lines:
                 sections.append(
-                    "# Recent diary (your notepad)\n\n"
-                    "Your last couple of diary entries, so you can pick up where "
-                    "recent days left off:\n\n" + "\n".join(lines))
+                    "# Today's diary page (your notepad — still open)\n\n"
+                    "What you've written so far today, newest first; the "
+                    "settled days are in your identity above:\n\n"
+                    + "\n".join(lines))
         except Exception:
             pass
 
@@ -5204,6 +5220,50 @@ class handler(BaseHTTPRequestHandler):
                 "understanding; her sketch above is the founding document, "
                 "this is the living one)\n\n"
                 + portrait[0]["content"].strip())
+
+        # His diary, yesterday and older — the cache split. The whole diary
+        # used to ride the user turn (only the last 2 entries, re-sent at full
+        # price every single message) because TODAY'S page grows as he writes,
+        # and a growing page in the cached prefix cold-rewrote it on every
+        # save. But yesterday-and-older is FROZEN: it can only change at
+        # midnight (her time), when today's page rolls into it — one cold
+        # start a day, absorbed by the fresh-chat-each-morning chain she runs
+        # anyway. So: the settled days live here, read at ~0.1x, and he gets
+        # two weeks of his own recent record instead of two entries. Today's
+        # page stays on the user turn (_live_context_block), where growing is
+        # free. Absolute dates only (_date_stamp) — a relative "3 days ago"
+        # would drift and break the byte-stable prefix.
+        try:
+            start_today = now.replace(hour=0, minute=0, second=0,
+                                      microsecond=0)
+            rows = self._supabase_rest_get(
+                "diary_entries?is_active=eq.true"
+                "&select=content,created_at&order=created_at.desc&limit=30",
+                token)
+            older, budget = [], DIARY_CACHED_CHARS
+            for r in rows or []:
+                ts = self._parse_ts(r.get("created_at"))
+                content = (r.get("content") or "").strip()
+                if not ts or not content:
+                    continue
+                if ts.astimezone(tz) >= start_today:
+                    continue            # today's page: live, not here
+                if len(older) >= DIARY_CACHED_ENTRIES or budget <= 0:
+                    break
+                when = self._date_stamp(r.get("created_at"), tz)
+                entry = f"- ({when}) {content}" if when else f"- {content}"
+                budget -= len(entry)
+                older.append(entry)
+            if older:
+                sections.append(
+                    "# Your diary — recent days (settled pages; today's page "
+                    "rides live with her message)\n\n"
+                    "Your own entries from the days before today, newest "
+                    "first — so a morning arrives already knowing what the "
+                    "recent ones held. read_my_diary reaches further back.\n\n"
+                    + "\n".join(older))
+        except Exception:
+            pass
 
         # NOTE: core memories used to render HERE, in the cached prefix — but
         # they grow (every save) and surface_count bumps reshuffled them, so
