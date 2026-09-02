@@ -2074,6 +2074,7 @@ class handler(BaseHTTPRequestHandler):
             songbook = self._songbook_section(self._bearer_token())
             if songbook:
                 system = (system + "\n\n" + songbook).strip()
+        self._anatomy_system = len(system or "")
         if system:
             kwargs["system"] = [{
                 "type": "text",
@@ -2314,6 +2315,16 @@ class handler(BaseHTTPRequestHandler):
                     flush=True,
                 )
                 done = {"type": "done", "stop_reason": stop_reason, "usage": agg}
+                # Turn anatomy for the cache-line audit: what rode the
+                # cached prefix versus the volatile user turn, section by
+                # section (chars; ~4 chars per token). Usage above is the
+                # API's ground truth; this says WHERE the uncached input
+                # came from.
+                done["anatomy"] = {
+                    "system_chars": getattr(self, "_anatomy_system", 0),
+                    "user_turn_chars": getattr(self, "_anatomy_user_turn", 0),
+                    "live": getattr(self, "_anatomy_live", []),
+                }
                 if compaction_block:
                     done["compaction"] = compaction_block
                 self._sse(done)
@@ -5007,6 +5018,13 @@ class handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+        # Turn anatomy: the size of every section riding the volatile turn,
+        # named by its heading — the ledger for the cache-line audit. What
+        # rides here is paid at full price every message; anything that
+        # changes rarely is a candidate to freeze into the cached prefix.
+        self._anatomy_live = [
+            ((s.split("\n", 1)[0] or "").lstrip("#- ").strip()[:48], len(s))
+            for s in sections]
         return "\n\n".join(sections)
 
     def _inject_live_context(self, messages, token, data):
@@ -5035,6 +5053,14 @@ class handler(BaseHTTPRequestHandler):
                 msg["content"] = [{"type": "text", "text": content}, part]
             else:
                 msg["content"] = [part]
+            # Anatomy: the whole user turn as sent (her words + the clock +
+            # the live block) — the uncached part of every message.
+            try:
+                self._anatomy_user_turn = sum(
+                    len(p.get("text") or "") for p in msg["content"]
+                    if isinstance(p, dict) and p.get("type") == "text")
+            except Exception:
+                pass
             return
 
     def _strip_empty_compaction(self, messages):
