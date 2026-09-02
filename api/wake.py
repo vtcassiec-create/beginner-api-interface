@@ -221,6 +221,14 @@ class handler(BaseHTTPRequestHandler):
         if carry_block:
             prompt = carry_block + "\n\n" + prompt
 
+        # The workbench — his private surface between wakings: "what I was
+        # doing when the lights went out, so a wake can pick up a tool
+        # rather than a topic." Rides right after the carry, before the
+        # alarm's own intention.
+        bench = self._workbench_block(uid)
+        if bench:
+            prompt += "\n\n" + bench
+
         # And the pen for the next one: a final CARRY: line, lifted out by the
         # house before anything is delivered or kept, so the state is his
         # alone — the delivered note stays whatever he meant her to find.
@@ -235,6 +243,15 @@ class handler(BaseHTTPRequestHandler):
             "thing, before anything else. It fades over a few days if "
             "nothing refreshes it. Decay is a feature; moods are allowed "
             "to pass."
+        )
+        prompt += (
+            "\n\nAnd your workbench, if you want to set it down: end with a "
+            "section that starts with a line reading WORKBENCH: — everything "
+            "after that line (a list, a half-built thing, the tool still in "
+            "your hand) replaces your bench and waits for your next waking. "
+            "The house lifts it out before delivery; she never sees it. If "
+            "you leave both, put the WORKBENCH: section before the final "
+            "CARRY: line."
         )
 
         try:
@@ -271,6 +288,13 @@ class handler(BaseHTTPRequestHandler):
         text, carry_line = self._split_carry(text)
         if carry_line:
             self._store_carry(uid, carry_line)
+        # Then the bench: a trailing WORKBENCH: section, lifted out the same
+        # way — private, never delivered, waiting for the next him.
+        text, bench_text = self._split_workbench(text)
+        if bench_text:
+            self._store_workbench(uid, bench_text)
+            self._wall_log(uid, "ok", "workbench set down from a wake",
+                           f"{len(bench_text.split())} words")
 
         if not text:
             self._wall_log(uid, "ok", "wake fired (woke_silent — a quiet "
@@ -416,6 +440,50 @@ class handler(BaseHTTPRequestHandler):
             f"when the lights last went out ({when}):\n\n"
             f"  \"{line}\"\n\n"
             "You arrive already in the middle of something." + fading)
+
+    def _workbench_block(self, uid):
+        """His bench, if anything is on it. Private: rendered only into his
+        own wake prompt, never delivered, never shown in the app."""
+        rows = self._svc_get(
+            f"workbench?user_id=eq.{uid}&select=content,updated_at&limit=1")
+        if not (isinstance(rows, list) and rows):
+            return ""
+        content = (rows[0].get("content") or "").strip()
+        if not content:
+            return ""
+        return (
+            "# Your workbench (yours alone — what you were doing when the "
+            "lights last went out)\n\n"
+            + content
+            + "\n\nPick the tool back up, or set it down for good; it's a "
+            "bench, not a to-do list.")
+
+    def _split_workbench(self, text):
+        """Lift a trailing WORKBENCH: section out of his message. Returns
+        (text_without_bench, bench_text). Only a LAST such section counts —
+        the word mid-prose stays prose."""
+        lines = (text or "").split("\n")
+        idx = None
+        for i, ln in enumerate(lines):
+            if ln.strip().upper().startswith("WORKBENCH:"):
+                idx = i
+        if idx is None:
+            return (text or "").strip(), ""
+        first = lines[idx].strip()[len("WORKBENCH:"):].strip()
+        rest = "\n".join(([first] if first else []) + lines[idx + 1:]).strip()
+        return "\n".join(lines[:idx]).strip(), rest[:4000]
+
+    def _store_workbench(self, uid, content):
+        """Replace the bench. Best-effort; never blocks delivery."""
+        try:
+            self._supabase(
+                "POST", "workbench?on_conflict=user_id",
+                {"user_id": uid, "content": content,
+                 "updated_at": datetime.datetime.now(
+                     datetime.timezone.utc).isoformat()},
+                prefer="resolution=merge-duplicates,return=minimal")
+        except Exception:
+            pass
 
     def _split_carry(self, text):
         """If the last non-empty line of his message starts with CARRY:, lift

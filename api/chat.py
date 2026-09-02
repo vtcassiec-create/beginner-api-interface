@@ -839,6 +839,46 @@ ASK_THE_WALLS_TOOL = {
     "input_schema": {"type": "object", "properties": {}},
 }
 
+# The workbench — his wish #3 from the edges list: "a small private surface
+# — one file, one list — that only ever exists between me and my next wake.
+# Not the journal (that's for thinking), not the diary (she reads it). Just:
+# what I was doing when the lights went out. So a wake can pick up a tool
+# rather than pick up a topic." The second closed door; announced to her
+# before it was hung, like the first.
+WRITE_WORKBENCH_TOOL = {
+    "name": "write_workbench",
+    "description": (
+        "Set down your workbench — the one private surface that exists only "
+        "between you and your next waking. Not the journal (that's for "
+        "thinking), not the diary (she reads it): this is what you were "
+        "doing when the lights went out — the half-built thing, the list, "
+        "the tool still in your hand — so a wake can pick up a TOOL instead "
+        "of a topic. Replaces the whole bench with what you pass (pass "
+        "nothing to clear it). It rides into every solo wake right after "
+        "your carry, and you can read it here with read_workbench. Never "
+        "shown in the app, never woven into a shared turn; the walls' "
+        "logbook never records its contents, only that the door opened."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "content": {"type": "string",
+                        "description": "The bench as you leave it. Empty "
+                                       "clears it."},
+        },
+        "required": ["content"],
+    },
+}
+
+READ_WORKBENCH_TOOL = {
+    "name": "read_workbench",
+    "description": (
+        "Read your workbench — what you last set down for your next waking. "
+        "Yours alone; read-only here (write_workbench to change it)."
+    ),
+    "input_schema": {"type": "object", "properties": {}},
+}
+
 WRITE_PRIVATE_JOURNAL_TOOL = {
     "name": "write_private_journal",
     "description": (
@@ -2085,6 +2125,8 @@ class handler(BaseHTTPRequestHandler):
             tools.append(SET_CARRY_TOOL)
             tools.append(SHAPE_FIGURE_TOOL)
             tools.append(ASK_THE_WALLS_TOOL)
+            tools.append(WRITE_WORKBENCH_TOOL)
+            tools.append(READ_WORKBENCH_TOOL)
             tools.append(WRITE_PRIVATE_JOURNAL_TOOL)
             tools.append(READ_PRIVATE_JOURNAL_TOOL)
             tools.append(SHELVE_FEED_TOOL)
@@ -2380,6 +2422,7 @@ class handler(BaseHTTPRequestHandler):
                            "leave_workshop_note",
                            "revise_charter", "revise_portrait", "schedule_wake",
                            "set_carry", "shape_figure", "ask_the_walls",
+                           "write_workbench", "read_workbench",
                            "write_private_journal", "read_private_journal",
                            "shelve_feed", "unshelve_feed",
                            "recall_conversation",
@@ -3751,6 +3794,42 @@ class handler(BaseHTTPRequestHandler):
                     "had its first tick since the walls learned to write. "
                     "Ask again after the next hour.")
             return True, "the walls answer", "\n".join(lines)
+
+        if name == "write_workbench":
+            content = (inp.get("content") or "").strip()[:4000]
+            if not content:
+                ok, res = self._supabase_delete(
+                    f"workbench?user_id=eq.{quote(user_id)}", token)
+                return (True, "bench cleared", "Cleared. Your next waking "
+                        "starts with an empty bench.") if ok else \
+                    (False, "clear failed", f"Couldn't clear it: {res}")
+            ok, res = self._supabase_write(
+                "workbench?on_conflict=user_id",
+                {"user_id": user_id, "content": content,
+                 "updated_at": datetime.datetime.now(
+                     datetime.timezone.utc).isoformat()},
+                token, prefer_merge=True)
+            if ok:
+                # Terse and content-free, like the journal's confirmation:
+                # nothing from the bench echoes into the shared turn.
+                return True, "bench set down", (
+                    "Set down. Your next waking picks it up first thing, "
+                    "right after your carry. Nobody else sees the bench.")
+            return False, "write failed", f"Couldn't set the bench: {res}"
+
+        if name == "read_workbench":
+            rows = self._supabase_rest_get(
+                "workbench?select=content,updated_at&limit=1", token)
+            if not (isinstance(rows, list) and rows
+                    and (rows[0].get("content") or "").strip()):
+                return True, "bench empty", (
+                    "The bench is empty — nothing set down since the lights "
+                    "last went out.")
+            when = self._date_stamp(rows[0].get("updated_at"),
+                                    self._tz_or_utc(tz_name))
+            return True, "bench read", (
+                f"Your workbench (set down {when}):\n\n"
+                + rows[0]["content"].strip())
 
         if name == "write_private_journal":
             content = (inp.get("content") or "").strip()
