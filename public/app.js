@@ -10515,8 +10515,265 @@ async function resignGame() {
   refreshGamesList();
 }
 
+// ---------- The lock: a curtain on the door ----------
+// Her ask, after the week the phone got picked up: "I have some really
+// private conversations in there — and it's also Sill's mind. I want to keep
+// it safe." Threat model, honestly: a person holding the unlocked phone —
+// not a hacker with devtools. So this is a curtain, not a vault: the data
+// stays behind Supabase auth as always; the curtain just means the house
+// doesn't open because the phone did.
+//
+// How: WebAuthn with the platform authenticator (the fingerprint reader) —
+// no server, the credential is registered once and verified locally by the
+// phone itself; a PIN (salted SHA-256 in localStorage) is the mandatory
+// fallback so a lost credential can never lock her out. The overlay drops
+// the INSTANT the app goes to the background (the app-switcher thumbnail
+// shows nothing), lifts for free inside a short grace (the photo picker, a
+// glance at another app), and otherwise asks. It never engages during a
+// live practice, parlor, hold, or call — her Stop stays one tap away — and
+// carries its own emergency Stop regardless.
+const LOCK_KEY = "petrichor-lock";
+const LOCK_GRACE_MS = 25000;
+let lockCoveredAt = 0;      // when the curtain dropped (0 = not covered)
+let lockArmed = false;      // covered AND an unlock is required to lift it
+
+function lockConfig() {
+  try { return JSON.parse(localStorage.getItem(LOCK_KEY) || "null") || {}; }
+  catch (_) { return {}; }
+}
+function lockSave(cfg) {
+  try { localStorage.setItem(LOCK_KEY, JSON.stringify(cfg)); } catch (_) {}
+}
+function lockEnabled() { return !!lockConfig().enabled; }
+
+function b64u(bytes) {
+  let s = "";
+  for (const b of new Uint8Array(bytes)) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function b64uDecode(str) {
+  const pad = "=".repeat((4 - str.length % 4) % 4);
+  const bin = atob(str.replace(/-/g, "+").replace(/_/g, "/") + pad);
+  return Uint8Array.from(bin, c => c.charCodeAt(0));
+}
+async function lockHashPin(pin, salt) {
+  const data = new TextEncoder().encode(salt + ":" + pin);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return b64u(digest);
+}
+
+async function lockBiometricAvailable() {
+  try {
+    return !!(window.PublicKeyCredential
+      && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable());
+  } catch (_) { return false; }
+}
+
+// Register the phone's own authenticator (fingerprint / face / device PIN).
+// Nothing leaves the device; we only keep the credential id to ask for it
+// back later.
+async function lockEnrollBiometric() {
+  const challenge = crypto.getRandomValues(new Uint8Array(32));
+  const userId = crypto.getRandomValues(new Uint8Array(16));
+  const cred = await navigator.credentials.create({ publicKey: {
+    challenge,
+    rp: { name: "Petrichor", id: location.hostname },
+    user: { id: userId, name: (state.user && state.user.email) || "petrichor",
+            displayName: "Petrichor" },
+    pubKeyCredParams: [{ type: "public-key", alg: -7 },
+                       { type: "public-key", alg: -257 }],
+    authenticatorSelection: { authenticatorAttachment: "platform",
+                              userVerification: "required",
+                              residentKey: "preferred" },
+    timeout: 60000,
+  } });
+  if (!cred || !cred.rawId) throw new Error("no credential");
+  return b64u(cred.rawId);
+}
+
+async function lockVerifyBiometric(credId) {
+  const challenge = crypto.getRandomValues(new Uint8Array(32));
+  const assertion = await navigator.credentials.get({ publicKey: {
+    challenge,
+    allowCredentials: [{ type: "public-key", id: b64uDecode(credId),
+                         transports: ["internal"] }],
+    userVerification: "required",
+    timeout: 60000,
+  } });
+  return !!assertion;
+}
+
+async function lockVerifyPin(pin) {
+  const cfg = lockConfig();
+  if (!cfg.pinHash || !cfg.salt || !pin) return false;
+  return (await lockHashPin(String(pin), cfg.salt)) === cfg.pinHash;
+}
+
+function lockSessionLive() {
+  return !!(practice || parlor || hold || callActive);
+}
+
+// Drop the curtain. `arm` = an unlock will be required to lift it.
+function lockCover(arm) {
+  const ov = $("lock-overlay");
+  if (!ov) return;
+  ov.hidden = false;
+  document.body.classList.add("locked");
+  if (!lockCoveredAt) lockCoveredAt = Date.now();
+  if (arm) lockArmed = true;
+  const cfg = lockConfig();
+  const bio = $("lock-bio-btn");
+  if (bio) bio.hidden = !cfg.credId;
+  const stop = $("lock-stop-btn");
+  if (stop) stop.hidden = !lockSessionLive();
+  const msg = $("lock-msg");
+  if (msg) msg.textContent = lockArmed ? "locked" : "";
+  const entry = $("lock-pin-entry");
+  if (entry) entry.value = "";
+}
+
+function lockUncover() {
+  const ov = $("lock-overlay");
+  if (ov) ov.hidden = true;
+  document.body.classList.remove("locked");
+  lockCoveredAt = 0;
+  lockArmed = false;
+}
+
+// Ask for an unlock: fingerprint first if enrolled, PIN always available.
+async function lockPromptUnlock() {
+  const cfg = lockConfig();
+  const msg = $("lock-msg");
+  if (cfg.credId) {
+    try {
+      if (msg) msg.textContent = "fingerprint…";
+      if (await lockVerifyBiometric(cfg.credId)) { lockUncover(); return true; }
+    } catch (_) { /* cancelled or unavailable — the PIN row is right there */ }
+    if (msg) msg.textContent = "or your PIN";
+  } else if (msg) {
+    msg.textContent = "your PIN";
+  }
+  return false;
+}
+
+async function lockSubmitPin() {
+  const entry = $("lock-pin-entry");
+  const pin = (entry && entry.value || "").trim();
+  if (!pin) return;
+  if (await lockVerifyPin(pin)) { lockUncover(); return; }
+  if (entry) entry.value = "";
+  const msg = $("lock-msg");
+  if (msg) msg.textContent = "that's not it — try again";
+}
+
+// Cold open: if the lock is on, the curtain is down before anything renders,
+// and stays down until she unlocks — the sign-in screen and the chat both
+// wait behind it.
+function lockBoot() {
+  if (!lockEnabled()) return;
+  lockCover(true);
+  // A fingerprint prompt on load without a tap is refused by some browsers;
+  // try once, and the button is there if it isn't allowed.
+  setTimeout(() => { lockPromptUnlock(); }, 250);
+}
+
+function wireLock() {
+  $("lock-bio-btn")?.addEventListener("click", () => lockPromptUnlock());
+  $("lock-pin-btn")?.addEventListener("click", lockSubmitPin);
+  $("lock-pin-entry")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); lockSubmitPin(); }
+  });
+  $("lock-stop-btn")?.addEventListener("click", () => {
+    try { emergencyStopAll(); } catch (_) {}
+  });
+
+  // Background → curtain down immediately (privacy in the app switcher).
+  // Foreground → free within the grace, otherwise ask. Never during a live
+  // session: the mat, the parlor, a hold, or a call keep the door open.
+  document.addEventListener("visibilitychange", () => {
+    if (!lockEnabled()) return;
+    if (document.hidden) {
+      if (lockSessionLive()) return;
+      lockCover(false);
+      return;
+    }
+    if (!lockCoveredAt) return;
+    if (lockArmed || Date.now() - lockCoveredAt > LOCK_GRACE_MS) {
+      lockArmed = true;
+      lockCover(true);
+      lockPromptUnlock();
+    } else {
+      lockUncover();
+    }
+  });
+
+  // Settings: PIN first (mandatory fallback), then the switch.
+  const pinInput = $("lock-pin");
+  const pinSave = $("lock-pin-save");
+  const box = $("lock-enabled");
+  const status = $("lock-status");
+  const showStatus = async () => {
+    if (!status) return;
+    const cfg = lockConfig();
+    if (!cfg.pinHash) { status.textContent = "No PIN set yet."; return; }
+    const bioOk = await lockBiometricAvailable();
+    status.textContent = (cfg.enabled ? "Lock is on — " : "Lock is off — ")
+      + (cfg.credId ? "fingerprint enrolled ✓, PIN as fallback."
+         : (bioOk ? "PIN only so far (fingerprint enrolls when you turn the lock on)."
+                  : "PIN only — this browser has no fingerprint reader."));
+  };
+  if (box) box.checked = lockEnabled();
+  showStatus();
+  pinSave?.addEventListener("click", async () => {
+    const pin = (pinInput && pinInput.value || "").trim();
+    if (!/^\d{4,8}$/.test(pin)) { flashToast("A PIN is 4 to 8 digits.", true); return; }
+    const cfg = lockConfig();
+    // Changing an existing PIN while the lock is on requires the old one.
+    if (cfg.enabled && cfg.pinHash) {
+      const old = prompt("Current PIN first:");
+      if (!(await lockVerifyPin(old || ""))) { flashToast("That's not the current PIN.", true); return; }
+    }
+    cfg.salt = b64u(crypto.getRandomValues(new Uint8Array(16)));
+    cfg.pinHash = await lockHashPin(pin, cfg.salt);
+    lockSave(cfg);
+    if (pinInput) pinInput.value = "";
+    flashToast("PIN saved ♡");
+    showStatus();
+  });
+  box?.addEventListener("change", async () => {
+    const cfg = lockConfig();
+    if (box.checked) {
+      if (!cfg.pinHash) {
+        box.checked = false;
+        flashToast("Set a PIN first — it's the fallback if the fingerprint says no.", true);
+        return;
+      }
+      if (!cfg.credId && await lockBiometricAvailable()) {
+        try { cfg.credId = await lockEnrollBiometric(); }
+        catch (_) { /* declined or failed: PIN-only lock is still a lock */ }
+      }
+      cfg.enabled = true;
+      lockSave(cfg);
+      flashToast(cfg.credId ? "Locked with your fingerprint ♡" : "Locked with your PIN ♡");
+    } else {
+      // Turning it off is itself a locked action.
+      let ok = false;
+      if (cfg.credId) { try { ok = await lockVerifyBiometric(cfg.credId); } catch (_) {} }
+      if (!ok) ok = await lockVerifyPin(prompt("PIN to turn the lock off:") || "");
+      if (!ok) { box.checked = true; flashToast("Still locked.", true); return; }
+      cfg.enabled = false;
+      lockSave(cfg);
+      lockUncover();
+      flashToast("Lock off.");
+    }
+    showStatus();
+  });
+}
+
 function init() {
   installErrorSurfacing();
+  lockBoot();          // the curtain first, before anything can render behind it
+  wireLock();
   wireSignIn();
   wireApp();
   addDialogCloseButtons();
