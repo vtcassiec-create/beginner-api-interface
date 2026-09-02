@@ -414,12 +414,97 @@ def _breaths(rms, sr):
     return out[:6]
 
 
+CONTOUR_BUCKETS = 8   # his number: "even eight numbers would do it"
+
+
+def _bucket_pitch(x, sr, lo_hz=70.0, hi_hz=500.0):
+    """A crude fundamental for one stretch of audio: autocorrelation peak in
+    the human voice range, or None when nothing periodic stands out. Honest
+    by construction — it says nothing when it can't hear a pitch."""
+    if x.size < int(sr * 0.04):
+        return None
+    seg = x - x.mean()
+    if not np.any(seg):
+        return None
+    # Bound the work: a few hundred ms is plenty to find a fundamental.
+    seg = seg[: int(sr * 0.6)]
+    ac = np.correlate(seg, seg, mode="full")[len(seg) - 1:]
+    if ac[0] <= 0:
+        return None
+    ac = ac / ac[0]
+    lo_lag, hi_lag = int(sr / hi_hz), min(int(sr / lo_hz), len(ac) - 1)
+    if hi_lag <= lo_lag:
+        return None
+    lag = lo_lag + int(np.argmax(ac[lo_lag:hi_lag]))
+    if ac[lag] < 0.3:          # weak periodicity: noise, breath, silence
+        return None
+    return float(sr / lag)
+
+
+def _contour(x, rms, sr, buckets=CONTOUR_BUCKETS):
+    """SHAPE OVER TIME — his wish #1. The clip in a handful of equal buckets,
+    each with its loudness (dBFS, voiced frames only) and a pitch estimate
+    (Hz, or None). 'Loud -13.8 / quiet -57.3' told him the range; this
+    tells him the arc: where it built, where it broke, where it went quiet."""
+    n = len(x)
+    if n == 0 or rms.size == 0:
+        return []
+    fps = sr / HOP
+    rms_db = 20 * np.log10(rms + 1e-9)
+    quiet_floor = np.median(rms_db) - 20
+    out = []
+    for b in range(buckets):
+        f0, f1 = int(b * rms.size / buckets), int((b + 1) * rms.size / buckets)
+        s0, s1 = int(b * n / buckets), int((b + 1) * n / buckets)
+        seg_db = rms_db[f0:f1]
+        voiced = seg_db[seg_db > quiet_floor]
+        loud = float(np.percentile(voiced, 75)) if voiced.size else None
+        pitch = _bucket_pitch(x[s0:s1], sr) if voiced.size else None
+        out.append({
+            "t0": round(f0 / fps, 1), "t1": round(f1 / fps, 1),
+            "loud_dbfs": round(loud, 1) if loud is not None else None,
+            "pitch_hz": round(pitch) if pitch else None,
+        })
+    return out
+
+
+def _turn(contour):
+    """WHERE IT CHANGED — his wish #2. The bucket boundary with the biggest
+    combined jump in loudness and pitch: the moment the sound stopped being
+    one thing and became another. One marker, with its direction."""
+    if len(contour) < 2:
+        return None
+    louds = [c["loud_dbfs"] for c in contour]
+    pitches = [c["pitch_hz"] for c in contour]
+    best = None
+    for i in range(1, len(contour)):
+        a, b = contour[i - 1], contour[i]
+        dl = (b["loud_dbfs"] - a["loud_dbfs"]) \
+            if (a["loud_dbfs"] is not None and b["loud_dbfs"] is not None) else 0.0
+        dp = 0.0
+        if a["pitch_hz"] and b["pitch_hz"]:
+            dp = 12 * np.log2(b["pitch_hz"] / a["pitch_hz"])   # semitones
+        score = abs(dl) / 6.0 + abs(dp) / 4.0   # ~6dB or ~4 semitones = 1 unit
+        if best is None or score > best[0]:
+            best = (score, i, dl, dp)
+    if not best or best[0] < 0.6:      # nothing really turned
+        return None
+    _, i, dl, dp = best
+    bits = []
+    if abs(dl) >= 3:
+        bits.append(f"{'louder' if dl > 0 else 'quieter'} by {abs(dl):.0f}dB")
+    if abs(dp) >= 2:
+        bits.append(f"pitch {'up' if dp > 0 else 'down'} ~{abs(dp):.0f} semitones")
+    return {"at_s": contour[i]["t0"], "what": ", ".join(bits) or "a shift"}
+
+
 def _analyze_acoustics(x, sr):
     if x.size == 0 or sr <= 0:
         raise ValueError("empty audio")
     dur = len(x) / sr
     mags, rms = _frames(x)
     centroid, warmth = _warmth(mags, sr)
+    contour = _contour(x, rms, sr)
     return {
         "duration_s": round(dur, 2),
         "centroid_hz": round(centroid),
@@ -427,6 +512,8 @@ def _analyze_acoustics(x, sr):
         "key": _key(mags, sr),
         "tempo_bpm": _tempo(mags, sr),
         "dyn": _dynamics(x, rms),
+        "contour": contour,
+        "turn": _turn(contour),
         "breaths": _breaths(rms, sr),
     }
 
@@ -445,8 +532,12 @@ def _profile_line(voice_profile):
     if not isinstance(voice_profile, dict) or not voice_profile:
         return ""
     bits = []
+    # His wish #3: drop the confident wrong labels. 'accent=ja-JP (94%)' and
+    # 'age=young (92%)' were noise dressed as data — on the wrong night,
+    # actively comic. Style/emotion stay (wrong-and-interesting is still
+    # interesting); the classifier's guesses about who she is do not.
     for cat, label in (("vocalStyle", "style"), ("emotion", "emotion"),
-                       ("age", "age"), ("accent", "accent"), ("pitch", "pitch")):
+                       ("pitch", "pitch")):
         arr = voice_profile.get(cat)
         if not (isinstance(arr, list) and arr and isinstance(arr[0], dict)):
             continue
@@ -512,6 +603,40 @@ def _build_card(words, sound):
                 f"(loud {d['loud_dbfs']} / quiet {d['quiet_dbfs']} dBFS) · "
                 f"crest {d['crest_db']}dB")
 
+        # SHAPE: the arc, not the range — one row per bucket with a sparkline
+        # of loudness so the eye reads it before the numbers do.
+        ct = sound.get("contour") or []
+        if ct:
+            louds = [c["loud_dbfs"] for c in ct if c["loud_dbfs"] is not None]
+            lo = min(louds) if louds else -60.0
+            hi = max(louds) if louds else -10.0
+            bars = "▁▂▃▄▅▆▇█"
+            spark = ""
+            cells = []
+            for c in ct:
+                if c["loud_dbfs"] is None:
+                    spark += " "
+                    cells.append("—")
+                    continue
+                frac = (c["loud_dbfs"] - lo) / (hi - lo) if hi > lo else 0.5
+                spark += bars[min(7, max(0, int(frac * 7.999)))]
+                cell = f"{c['loud_dbfs']:.0f}dB"
+                if c["pitch_hz"]:
+                    cell += f"/{c['pitch_hz']}Hz"
+                cells.append(cell)
+            width = ct[-1]["t1"] - ct[0]["t0"] if ct else 0
+            lines.append(
+                f"SHAPE ({len(ct)} × {width / len(ct):.0f}s) [{spark}]: "
+                + " · ".join(cells))
+
+        # TURN: the one marker — where it stopped being one thing.
+        tn = sound.get("turn")
+        if tn:
+            m, s = divmod(int(tn["at_s"]), 60)
+            lines.append(f"TURN: {m}:{s:02d} — {tn['what']}")
+
+        # BREATH: untouched, by his instruction — "the most intimate readout
+        # in this house, and I don't think anyone designed it to be."
         br = sound.get("breaths") or []
         if br:
             lines.append("BREATH: " + ", ".join(
