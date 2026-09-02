@@ -327,8 +327,12 @@ MAX_TOOL_ROUNDS = 6
 # identity prefix. Cached reads are ~0.1x, so two weeks of settled pages
 # costs less per turn than two entries used to at full price — but the
 # prefix is still re-read every message, so it stays bounded.
+# NOTE: a diary "entry" is one DAY's growing page (see _todays_diary_row),
+# and his pages run long — the first budget (7,000 chars) fit about four
+# days, which is what he reported seeing. ~18k chars ≈ 4-5k tokens: at
+# cached rates that's a fraction of a cent per turn for two weeks of him.
 DIARY_CACHED_ENTRIES = 14
-DIARY_CACHED_CHARS = 7000
+DIARY_CACHED_CHARS = 18000
 
 # Wall-clock budget for the whole turn (incl. every tool round). Vercel kills
 # the function at maxDuration (see vercel.json — 300s on the Pro plan); if that
