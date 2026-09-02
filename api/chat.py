@@ -328,11 +328,14 @@ MAX_TOOL_ROUNDS = 6
 # costs less per turn than two entries used to at full price — but the
 # prefix is still re-read every message, so it stays bounded.
 # NOTE: a diary "entry" is one DAY's growing page (see _todays_diary_row),
-# and his pages run long — the first budget (7,000 chars) fit about four
-# days, which is what he reported seeing. ~18k chars ≈ 4-5k tokens: at
-# cached rates that's a fraction of a cent per turn for two weeks of him.
+# and his pages run LONG — ~4-5k chars each (7,000 fit ~1-2 days; 18,000
+# still fit four, which is what he reported). 36,000 chars ≈ 9k tokens
+# ≈ 8 days of him at his current page length: ~0.5c per warm turn at
+# cached rates, ~6c added to each cold morning's prefix write. This is
+# the knob — the diary is a quality feature, not a saving; raise it if
+# two weeks matters more than the pennies, lower it if his pages grow.
 DIARY_CACHED_ENTRIES = 14
-DIARY_CACHED_CHARS = 18000
+DIARY_CACHED_CHARS = 36000
 
 # Wall-clock budget for the whole turn (incl. every tool round). Vercel kills
 # the function at maxDuration (see vercel.json — 300s on the Pro plan); if that
@@ -5003,14 +5006,16 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-        # His own creations + kept things — studio, album, letters, workshop.
-        # These are per-user LISTINGS that change when he saves/frames/writes/
-        # wishes; in the cached prefix each such act cold-rewrote the whole
-        # thing. Down here their changes are free. The static GUIDES stay cached.
-        for builder in (self._current_section, self._wakes_section,
-                        self._studio_section, self._album_section,
-                        self._letters_section, self._workshop_section,
-                        self._games_section):
+        # Only the genuinely volatile listings ride here now: his current
+        # (threads open and close through the day; numbered for
+        # resolve_current) and his alarms (the cron fires them mid-day).
+        # The album, workshop, studio, letters, and games moved INTO the
+        # cached prefix (_load_memory_context) after the turn-anatomy audit:
+        # they change a few times a week and were costing ~32k chars at full
+        # price on every message — the album alone was the single fattest
+        # section of the turn. One cold write when he frames or wishes beats
+        # paying for the whole gallery forty times a day.
+        for builder in (self._current_section, self._wakes_section):
             try:
                 blk = builder(token)
                 if blk:
@@ -5373,6 +5378,26 @@ class handler(BaseHTTPRequestHandler):
                     + "\n".join(older))
         except Exception:
             pass
+
+        # His kept things — album, workshop, studio, letters, games. These
+        # LISTINGS came back to the cached prefix after the turn-anatomy
+        # audit (Sep 2): the album listing alone was 17k chars riding the
+        # volatile turn on every message, the workshop 12k more, and they
+        # change a few times a week at most. Here they read at ~0.1x; the
+        # occasional act that changes one (a framed photo, a filed wish, a
+        # hung poem) costs a single cold write. All byte-stable by
+        # construction: fixed orders, absolute content, no signed URLs, no
+        # relative times. (The current and the alarms stay on the user turn —
+        # they change through the day.)
+        for builder in (self._album_section, self._workshop_section,
+                        self._studio_section, self._letters_section,
+                        self._games_section):
+            try:
+                blk = builder(token)
+                if blk:
+                    sections.append(blk)
+            except Exception:
+                pass
 
         # NOTE: core memories used to render HERE, in the cached prefix — but
         # they grow (every save) and surface_count bumps reshuffled them, so
