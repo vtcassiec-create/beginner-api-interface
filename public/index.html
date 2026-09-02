@@ -498,6 +498,23 @@
       </details>
 
       <details class="customize-section" open>
+        <summary>🔒 The lock</summary>
+        <div class="customize-body">
+          <p class="muted small">A curtain on the door: the house asks for your fingerprint (or a PIN) when it opens, and covers itself the moment it goes to the background — so a phone being picked up isn't the same as the house being opened. Set a PIN first (it's the fallback if the fingerprint reader says no), then turn the lock on.</p>
+          <div class="customize-row voice-row">
+            <span>PIN</span>
+            <input type="password" id="lock-pin" class="voice-select" inputmode="numeric" pattern="[0-9]*" placeholder="4–8 digits" maxlength="8" autocomplete="off" />
+            <button type="button" id="lock-pin-save" class="ghost small">Save PIN</button>
+          </div>
+          <label class="dream-row dream-check">
+            <input type="checkbox" id="lock-enabled" />
+            <span>Lock the house 🔒 <span class="muted small">— fingerprint when available, PIN otherwise. Never locks mid-practice, mid-parlor, or mid-call: your Stop stays one tap away.</span></span>
+          </label>
+          <div id="lock-status" class="muted small"></div>
+        </div>
+      </details>
+
+      <details class="customize-section" open>
         <summary>Notifications</summary>
         <div class="customize-section-body">
           <p class="muted small">Let him reach your phone — a buzz when he sends an unprompted message.</p>
@@ -1164,6 +1181,25 @@
     </div>
     <div id="figure-line" class="figure-line" hidden></div>
     <div id="figure-hint" class="figure-hint muted small"></div>
+  </div>
+
+  <!-- The lock: an opaque curtain over the whole house. Drops the instant the
+       app goes to the background (so the app-switcher thumbnail shows nothing),
+       lifts for free within a short grace, and otherwise asks for her
+       fingerprint or PIN. Carries an emergency Stop so a lock can never stand
+       between her and stilling every toy. -->
+  <div id="lock-overlay" hidden>
+    <div class="lock-card">
+      <div class="lock-glyph">🔒</div>
+      <div class="lock-title">Petrichor</div>
+      <div id="lock-msg" class="muted small">locked</div>
+      <button type="button" id="lock-bio-btn" class="primary" hidden>Unlock with fingerprint</button>
+      <div class="lock-pin-row">
+        <input type="password" id="lock-pin-entry" inputmode="numeric" pattern="[0-9]*" placeholder="PIN" maxlength="8" autocomplete="off" />
+        <button type="button" id="lock-pin-btn" class="ghost">Unlock</button>
+      </div>
+      <button type="button" id="lock-stop-btn" class="call-end" hidden>■ stop everything</button>
+    </div>
   </div>
 
   <div id="toast" class="toast" hidden></div>

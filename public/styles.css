@@ -3104,6 +3104,33 @@ details.vault-event[open] > summary { color: var(--text); margin-bottom: 6px; }
 .walls-err { color: #e07070; }
 .walls-err .walls-when { color: #e07070; opacity: 0.8; }
 
+/* ---------- The lock: a curtain on the door ---------- */
+#lock-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;              /* above every dialog, overlay, and toast */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);      /* opaque on purpose: nothing shows through */
+  padding: 24px;
+}
+#lock-overlay[hidden] { display: none; }
+body.locked { overflow: hidden; }
+.lock-card {
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  width: min(100%, 22rem); text-align: center;
+}
+.lock-glyph { font-size: 40px; line-height: 1; }
+.lock-title { font-size: 20px; letter-spacing: 0.12em; color: var(--text); }
+.lock-pin-row { display: flex; gap: 8px; width: 100%; }
+.lock-pin-row input {
+  flex: 1; min-width: 0; font-size: 18px; letter-spacing: 0.3em; text-align: center;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-elev); color: var(--text);
+}
+#lock-stop-btn { margin-top: 18px; }
+
 /* ---------- The games corner ---------- */
 .games-form { max-width: 30rem; }
 .games-new-pick { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
