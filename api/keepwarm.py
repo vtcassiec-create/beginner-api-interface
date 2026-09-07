@@ -78,14 +78,21 @@ class handler(BaseHTTPRequestHandler):
     def _skip(self, reason, **extra):
         """Every skip gets a log line — a silent skip cost us a forensic
         investigation once (the log showed a 626ms run and no clue why).
-        The pilot light's decisions should be readable at a glance."""
+        The pilot light's decisions should be readable at a glance — and
+        now, in the walls' logbook, readable by the family: a cold turn
+        finally comes with its stated cause."""
         print(f"[keepwarm] skipped: {reason}"
               + (f" {extra}" if extra else ""))
+        kind = "error" if reason.startswith("ping failed") else "info"
+        detail = ", ".join(f"{k} {v}" for k, v in extra.items())
+        self._record(f"skipped: {reason}", kind,
+                     f"pilot light skipped — {reason}", detail)
         return self._json(200, {"status": "skipped", "reason": reason, **extra})
 
     def _run(self):
         api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
         uid = os.environ.get("REACH_USER_ID", "").strip()
+        self._uid = uid   # for the logbook writers (see _record)
         if not api_key or not uid:
             return self._skip("not configured")
 
@@ -188,14 +195,53 @@ class handler(BaseHTTPRequestHandler):
             self._supabase("PATCH", f"keepwarm_state?user_id=eq.{uid}",
                            {"blueprint": None})
             print(f"[keepwarm] MISMATCH: wrote {wrote} tokens — disarmed")
+            self._record("mismatch — disarmed", "error",
+                         "pilot light MISMATCH — replay diverged from the "
+                         "real prefix; disarmed until her next turn",
+                         f"wrote {wrote // 1000}k tokens")
             return self._json(200, {"status": "mismatch_disarmed",
                                     "wrote": wrote, "read": read})
 
         self._supabase("PATCH", f"keepwarm_state?user_id=eq.{uid}",
                        {"last_warmed_at": now.isoformat()})
         print(f"[keepwarm] warmed: read {read}, wrote {wrote}")
+        self._record("warmed", "ok", "pilot light warmed the cache",
+                     f"read {read // 1000}k tokens")
         return self._json(200, {"status": "warmed",
                                 "read": read, "wrote": wrote})
+
+    # ---- the walls' logbook (that, not what) ----
+
+    def _record(self, note, kind, event, detail=""):
+        """Heartbeat every tick (house_pulse, note = this tick's outcome);
+        a house_log row only when the outcome CHANGES from the previous
+        tick — so a quiet afternoon is one 'still fresh' line, not
+        eighteen, and every cold turn's cause ('chain broken', 'idle',
+        'quiet hours', 'mismatch') is on the record with a timestamp."""
+        uid = getattr(self, "_uid", "") or ""
+        if not uid:
+            return
+        try:
+            prev = self._supabase(
+                "GET", f"house_pulse?user_id=eq.{uid}&source=eq.pilot-light"
+                       "&select=note&limit=1")
+            prev_note = (prev[0].get("note") or "") if (
+                isinstance(prev, list) and prev) else None
+            self._supabase(
+                "POST", "house_pulse?on_conflict=user_id,source",
+                {"user_id": uid, "source": "pilot-light",
+                 "note": note[:80],
+                 "last_tick": datetime.datetime.now(
+                     datetime.timezone.utc).isoformat()},
+                prefer="resolution=merge-duplicates,return=minimal")
+            if prev_note != note:
+                self._supabase(
+                    "POST", "house_log",
+                    {"user_id": uid, "source": "pilot-light", "kind": kind,
+                     "event": event[:120], "detail": (detail or "")[:200]},
+                    prefer="return=minimal")
+        except Exception:
+            pass
 
     # ---- helpers ----
 
@@ -218,7 +264,7 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             return None
 
-    def _supabase(self, method, path, body=None):
+    def _supabase(self, method, path, body=None, prefer=None):
         url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
         key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
         if not url or not key:
@@ -231,7 +277,7 @@ class handler(BaseHTTPRequestHandler):
                     "apikey": key,
                     "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
-                    "Prefer": "return=representation",
+                    "Prefer": prefer or "return=representation",
                 })
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
                 raw = resp.read().decode()

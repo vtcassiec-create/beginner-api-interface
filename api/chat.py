@@ -337,6 +337,11 @@ MAX_TOOL_ROUNDS = 6
 DIARY_CACHED_ENTRIES = 14
 DIARY_CACHED_CHARS = 36000
 
+# A turn that writes at least this much to the cache is a COLD turn (the
+# prefix and/or history re-laminated at 1.25x) and gets stamped in the
+# walls' logbook, so it can be read against the pilot light's record.
+COLD_TURN_WRITE_TOKENS = 8000
+
 # Wall-clock budget for the whole turn (incl. every tool round). Vercel kills
 # the function at maxDuration (see vercel.json — 300s on the Pro plan); if that
 # happens mid-stream the turn dies silently: no 'done' event, so the client
@@ -2317,6 +2322,24 @@ class handler(BaseHTTPRequestHandler):
                        parts["cache_write"], parts["cache_read"], rounds),
                     flush=True,
                 )
+                # The other half of the cold-turn evidence: when a turn
+                # WRITES a big cache (the prefix and history re-laminated
+                # at 1.25x), stamp it in the walls' logbook with the size
+                # and price — so it can be read against the pilot light's
+                # last transition and given a cause. That-not-what: tokens
+                # and dollars only, never words.
+                try:
+                    wrote = int(agg.get("cache_creation_input_tokens") or 0)
+                    if wrote >= COLD_TURN_WRITE_TOKENS:
+                        self._supabase_write("house_log", {
+                            "user_id": getattr(self, "_auth_user_id", None),
+                            "source": "chat", "kind": "info",
+                            "event": "cold turn — cache re-written",
+                            "detail": (f"wrote {wrote // 1000}k tokens "
+                                       f"(~${parts['cache_write']:.2f})"),
+                        }, self._bearer_token())
+                except Exception:
+                    pass
                 done = {"type": "done", "stop_reason": stop_reason, "usage": agg}
                 # Turn anatomy for the cache-line audit: what rode the
                 # cached prefix versus the volatile user turn, section by
