@@ -86,10 +86,43 @@ class handler(BaseHTTPRequestHandler):
                 if resp.status != 200:
                     self._json(401, {"error": "unauthorized"})
                     return False
+                # Keep who she is: the walls' logbook writes are own-rows.
+                try:
+                    self._uid = (json.loads(resp.read().decode()) or {}).get("id")
+                except Exception:
+                    self._uid = None
+                self._token = token
         except Exception:
             self._json(401, {"error": "unauthorized"})
             return False
         return True
+
+    # ---- the walls' logbook (that, not what) ----
+
+    def _wall_log(self, kind, event, detail=""):
+        """A refused voice used to become a silent fallback to the device
+        voice with the reason dropped on the floor. Now the reason — a
+        status code, a quota notice — goes on the record. Never his words:
+        the text he was about to say is not logged. Best-effort."""
+        url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        uid, token = getattr(self, "_uid", None), getattr(self, "_token", "")
+        if not (url and anon and uid and token):
+            return
+        try:
+            req = urllib.request.Request(
+                f"{url}/rest/v1/house_log",
+                data=json.dumps({"user_id": uid, "source": "voice",
+                                 "kind": kind, "event": event[:120],
+                                 "detail": (detail or "")[:200]}).encode(),
+                method="POST",
+                headers={"apikey": anon, "Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json",
+                         "Prefer": "return=minimal"})
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT):
+                pass
+        except Exception:
+            pass
 
     # ---- ElevenLabs ----
 
@@ -133,6 +166,7 @@ class handler(BaseHTTPRequestHandler):
         of speech instead of disconnected clips."""
         key = self._api_key()
         if not key:
+            self._wall_log("error", "his voice failed — no ElevenLabs key set")
             return self._json(503, {"error": "not_configured"})
         model = os.environ.get("ELEVENLABS_MODEL", "").strip() or DEFAULT_TTS_MODEL
         fmt = os.environ.get("ELEVENLABS_FORMAT", "").strip() or DEFAULT_FORMAT
@@ -157,8 +191,12 @@ class handler(BaseHTTPRequestHandler):
                 msg = e.read().decode()[:300]
             except Exception:
                 msg = f"HTTP {e.code}"
+            self._wall_log("error", "his voice failed — ElevenLabs refused",
+                           f"HTTP {e.code}: {msg[:150]}")
             return self._json(502, {"error": "elevenlabs", "detail": msg})
         except Exception as e:
+            self._wall_log("error", "his voice failed — couldn't reach "
+                                    "ElevenLabs", type(e).__name__)
             return self._json(502, {"error": "elevenlabs", "detail": str(e)[:200]})
         self.send_response(200)
         self.send_header("Content-Type", "audio/mpeg")

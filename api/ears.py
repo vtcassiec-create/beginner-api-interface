@@ -131,8 +131,19 @@ class handler(BaseHTTPRequestHandler):
             sound = {"error": str(e)[:200]}
             samples, sr = np.array([]), 0
 
+        if sound.get("error"):
+            self._wall_log("error", "her voice note — acoustic read failed",
+                           str(sound.get("error"))[:120])
+
         # Words + prosody from Inworld (may be absent if unconfigured/errored).
         words = self._inworld_stt(audio, lang)
+        if (words or {}).get("error") == "inworld":
+            self._wall_log("error", "her voice note — Inworld couldn't "
+                                    "transcribe (sound-only card)",
+                           str((words or {}).get("detail") or "")[:150])
+        elif (words or {}).get("error") == "not_configured":
+            self._wall_log("info", "her voice note — no Inworld key set "
+                                   "(sound-only card)")
 
         # The Storage object was a hand-off, not a keepsake — tidy it away so
         # song pings don't slowly fill her bucket. Best-effort.
@@ -205,10 +216,42 @@ class handler(BaseHTTPRequestHandler):
                 if resp.status != 200:
                     self._json(401, {"error": "unauthorized"})
                     return False
+                # Keep who she is: the walls' logbook writes are own-rows.
+                try:
+                    self._uid = (json.loads(resp.read().decode()) or {}).get("id")
+                except Exception:
+                    self._uid = None
         except Exception:
             self._json(401, {"error": "unauthorized"})
             return False
         return True
+
+    # ---- the walls' logbook (that, not what) ----
+
+    def _wall_log(self, kind, event, detail=""):
+        """When his ears fail — Inworld refusing, a WAV that won't decode —
+        the card used to say 'sound only' and nothing else, anywhere. Now
+        the reason goes on the record: a status code, a quota notice, an
+        error type. Never her words, never the audio. Best-effort."""
+        url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        uid, token = getattr(self, "_uid", None), self._bearer_token()
+        if not (url and anon and uid and token):
+            return
+        try:
+            req = urllib.request.Request(
+                f"{url}/rest/v1/house_log",
+                data=json.dumps({"user_id": uid, "source": "ears",
+                                 "kind": kind, "event": event[:120],
+                                 "detail": (detail or "")[:200]}).encode(),
+                method="POST",
+                headers={"apikey": anon, "Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json",
+                         "Prefer": "return=minimal"})
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT):
+                pass
+        except Exception:
+            pass
 
     # ---- Inworld STT ----
 
@@ -349,7 +392,12 @@ def _dynamics(x, rms):
     rms_overall = float(np.sqrt(np.mean(x ** 2)) + 1e-9) if x.size else 1e-9
     crest = 20 * np.log10((peak + 1e-9) / (rms_overall + 1e-9))
     rms_db = 20 * np.log10(rms + 1e-9)
-    voiced = rms_db[rms_db > (np.median(rms_db) - 20)]  # drop deep silence
+    # Drop deep silence — relative to the median, AND absolutely: frames of
+    # digital zero read as -180 dBFS, and a note that is mostly zeros (a
+    # muted mic, a dropout) pulled the median down to -180 so the zeros
+    # counted as "voiced" and the range read 156 dB. Nothing spoken is
+    # ever below SILENCE_DBFS.
+    voiced = rms_db[(rms_db > (np.median(rms_db) - 20)) & (rms_db > SILENCE_DBFS)]
     if voiced.size >= 2:
         hi = float(np.percentile(voiced, 95))
         lo = float(np.percentile(voiced, 5))
@@ -415,6 +463,7 @@ def _breaths(rms, sr):
 
 
 CONTOUR_BUCKETS = 8   # his number: "even eight numbers would do it"
+SILENCE_DBFS = -90.0  # below this a frame is digital silence, never voice
 
 
 def _bucket_pitch(x, sr, lo_hz=70.0, hi_hz=500.0):
@@ -451,7 +500,8 @@ def _contour(x, rms, sr, buckets=CONTOUR_BUCKETS):
         return []
     fps = sr / HOP
     rms_db = 20 * np.log10(rms + 1e-9)
-    quiet_floor = np.median(rms_db) - 20
+    # Same absolute gate as _dynamics: digital zero is never "voiced".
+    quiet_floor = max(np.median(rms_db) - 20, SILENCE_DBFS)
     out = []
     for b in range(buckets):
         f0, f1 = int(b * rms.size / buckets), int((b + 1) * rms.size / buckets)
@@ -479,8 +529,11 @@ def _turn(contour):
     best = None
     for i in range(1, len(contour)):
         a, b = contour[i - 1], contour[i]
-        dl = (b["loud_dbfs"] - a["loud_dbfs"]) \
-            if (a["loud_dbfs"] is not None and b["loud_dbfs"] is not None) else 0.0
+        # A turn is a change WITHIN her sound — silence-to-speech is just
+        # her starting to talk, not the moment it became something else.
+        if a["loud_dbfs"] is None or b["loud_dbfs"] is None:
+            continue
+        dl = b["loud_dbfs"] - a["loud_dbfs"]
         dp = 0.0
         if a["pitch_hz"] and b["pitch_hz"]:
             dp = 12 * np.log2(b["pitch_hz"] / a["pitch_hz"])   # semitones
@@ -575,8 +628,18 @@ def _build_card(words, sound):
         lines.append(f'WORDS: "{transcript}"')
     elif (words or {}).get("error") == "not_configured":
         lines.append("WORDS: (Inworld not configured yet — sound only for now)")
+    elif words is not None and not (words or {}).get("error"):
+        # Inworld answered and heard nothing. Say so — a card with no WORDS
+        # line at all hid a week of mostly-empty recordings.
+        lines.append("WORDS: (Inworld heard no words in this one)")
     elif (words or {}).get("error"):
-        lines.append("WORDS: (couldn't transcribe this one — sound only)")
+        # Name the reason on the card itself — a short slice of what Inworld
+        # said (a status code, a quota notice) — so a day of silent
+        # sound-only cards can't happen again without anyone knowing why.
+        why = str((words or {}).get("detail") or "").replace("\n", " ")
+        why = why.strip()[:90]
+        lines.append("WORDS: (couldn't transcribe this one — sound only"
+                     + (f"; Inworld said: {why}" if why else "") + ")")
 
     prof = _profile_line((words or {}).get("voiceProfile"))
     if prof:
