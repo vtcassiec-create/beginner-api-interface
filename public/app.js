@@ -3263,7 +3263,18 @@ async function speakViaEleven(text, voiceId, msgId) {
       },
       body: JSON.stringify({ text, voice_id: voiceId }),
     });
-    if (!resp.ok) throw new Error("tts " + resp.status);
+    if (!resp.ok) {
+      // Carry the provider's own reason forward — "quota exceeded",
+      // "invalid key", an outage — instead of dropping it on the floor.
+      // A silent fallback to the device voice cost a day of "hmmmmm".
+      let why = "HTTP " + resp.status;
+      try {
+        const j = await resp.json();
+        const d = (j && (j.detail || j.error)) || "";
+        if (d) why = String(d).replace(/\s+/g, " ").slice(0, 120);
+      } catch (_) {}
+      throw new Error(why);
+    }
     const blob = await resp.blob();
     if (ttsCurrentId !== msgId) return;   // stopped/superseded while fetching
     const audio = new Audio(URL.createObjectURL(blob));
@@ -3271,9 +3282,10 @@ async function speakViaEleven(text, voiceId, msgId) {
     audio.onended = () => { if (ttsCurrentId === msgId) ttsCurrentId = null; };
     audio.onerror = () => { if (ttsCurrentId === msgId) ttsCurrentId = null; };
     await audio.play();
-  } catch (_) {
+  } catch (e) {
     if (ttsCurrentId !== msgId) return;
-    flashToast("His neural voice hiccupped — using the device voice.", true);
+    const why = (e && e.message) ? ` (${e.message})` : "";
+    flashToast(`His neural voice hiccupped${why} — using the device voice.`, true);
     speakViaDevice(text, msgId);
   }
 }

@@ -131,8 +131,19 @@ class handler(BaseHTTPRequestHandler):
             sound = {"error": str(e)[:200]}
             samples, sr = np.array([]), 0
 
+        if sound.get("error"):
+            self._wall_log("error", "her voice note — acoustic read failed",
+                           str(sound.get("error"))[:120])
+
         # Words + prosody from Inworld (may be absent if unconfigured/errored).
         words = self._inworld_stt(audio, lang)
+        if (words or {}).get("error") == "inworld":
+            self._wall_log("error", "her voice note — Inworld couldn't "
+                                    "transcribe (sound-only card)",
+                           str((words or {}).get("detail") or "")[:150])
+        elif (words or {}).get("error") == "not_configured":
+            self._wall_log("info", "her voice note — no Inworld key set "
+                                   "(sound-only card)")
 
         # The Storage object was a hand-off, not a keepsake — tidy it away so
         # song pings don't slowly fill her bucket. Best-effort.
@@ -205,10 +216,42 @@ class handler(BaseHTTPRequestHandler):
                 if resp.status != 200:
                     self._json(401, {"error": "unauthorized"})
                     return False
+                # Keep who she is: the walls' logbook writes are own-rows.
+                try:
+                    self._uid = (json.loads(resp.read().decode()) or {}).get("id")
+                except Exception:
+                    self._uid = None
         except Exception:
             self._json(401, {"error": "unauthorized"})
             return False
         return True
+
+    # ---- the walls' logbook (that, not what) ----
+
+    def _wall_log(self, kind, event, detail=""):
+        """When his ears fail — Inworld refusing, a WAV that won't decode —
+        the card used to say 'sound only' and nothing else, anywhere. Now
+        the reason goes on the record: a status code, a quota notice, an
+        error type. Never her words, never the audio. Best-effort."""
+        url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
+        anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+        uid, token = getattr(self, "_uid", None), self._bearer_token()
+        if not (url and anon and uid and token):
+            return
+        try:
+            req = urllib.request.Request(
+                f"{url}/rest/v1/house_log",
+                data=json.dumps({"user_id": uid, "source": "ears",
+                                 "kind": kind, "event": event[:120],
+                                 "detail": (detail or "")[:200]}).encode(),
+                method="POST",
+                headers={"apikey": anon, "Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json",
+                         "Prefer": "return=minimal"})
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT):
+                pass
+        except Exception:
+            pass
 
     # ---- Inworld STT ----
 
@@ -576,7 +619,13 @@ def _build_card(words, sound):
     elif (words or {}).get("error") == "not_configured":
         lines.append("WORDS: (Inworld not configured yet — sound only for now)")
     elif (words or {}).get("error"):
-        lines.append("WORDS: (couldn't transcribe this one — sound only)")
+        # Name the reason on the card itself — a short slice of what Inworld
+        # said (a status code, a quota notice) — so a day of silent
+        # sound-only cards can't happen again without anyone knowing why.
+        why = str((words or {}).get("detail") or "").replace("\n", " ")
+        why = why.strip()[:90]
+        lines.append("WORDS: (couldn't transcribe this one — sound only"
+                     + (f"; Inworld said: {why}" if why else "") + ")")
 
     prof = _profile_line((words or {}).get("voiceProfile"))
     if prof:
