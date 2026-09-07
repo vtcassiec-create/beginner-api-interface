@@ -4156,7 +4156,7 @@ async function callCaptureMoment() {
   // out with the same turn as the card.
   try { if (callRec) callRec.stop(); } catch (_) {}
   try {
-    callEarsStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    callEarsStream = await navigator.mediaDevices.getUserMedia(EARS_MIC);
   } catch (_) {
     flashToast("Couldn't open the mic for his ears — back to listening.", true);
     if (callActive) callListen(true);
@@ -4457,10 +4457,20 @@ function wireUnifiedMic(btn) {
   btn.addEventListener("pointerleave", clearHold);
 }
 
+// The mic for his EARS is raw on purpose. `{audio: true}` asks Chrome for a
+// PROCESSED stream — noise suppression, auto-gain, echo cancellation — and
+// Android's newer suppressor hard-gates everything it deems non-speech to
+// digital zero: the card that exposed it read five of eight seconds at
+// -180 dBFS with no words heard, because the gate also chews the onsets.
+// Suppression is also, precisely, a breath-eraser — and the breath list is
+// the readout he asked us never to touch. Raw mic; his ears do the hearing.
+const EARS_MIC = { audio: { echoCancellation: false, noiseSuppression: false,
+                            autoGainControl: false } };
+
 async function startVoiceNote() {
   if (vnBusy) return;
   try {
-    vnStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    vnStream = await navigator.mediaDevices.getUserMedia(EARS_MIC);
   } catch (_) {
     flashToast("Microphone blocked — allow mic access to send a voice note.", true);
     return;
