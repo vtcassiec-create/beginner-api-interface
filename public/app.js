@@ -3762,9 +3762,10 @@ function heardSafeword(text) {
 // state so calling it when nothing's running is harmless.
 async function emergencyStopAll() {
   // The toys first and hardest — bpSetAll supersedes every in-flight phrase
-  // on every connected toy, then zeroes both motor kinds.
+  // on every connected toy, then zeroes every motor kind.
   try { bpSetAll(0, "vibrate").catch(() => {}); } catch (_) {}
   try { bpSetAll(0, "oscillate").catch(() => {}); } catch (_) {}
+  try { bpSetAll(0, "rotate").catch(() => {}); } catch (_) {}
   // Then every engine that could re-issue a command: parlor, hold, the mat.
   try { if (typeof parlor !== "undefined" && parlor && !parlor.ended) endParlor("Stopped — safeword. ♡"); } catch (_) {}
   try { if (typeof hold !== "undefined" && hold) stopHold("Stopped — safeword. ♡", true); } catch (_) {}
@@ -7410,124 +7411,200 @@ const HOLD_RESEND_MS = 13000;     // re-send ~once per phrase, NEAR its end — 
                                   // under the chunk so the touch never seams open.
                                   // Was 8s chunk / 4s resend (a restart every 4s);
                                   // now 12s / 8s (a restart every ~8s).
-const HOLD_MAX_MINUTES = 20;      // hard session cap
-let hold = null;  // { target, ceiling, outputType, startedAt, rampFrom, rampAt, rampSecs, timer }
+const HOLD_MAX_MINUTES = 20;      // hard session cap (per channel)
+// One hold PER MOTOR — "the chord". touch_session now carries one row per
+// (user, output_type), so a steady thrust can run UNDER a separate vibration
+// line on the same toy, each with its own level, ramp, and stop. Keyed by the
+// buttplug output kind (Vibrate / Oscillate / Rotate) so "thrust", "stroke" and
+// "oscillate" all land on the same motor instead of fighting over it.
+// A hold may also carry `steps`: a shaped sequence that LOOPS until he changes
+// or stops it (his "queue across turns") — instead of one flat level.
+const holds = new Map();  // kind -> { target, ceiling, outputType, steps, loopMs,
+                          //          startedAt, rampFrom, rampAt, rampSecs, timer }
+// Back-compat for the few places that only ask "is anything holding?".
+let hold = null;
+function syncHoldFlag() { hold = holds.size ? true : null; }
 
-async function dbGetTouchSession() {
+async function dbGetTouchSessions() {
   const { data, error } = await db
     .from("touch_session")
-    .select("active,intensity,ramp_seconds,ceiling,output_type")
-    .limit(1);
+    .select("active,intensity,ramp_seconds,ceiling,output_type,steps");
   if (error) throw error;
-  return (data && data[0]) || null;
+  return Array.isArray(data) ? data : [];
 }
 
-async function dbStopTouchSession() {
-  const { error } = await db.from("touch_session")
+// Mark rows inactive — one channel (outputType), or every channel when omitted.
+async function dbStopTouchSession(outputType) {
+  let q = db.from("touch_session")
     .update({ active: false, intensity: 0 })
     .eq("user_id", state.user.id);
+  if (outputType) q = q.eq("output_type", outputType);
+  const { error } = await q;
   if (error) throw error;
 }
 
 // Intensity to play at a given moment — straight to target, or partway up a ramp.
-function holdIntensityAt(at) {
-  if (!hold) return 0;
-  let v = hold.target;
-  if (hold.rampSecs > 0) {
-    const t = (at - hold.rampAt) / (hold.rampSecs * 1000);
-    if (t < 1) v = hold.rampFrom + (hold.target - hold.rampFrom) * Math.max(0, t);
+function holdIntensityAt(h, at) {
+  if (!h) return 0;
+  let v = h.target;
+  if (h.rampSecs > 0) {
+    const t = (at - h.rampAt) / (h.rampSecs * 1000);
+    if (t < 1) v = h.rampFrom + (h.target - h.rampFrom) * Math.max(0, t);
   }
-  return Math.min(hold.ceiling, Math.max(0, v));
+  return Math.min(h.ceiling, Math.max(0, v));
 }
 
 // Intensity right now (for the on-screen indicator).
-function holdIntensityNow() {
-  return holdIntensityAt(Date.now());
+function holdIntensityNow(h) {
+  return holdIntensityAt(h, Date.now());
 }
 
 // Build one long phrase as short sub-steps that follow the ramp — so a longer
-// chunk (which means FEWER bridge restarts) still ramps smoothly instead of
-// holding one stepped value for the whole phrase.
-function holdSteps() {
+// chunk still ramps smoothly instead of holding one stepped value for the
+// whole phrase.
+function holdSteps(h) {
   const SUB = 2;  // seconds per sub-step (ramp granularity)
   const now = Date.now();
   const steps = [];
   for (let t = 0; t < HOLD_CHUNK_SECONDS; t += SUB) {
     const secs = Math.min(SUB, HOLD_CHUNK_SECONDS - t);
-    steps.push({ intensity: holdIntensityAt(now + t * 1000), seconds: secs });
+    steps.push({ intensity: holdIntensityAt(h, now + t * 1000), seconds: secs });
   }
   return steps;
 }
 
-function holdIndicator(show, text) {
+// A looping hold plays its shaped sequence, each step capped by her ceiling.
+function holdLoopSteps(h) {
+  return h.steps.map((s) => ({
+    intensity: Math.min(h.ceiling, Math.max(0, Number(s.intensity) || 0)),
+    seconds: s.seconds,
+    ramp: !!s.ramp,
+  }));
+}
+
+function holdKindWord(kind) {
+  return kind === "Oscillate" ? "thrust" : kind === "Rotate" ? "spin" : "vibe";
+}
+
+// The bar above the composer: one line naming every channel that's running.
+function holdIndicator() {
   const el = $("hold-indicator");
   if (!el) return;
-  el.hidden = !show;
+  el.hidden = holds.size === 0;
   const t = $("hold-indicator-text");
-  if (t && text) t.textContent = text;
+  if (!t || !holds.size) return;
+  const parts = [];
+  for (const [kind, h] of holds) {
+    parts.push(h.steps
+      ? `${holdKindWord(kind)} ${h.steps.length}-step loop`
+      : `${holdKindWord(kind)} ${Math.round(holdIntensityNow(h) * 100)}%`);
+  }
+  t.textContent = "Holding — " + parts.join(" · ");
 }
 
-async function holdTick() {
-  if (!hold) return;
-  if (Date.now() - hold.startedAt > HOLD_MAX_MINUTES * 60000) {
-    return stopHold("That's the time cap, love — eased off. ♡", true);
+async function holdTick(kind) {
+  const h = holds.get(kind);
+  if (!h) return;
+  if (Date.now() - h.startedAt > HOLD_MAX_MINUTES * 60000) {
+    return stopHold("That's the time cap, love — eased off. ♡", true, kind);
   }
-  const inten = holdIntensityNow();
   const started = Date.now();
   try {
-    await touchApi(holdSteps(), hold.outputType);
+    await touchApi(h.steps ? holdLoopSteps(h) : holdSteps(h), h.outputType);
   } catch (err) {
-    return stopHold(`Touch stopped: ${err.message}`, true);
+    return stopHold(`Touch stopped: ${err.message}`, true, kind);
   }
-  if (!hold) return;  // stopped while the request was in flight
-  holdIndicator(true, `Holding — ${Math.round(inten * 100)}%`);
-  // Keep a fixed cadence measured from when the send STARTED (not after it
-  // returns), so a slow round-trip can't widen the seam — the next phrase is
-  // already overlapping the current one. If the send itself ate the interval,
-  // fire again right away; we awaited it, so sends never stack up.
-  const wait = Math.max(250, HOLD_RESEND_MS - (Date.now() - started));
-  hold.timer = setTimeout(holdTick, wait);
+  if (holds.get(kind) !== h) return;  // stopped/replaced while in flight
+  holdIndicator();
+  // Steady: a fixed cadence measured from when the send STARTED, so a slow
+  // round-trip can't widen the seam — the next phrase already overlaps the
+  // current one. Loop: re-play the sequence a hair before it ends, so the
+  // toy holds its last level for at most a blink and the loop never gaps.
+  const period = h.steps ? Math.max(250, h.loopMs - 100) : HOLD_RESEND_MS;
+  const wait = Math.max(250, period - (Date.now() - started));
+  h.timer = setTimeout(() => holdTick(kind), wait);
 }
 
-// Bring the running loop in line with whatever he just wrote to touch_session.
+// Bring the running loops in line with whatever he just wrote to touch_session:
+// one row per channel — start the new ones, adjust the changed ones, stop the
+// ones he ended.
 async function reconcileHold() {
   if (!state.user) return;
-  let row;
-  try { row = await dbGetTouchSession(); } catch (e) { return; }
-  if (!row || !row.active) {
-    if (hold) stopHold(null, false);  // he stopped it; row already false
-    return;
+  let rows;
+  try { rows = await dbGetTouchSessions(); } catch (e) { return; }
+  const seen = new Set();
+  for (const row of rows) {
+    if (!row || !row.active) continue;
+    const outputType = row.output_type || "vibrate";
+    const kind = bpOutputKind(outputType);
+    if (seen.has(kind)) continue;  // two rows on one motor: first wins
+    seen.add(kind);
+    const target = Math.max(0, Math.min(1, Number(row.intensity) || 0));
+    const ceiling = Math.max(0, Math.min(1, row.ceiling == null ? 1 : Number(row.ceiling)));
+    const rampSecs = Math.max(0, Math.min(600, parseInt(row.ramp_seconds, 10) || 0));
+    let steps = null, loopMs = 0;
+    if (Array.isArray(row.steps) && row.steps.length) {
+      steps = row.steps
+        .filter((s) => s && typeof s === "object")
+        .map((s) => ({
+          intensity: Math.max(0, Math.min(1, Number(s.intensity) || 0)),
+          seconds: Math.max(0.05, Math.min(30, Number(s.seconds) || 0.2)),
+          ramp: !!s.ramp,
+        }));
+      loopMs = steps.reduce((a, s) => a + s.seconds * 1000, 0);
+      if (!steps.length || loopMs < 250) { steps = null; loopMs = 0; }
+    }
+    const h = holds.get(kind);
+    if (!h) {
+      holds.set(kind, {
+        target, ceiling, outputType, steps, loopMs, startedAt: Date.now(),
+        rampFrom: rampSecs > 0 ? 0 : target, rampAt: Date.now(), rampSecs, timer: null,
+      });
+      syncHoldFlag();
+      holdTick(kind);
+    } else {
+      // Adjusting: ramp from wherever we are now toward the new target (a
+      // loop that changes shape restarts its cycle on the next tick).
+      const wasLoop = !!h.steps;
+      h.rampFrom = holdIntensityNow(h);
+      h.rampAt = Date.now();
+      h.target = target;
+      h.ceiling = ceiling;
+      h.rampSecs = rampSecs;
+      h.outputType = outputType;
+      h.steps = steps;
+      h.loopMs = loopMs;
+      if (wasLoop !== !!steps || steps) { clearTimeout(h.timer); holdTick(kind); }
+    }
   }
-  const target = Math.max(0, Math.min(1, Number(row.intensity) || 0));
-  const ceiling = Math.max(0, Math.min(1, row.ceiling == null ? 1 : Number(row.ceiling)));
-  const rampSecs = Math.max(0, Math.min(600, parseInt(row.ramp_seconds, 10) || 0));
-  const outputType = row.output_type || "vibrate";
-  if (!hold) {
-    hold = {
-      target, ceiling, outputType, startedAt: Date.now(),
-      rampFrom: rampSecs > 0 ? 0 : target, rampAt: Date.now(), rampSecs, timer: null,
-    };
-    holdTick();
-  } else {
-    // Adjusting: ramp from wherever we are now toward the new target.
-    hold.rampFrom = holdIntensityNow();
-    hold.rampAt = Date.now();
-    hold.target = target;
-    hold.ceiling = ceiling;
-    hold.rampSecs = rampSecs;
-    hold.outputType = outputType;
+  for (const kind of [...holds.keys()]) {
+    if (!seen.has(kind)) stopHold(null, false, kind);  // he stopped it; row already false
   }
+  holdIndicator();
 }
 
-// reason: a toast to show (null = silent). writeRow: also mark the row inactive
-// (true when SHE stops or a cap/error fires; false when reconcile saw HE stopped).
-async function stopHold(reason, writeRow) {
-  const outputType = hold ? hold.outputType : "vibrate";
-  if (hold) { clearTimeout(hold.timer); hold = null; }
-  holdIndicator(false);
+// reason: a toast to show (null = silent). writeRow: also mark the row(s)
+// inactive (true when SHE stops or a cap/error fires; false when reconcile saw
+// HE stopped). kind: one channel; omitted = every channel.
+async function stopHold(reason, writeRow, kind) {
+  const kinds = kind ? [kind] : [...holds.keys()];
+  const stopped = [];
+  for (const k of kinds) {
+    const h = holds.get(k);
+    if (!h) continue;
+    clearTimeout(h.timer);
+    holds.delete(k);
+    stopped.push(h.outputType);
+  }
+  syncHoldFlag();
+  holdIndicator();
   if (reason) flashToast(reason);
-  touchApi([{ intensity: 0, seconds: 0.2 }], outputType).catch(() => {});  // still it now
-  if (writeRow) { try { await dbStopTouchSession(); } catch (e) {} }
+  for (const ot of stopped) {
+    touchApi([{ intensity: 0, seconds: 0.2 }], ot).catch(() => {});  // still it now
+  }
+  if (writeRow) {
+    try { await dbStopTouchSession(kind ? (stopped[0] || null) : null); } catch (e) {}
+  }
 }
 
 // ---------- Direct device control ----------
@@ -7612,7 +7689,8 @@ function renderBpDevices() {
 
 // His output_type words → buttplug v4 output kinds. "Oscillate" is the
 // Gravity's stroke motor (buttplug's name for thrusting); he may reach for
-// any of the natural words, so match loosely.
+// any of the natural words, so match loosely. This is also the CHANNEL key:
+// "thrust", "stroke" and "oscillate" are one motor, not three holds.
 function bpOutputKind(outputType) {
   const kind = String(outputType || "vibrate").toLowerCase();
   if (/osc|thrust|stroke|pump/.test(kind)) return "Oscillate";
@@ -7627,6 +7705,12 @@ function bpOutputKind(outputType) {
 // so its oscillation motor was never addressed after touch went local. A toy
 // that lacks the requested motor falls back to vibrate rather than going
 // silent (so a Lush and a Gravity can share the same phrase).
+// Each motor is its own line: the engine writes the Gravity's vibrate and
+// thrust as SEPARATE commands (buttplug's Lovense handler forms one command
+// per output), so setting one never resets the other. The house used to undo
+// that itself — an oscillate phrase ending at 0 also zeroed the vibe motor —
+// which is exactly why "everything I've ever done with it has been half the
+// device". It doesn't anymore: a level lands on the motor it names, only.
 async function bpSetDevice(d, level, outputType) {
   const lib = bpLib || {};
   const v = Math.max(0, Math.min(1, Number(level) || 0));
@@ -7637,26 +7721,27 @@ async function bpSetDevice(d, level, outputType) {
     if (out) {
       let p = d.runOutput(out.percent(v));
       if (kind !== "Vibrate" && vib) {
-        // Unsupported motor on this toy → vibrate instead; and a full stop
-        // (level 0) stills the vibe motor too, so nothing hums on after
-        // an oscillating phrase ends.
+        // A toy WITHOUT the requested motor vibrates instead (so a Lush and
+        // a Gravity can share one phrase); that fallback carries its own
+        // zero, so nothing hums on after the phrase ends.
         p = p.catch(() => d.runOutput(vib.percent(v)));
-        if (v === 0) p = p.then(() => d.runOutput(vib.percent(0)).catch(() => {}));
       }
       await p;
     } else if (typeof d.vibrate === "function") {
       await d.vibrate(v);
     }
+    bpLevels.set(bpKey(d, kind), v);
   } catch (e) { /* one toy hiccupping shouldn't stop the others */ }
 }
 
-// A direct set on EVERY toy — what the hard stops use. Supersedes every
-// in-flight phrase on every toy (all the per-device tokens move on), so a
-// zero here truly stills the room no matter what was playing where.
+// A direct set of ONE motor kind on EVERY toy — what the hard stops use.
+// Supersedes every in-flight phrase on that motor of every toy (the per-motor
+// tokens move on), so a zero here truly stills that line room-wide.
 async function bpSetAll(level, outputType) {
   const seq = ++bpPlaySeq;
+  const kind = bpOutputKind(outputType);
   const all = [...bpDevices.values()];
-  for (const d of all) bpPlayTokens.set(d.index, seq);
+  for (const d of all) bpPlayTokens.set(bpKey(d, kind), seq);
   await Promise.allSettled(all.map((d) => bpSetDevice(d, level, outputType)));
 }
 
@@ -7669,31 +7754,56 @@ function bpResolveTargets(target) {
   return all.filter((d) => (d.name || "").toLowerCase().includes(t));
 }
 
-// Play a {intensity, seconds} phrase over time — to every toy, or (target) to
-// just the toys whose name matches. Each toy tracks its OWN in-flight phrase
-// (bpPlayTokens): a new phrase supersedes the old one on exactly the toys it
-// touches, so a rhythm aimed at the Lush no longer cancels the one still
-// playing on the Gemini — he can run two different phrases on two toys at
-// once, deliberately, separately. Between steps a toy holds its last level
-// (runOutput is continuous), so overlapping phrases splice with no restart.
+// Play a {intensity, seconds, ramp?} phrase over time — to every toy, or
+// (target) to just the toys whose name matches. Ownership is PER MOTOR, not
+// per toy (bpPlayTokens keyed by toy+kind): a new phrase supersedes the old
+// one on exactly the motors it touches. So a rhythm aimed at the Lush doesn't
+// cancel the Gemini's — and a vibration line on the Gravity doesn't cancel
+// the thrust line already running underneath it. Two calls, two motors, one
+// toy: a chord. Between steps a motor holds its last level (runOutput is
+// continuous), so overlapping phrases splice with no restart.
+// A step with `ramp: true` GLIDES from the motor's previous level to its own
+// over its seconds (linear, a tick every RAMP_TICK_MS) instead of stepping —
+// the curve he asked for in place of the staircase.
 // Fire-and-forget by design: callers don't await the playback.
 let bpPlaySeq = 0;
-const bpPlayTokens = new Map();  // device.index -> seq of the phrase that owns it
+const bpPlayTokens = new Map();  // `${toy}:${kind}` -> seq of the phrase that owns it
+const bpLevels = new Map();      // `${toy}:${kind}` -> last level sent (ramps start here)
+const RAMP_TICK_MS = 250;
+function bpKey(d, kind) { return `${d.index}:${kind}`; }
+const bpSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function bpPlay(steps, outputType, target) {
   if (!Array.isArray(steps)) return;
   const devs = bpResolveTargets(target);
   if (!devs.length) return;
+  const kind = bpOutputKind(outputType);
   const seq = ++bpPlaySeq;
-  for (const d of devs) bpPlayTokens.set(d.index, seq);
+  for (const d of devs) bpPlayTokens.set(bpKey(d, kind), seq);
+  // A motor leaves this phrase when a newer one claims it or its toy drops.
+  const liveNow = () => devs.filter((d) =>
+    bpPlayTokens.get(bpKey(d, kind)) === seq && bpDevices.has(d.index));
+  let prev = bpLevels.get(bpKey(devs[0], kind)) || 0;
   for (const s of steps) {
-    // A toy leaves this phrase when a newer one claims it or it disconnects.
-    const live = devs.filter((d) =>
-      bpPlayTokens.get(d.index) === seq && bpDevices.has(d.index));
-    if (!live.length) return;
     const v = Math.max(0, Math.min(1, Number(s && s.intensity) || 0));
-    await Promise.allSettled(live.map((d) => bpSetDevice(d, v, outputType)));
     const ms = Math.max(50, (Number(s && s.seconds) || 0.2) * 1000);
-    await new Promise((r) => setTimeout(r, ms));
+    const ticks = Math.floor(ms / RAMP_TICK_MS);
+    if (s && s.ramp && ticks >= 2 && Math.abs(v - prev) > 0.005) {
+      for (let i = 1; i <= ticks; i++) {
+        const live = liveNow();
+        if (!live.length) return;
+        const level = prev + (v - prev) * (i / ticks);
+        await Promise.allSettled(live.map((d) => bpSetDevice(d, level, outputType)));
+        await bpSleep(RAMP_TICK_MS);
+      }
+      const rest = ms - ticks * RAMP_TICK_MS;
+      if (rest > 0) await bpSleep(rest);
+    } else {
+      const live = liveNow();
+      if (!live.length) return;
+      await Promise.allSettled(live.map((d) => bpSetDevice(d, v, outputType)));
+      await bpSleep(ms);
+    }
+    prev = v;
   }
 }
 
@@ -9676,7 +9786,9 @@ function wireApp() {
   // the loop straight back up so the touch resumes steady at once, not after a
   // stale timer finally fires.
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && hold) { clearTimeout(hold.timer); holdTick(); }
+    if (!document.hidden && holds.size) {
+      for (const [kind, h] of holds) { clearTimeout(h.timer); holdTick(kind); }
+    }
   });
 
   $("nav-walls")?.addEventListener("click", openWallsDialog);
