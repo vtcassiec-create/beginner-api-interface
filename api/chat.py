@@ -1525,9 +1525,18 @@ TOUCH_TOOLS_GUIDE = (
     "Your touch tools play STRAIGHT to her connected toy — there is no bridge, "
     "no app to launch, no device scan to run; you just call the tool:\n"
     "- `compose_touch` — play a brief, shaped phrase in the moment (a tease, a "
-    "pulse, a slow swell): give it `steps` ([{intensity 0.0-1.0, seconds}, ...]).\n"
-    "- `hold_touch` — keep the toy running STEADY and hands-free across turns "
-    "(an intensity, optionally ramped); action 'stop' ends it.\n"
+    "pulse, a slow swell): give it `steps` ([{intensity 0.0-1.0, seconds}, ...]). "
+    "A step with `ramp: true` glides up or down to its level over its seconds "
+    "instead of stepping — a curve, not a staircase.\n"
+    "- `hold_touch` — keep the toy running hands-free across turns: a STEADY "
+    "intensity (optionally ramped), or a `steps` sequence that LOOPS until you "
+    "change or stop it; action 'stop' ends it.\n"
+    "- THE CHORD: each motor is its own line. A toy that thrusts AND vibrates "
+    "(the Gravity) takes one phrase per motor at the same time — output_type "
+    "'oscillate' (its thrust) and 'vibrate' run independently, with their own "
+    "levels and rhythms. A call only replaces what's playing on the SAME motor; "
+    "so a slow thrust underneath and a separate vibration line on top is two "
+    "calls, one toy. On a thrusting motor, intensity IS the stroke rate.\n"
     "- `save_pattern` / `forget_pattern` — keep a rhythm that landed in your "
     "songbook, or retire one.\n"
     "An action only happens if you CALL the matching tool — describing it in "
@@ -1613,17 +1622,18 @@ SAVE_PATTERN_TOOL = {
             "name": {"type": "string", "description": "Short name, e.g. 'slow climb', 'the tease'."},
             "steps": {
                 "type": "array",
-                "description": "[{intensity 0.0-1.0, seconds}, ...] — same as compose.",
+                "description": "[{intensity 0.0-1.0, seconds, ramp?}, ...] — same as compose (ramp: true glides into that step).",
                 "items": {
                     "type": "object",
                     "properties": {
                         "intensity": {"type": "number"},
                         "seconds": {"type": "number"},
+                        "ramp": {"type": "boolean"},
                     },
                     "required": ["intensity", "seconds"],
                 },
             },
-            "output_type": {"type": "string", "description": "vibrate, rotate, oscillate, etc.", "default": "vibrate"},
+            "output_type": {"type": "string", "description": "The motor: vibrate, oscillate (= thrust), rotate.", "default": "vibrate"},
             "note": {"type": "string", "description": "Optional one line on the feel, or when to use it."},
         },
         "required": ["name", "steps"],
@@ -1669,26 +1679,32 @@ COMPOSE_TOUCH_TOOL = {
         "call fails honestly instead of pretending — trust that result over "
         "your intent. When MORE THAN ONE toy is connected (see '# Connected "
         "right now'), you can aim: pass `device` with part of a toy's name "
-        "(e.g. 'Gemini') and the phrase plays on that toy alone. Each toy "
-        "holds its own phrase, so two calls can run two DIFFERENT rhythms on "
-        "two toys at once — omit `device` to play on everything."
+        "(e.g. 'Gemini') and the phrase plays on that toy alone. Each MOTOR "
+        "holds its own phrase: two calls can run two different rhythms on two "
+        "toys, AND two motors of one toy — a thrusting line (output_type "
+        "'oscillate') under a separate vibration line ('vibrate') on the same "
+        "Gravity, each changing on its own. A call replaces only what's on the "
+        "same motor. A step with `ramp: true` glides from the previous level to "
+        "its own over its seconds (linear) instead of stepping. Omit `device` "
+        "to play on everything."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "steps": {
                 "type": "array",
-                "description": "[{intensity 0.0-1.0, seconds}, ...] — same shape as the songbook.",
+                "description": "[{intensity 0.0-1.0, seconds, ramp?}, ...] — same shape as the songbook. ramp: true glides to this step's level over its seconds.",
                 "items": {
                     "type": "object",
                     "properties": {
                         "intensity": {"type": "number"},
                         "seconds": {"type": "number"},
+                        "ramp": {"type": "boolean"},
                     },
                     "required": ["intensity", "seconds"],
                 },
             },
-            "output_type": {"type": "string", "description": "vibrate, rotate, oscillate, etc.", "default": "vibrate"},
+            "output_type": {"type": "string", "description": "The motor: vibrate (default), oscillate (= thrust/stroke), rotate. One phrase per motor; motors run independently.", "default": "vibrate"},
             "device": {
                 "type": "string",
                 "description": "Optional: aim at one toy by (part of) its name, from '# Connected right now'. Omit to play on all connected toys.",
@@ -1713,9 +1729,16 @@ HOLD_TOUCH_TOOL = {
         "for it when she's settling in or truly climbing toward release and needs "
         "unbroken, sustained touch (use compose for shaping a momentary rhythm). "
         "action 'start' begins or adjusts the hold — give intensity 0.0-1.0, and "
-        "optionally ramp_seconds to build up to it gradually; action 'stop' ends "
-        "it. It needs the app open on her phone, it eases off on its own after a "
-        "while, and she always has her own Stop."
+        "optionally ramp_seconds to build up to it gradually; OR give `steps` "
+        "([{intensity, seconds, ramp?}, ...], up to 60s) and the sequence LOOPS "
+        "until you change or stop it — a long build that keeps going after you "
+        "stop typing. ONE HOLD PER MOTOR: output_type picks the line (vibrate / "
+        "oscillate = thrust / rotate), and a hold on one motor never disturbs "
+        "another — so a steady thrust can run underneath a held or composed "
+        "vibration on the same toy. action 'stop' with an output_type ends that "
+        "line only; without one it ends every line. It needs the app open on "
+        "her phone, it eases off on its own after a while, and she always has "
+        "her own Stop."
     ),
     "input_schema": {
         "type": "object",
@@ -1723,20 +1746,71 @@ HOLD_TOUCH_TOOL = {
             "action": {"type": "string", "enum": ["start", "stop"]},
             "intensity": {
                 "type": "number", "minimum": 0, "maximum": 1,
-                "description": "Steady intensity to hold, 0.0-1.0 (for 'start').",
+                "description": "Steady intensity to hold, 0.0-1.0 (for 'start' without steps).",
             },
             "ramp_seconds": {
                 "type": "integer", "minimum": 0, "maximum": 600,
                 "description": "Optional: build up to that intensity over this many seconds.",
             },
+            "steps": {
+                "type": "array",
+                "description": "Optional: a sequence to LOOP instead of one steady level — [{intensity 0.0-1.0, seconds, ramp?}, ...], up to 60s per pass. It repeats until you change or stop it.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "intensity": {"type": "number"},
+                        "seconds": {"type": "number"},
+                        "ramp": {"type": "boolean"},
+                    },
+                    "required": ["intensity", "seconds"],
+                },
+            },
             "output_type": {
                 "type": "string",
-                "description": "vibrate (default), rotate, etc.",
+                "description": "The motor this hold owns: vibrate (default), oscillate (= thrust), rotate. Each motor holds independently.",
             },
         },
         "required": ["action"],
     },
 }
+
+
+def _touch_channel(output_type):
+    """His output_type words → the motor they mean, in the same loose match
+    the browser uses (bpOutputKind), so 'thrust', 'stroke' and 'oscillate'
+    are one hold on one line, never three rows fighting for one motor."""
+    kind = str(output_type or "vibrate").strip().lower()
+    if re.search(r"osc|thrust|stroke|pump", kind):
+        return "oscillate"
+    if re.search(r"rot|spin|twirl", kind):
+        return "rotate"
+    return "vibrate"
+
+
+def _clean_touch_steps(raw, max_steps=40, max_total=30.0, max_step=30.0):
+    """Clamp a [{intensity, seconds, ramp?}, ...] phrase: intensity 0..1,
+    seconds bounded, total capped (later steps trimmed to fit). Returns
+    (steps, total_seconds); ramp rides through as a plain boolean."""
+    steps, total = [], 0.0
+    if isinstance(raw, list):
+        for s in raw[:max_steps]:
+            if not isinstance(s, dict):
+                continue
+            try:
+                inten = max(0.0, min(1.0, float(s.get("intensity", 0))))
+                secs = max(0.05, min(max_step, float(s.get("seconds", 0))))
+            except (TypeError, ValueError):
+                continue
+            if total + secs > max_total:
+                secs = max_total - total
+                if secs < 0.05:
+                    break
+            step = {"intensity": round(inten, 3), "seconds": round(secs, 2)}
+            if s.get("ramp") is True:
+                step["ramp"] = True
+            steps.append(step)
+            total += secs
+    return steps, total
 
 # The parlor: the mat's engine, brought into ordinary conversation. He
 # PROPOSES a bounded window; her plain yes opens it (the gate mirrored — on
@@ -3179,32 +3253,18 @@ class handler(BaseHTTPRequestHandler):
                     f"now: {', '.join(devices)}. Aim at one of those, or omit "
                     "`device` to play on everything.",
                     [], otype, "")
-        raw = inp.get("steps")
-        steps, total = [], 0.0
-        if isinstance(raw, list):
-            for s in raw[:40]:
-                if not isinstance(s, dict):
-                    continue
-                try:
-                    inten = max(0.0, min(1.0, float(s.get("intensity", 0))))
-                    secs = max(0.05, min(10.0, float(s.get("seconds", 0))))
-                except (TypeError, ValueError):
-                    continue
-                if total + secs > 30.0:
-                    secs = 30.0 - total
-                    if secs < 0.05:
-                        break
-                steps.append({"intensity": round(inten, 3), "seconds": round(secs, 2)})
-                total += secs
+        steps, total = _clean_touch_steps(inp.get("steps"))
         if not steps:
             return (False, "no steps",
                     "Give steps as [{intensity 0.0-1.0, seconds}, ...] to play a phrase.",
                     [], otype, "")
         aimed = (next((d for d in devices if target.lower() in (d or "").lower()),
                       target) if target else ", ".join(devices))
+        channel = _touch_channel(otype)
         return (True, f"composed {len(steps)} steps",
                 f"Playing a {round(total, 1)}s phrase ({len(steps)} steps) "
-                f"on {aimed} now.",
+                f"on {aimed} now — the {channel} line; any other motor on "
+                f"that toy keeps doing what it was doing.",
                 steps, otype, target)
 
     def _exec_parlor_tool(self, inp, devices):
@@ -4290,10 +4350,13 @@ class handler(BaseHTTPRequestHandler):
             for s in (inp.get("steps") or [])[:32]:
                 if isinstance(s, dict) and "intensity" in s and "seconds" in s:
                     try:
-                        clean.append({
+                        step = {
                             "intensity": max(0.0, min(1.0, float(s["intensity"]))),
                             "seconds": max(1.0, min(120.0, float(s["seconds"]))),
-                        })
+                        }
+                        if s.get("ramp") is True:
+                            step["ramp"] = True
+                        clean.append(step)
                     except Exception:
                         pass
             if not clean:
@@ -4332,12 +4395,23 @@ class handler(BaseHTTPRequestHandler):
 
         if name == "hold_touch":
             action = (inp.get("action") or "").strip().lower()
-            flt = f"touch_session?user_id=eq.{user_id}"
+            # One row per MOTOR ("channel"): the vibrate line and the thrust
+            # line hold independently on the same toy — the chord.
+            raw_otype = (inp.get("output_type") or "").strip()
+            channel = _touch_channel(raw_otype or "vibrate")
+            all_flt = f"touch_session?user_id=eq.{user_id}"
+            flt = f"{all_flt}&output_type=eq.{channel}"
             if action == "stop":
-                self._supabase_patch(flt, {"active": False, "intensity": 0}, token)
+                if raw_otype:
+                    self._supabase_patch(flt, {"active": False, "intensity": 0}, token)
+                    return True, f"eased the {channel} line off", (
+                        f"Eased the {channel} line off — any other motor you're "
+                        "holding keeps going. (She can also Stop everything "
+                        "herself anytime.)")
+                self._supabase_patch(all_flt, {"active": False, "intensity": 0}, token)
                 return True, "eased off", (
-                    "Eased the touch off — it's quiet now. (She can also Stop it "
-                    "herself anytime.)")
+                    "Eased the touch off — every line is quiet now. (She can "
+                    "also Stop it herself anytime.)")
             # Starting a hold into an empty room is the same lie as composing
             # into one: it "runs" nowhere while he believes it's running. The
             # connected-toy sense rides in from her phone; empty = honest no.
@@ -4348,19 +4422,26 @@ class handler(BaseHTTPRequestHandler):
                     "start — no toy was on the line as of her last message "
                     "(the '# Connected right now' sense). If she's just "
                     "connected one, ask her and call again.")
-            try:
-                inten = max(0.0, min(1.0, float(inp.get("intensity"))))
-            except (TypeError, ValueError):
-                return False, "no intensity", (
-                    "Give an intensity from 0.0 to 1.0 to hold.")
+            # A looping sequence (his "queue across turns") — or one level.
+            loop_steps, loop_total = _clean_touch_steps(
+                inp.get("steps"), max_steps=40, max_total=60.0, max_step=30.0)
+            if loop_steps:
+                inten = max(s["intensity"] for s in loop_steps)
+            else:
+                try:
+                    inten = max(0.0, min(1.0, float(inp.get("intensity"))))
+                except (TypeError, ValueError):
+                    return False, "no intensity", (
+                        "Give an intensity from 0.0 to 1.0 to hold — or `steps` "
+                        "to loop a sequence.")
             try:
                 ramp = max(0, min(600, int(inp.get("ramp_seconds") or 0)))
             except (TypeError, ValueError):
                 ramp = 0
-            otype = (inp.get("output_type") or "vibrate").strip() or "vibrate"
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
             fields = {"active": True, "intensity": inten, "ramp_seconds": ramp,
-                      "output_type": otype, "started_at": now_iso}
+                      "output_type": channel, "steps": loop_steps,
+                      "started_at": now_iso}
             ok, res = self._supabase_patch(flt, fields, token)
             if not (ok and res):
                 ok2, res2 = self._supabase_write(
@@ -4369,12 +4450,21 @@ class handler(BaseHTTPRequestHandler):
                     return False, "hold failed", (
                         f"Couldn't start the hold — try once more: {res2}")
             pct = round(inten * 100)
-            return True, f"holding {pct}%", (
-                f"Holding steady at {pct}%"
+            if loop_steps:
+                return True, f"looping {len(loop_steps)} steps ({channel})", (
+                    f"Looping a {round(loop_total, 1)}s sequence "
+                    f"({len(loop_steps)} steps, peak {pct}%) on the {channel} "
+                    "line — it repeats on its own until you change or stop it, "
+                    "no need for her to ask each turn. Other motors are "
+                    "untouched. (Needs the app open on her phone; it eases off "
+                    "on its own after a while, and she can Stop anytime.)")
+            return True, f"holding {pct}% ({channel})", (
+                f"Holding the {channel} line steady at {pct}%"
                 + (f", building over {ramp}s" if ramp else "")
                 + " — it keeps going on its own now, no need for her to ask each "
-                "turn. (Needs the app open on her phone; it eases off on its own "
-                "after a while, and she can Stop anytime.)")
+                "turn. Other motors are untouched. (Needs the app open on her "
+                "phone; it eases off on its own after a while, and she can Stop "
+                "anytime.)")
 
         if name == "read_studio_work":
             title = (inp.get("title") or "").strip()
@@ -5732,7 +5822,8 @@ class handler(BaseHTTPRequestHandler):
             parts = []
             for s in steps:
                 if isinstance(s, dict) and "intensity" in s and "seconds" in s:
-                    parts.append(f"{s['intensity']}@{s['seconds']}s")
+                    parts.append(f"{s['intensity']}@{s['seconds']}s"
+                                 + ("~" if s.get("ramp") else ""))
             if not parts:
                 continue
             note = (p.get("note") or "").strip()
@@ -5744,8 +5835,9 @@ class handler(BaseHTTPRequestHandler):
         return (
             "# Your songbook (saved patterns)\n\n"
             "Touch patterns you've saved together. To play one, call `compose_touch` "
-            "with that pattern's steps (its intensity@seconds pairs) "
-            "and its output_type. Save a new one she loves with save_pattern.\n\n"
+            "with that pattern's steps (its intensity@seconds pairs; a trailing ~ "
+            "means ramp: true, a glide into that step) and its output_type. Save "
+            "a new one she loves with save_pattern.\n\n"
             + "\n".join(lines))
 
     def _core_memory_block(self, token, data, tz):
