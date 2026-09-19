@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Sonder</title>
+
+  <link rel="manifest" href="/sonder/manifest.webmanifest" />
+  <meta name="theme-color" content="#1a1f2e" />
+  <link rel="icon" href="/sonder/icon-192.png" />
+  <link rel="apple-touch-icon" href="/sonder/icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Sonder" />
+
+  <link rel="stylesheet" href="/styles.css" />
+  <script>
+    // Theme: the same mood she picked in Petrichor, applied before paint.
+    (function () {
+      var KEY = "petrichor-theme";
+      var THEMES = {
+        lamplight: { swatch: "#1a1f2e", light: false }, petrichor: { swatch: "#191f1b", light: false },
+        ember: { swatch: "#1c1517", light: false }, tide: { swatch: "#131a24", light: false },
+        daylight: { swatch: "#efe9da", light: true }, rosewater: { swatch: "#f6ece9", light: true }
+      };
+      function stored() {
+        var v = null; try { v = localStorage.getItem(KEY); } catch (e) {}
+        if (v === "dark") return "lamplight"; if (v === "light") return "daylight";
+        return THEMES[v] ? v : null;
+      }
+      function osLight() { return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches); }
+      function effective() { return stored() || (osLight() ? "daylight" : "lamplight"); }
+      function apply() {
+        var choice = stored(); var t = THEMES[effective()]; var root = document.documentElement;
+        if (!choice) root.removeAttribute("data-theme"); else root.setAttribute("data-theme", choice);
+        var meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.setAttribute("content", t.swatch);
+        document.querySelectorAll(".js-theme-toggle").forEach(function (b) { b.textContent = t.light ? "☾" : "☀"; });
+      }
+      apply();
+      window.addEventListener("DOMContentLoaded", function () {
+        document.querySelectorAll(".js-theme-toggle").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            try { localStorage.setItem(KEY, THEMES[effective()].light ? "lamplight" : "daylight"); } catch (e) {}
+            apply();
+          });
+        });
+        apply();
+      });
+    })();
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    /* ---- Sonder: phone-first, one column, big tap targets ---- */
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    .so-head {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 12px;
+      border-bottom: 1px solid var(--border); background: var(--bg-elev);
+      position: sticky; top: 0; z-index: 5;
+    }
+    .so-head h1 { font-size: 19px; margin: 0; display: flex; align-items: center; gap: 8px; }
+    .so-head h1 a { color: inherit; text-decoration: none; }
+    .so-head-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .so-head-actions a { text-decoration: none; color: var(--text-muted); }
+    .so-main { padding: 14px 16px calc(28px + env(safe-area-inset-bottom, 0px)); max-width: 720px; margin: 0 auto; }
+    .so-section { margin: 0 0 22px; }
+    .so-section-head {
+      display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 0 8px;
+    }
+    .so-section-head h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em;
+      color: var(--text-muted); margin: 0; font-weight: 700; }
+    .so-card {
+      display: block; width: 100%; text-align: left; box-sizing: border-box;
+      background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 12px 14px; margin: 0 0 8px; color: var(--text); cursor: pointer; text-decoration: none;
+    }
+    .so-card:active { border-color: var(--accent); }
+    .so-card-title { font-size: 15px; font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+    .so-card-meta { font-size: 12.5px; color: var(--text-muted); margin-top: 3px; line-height: 1.4; }
+    .so-pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border);
+      color: var(--text-muted); white-space: nowrap; align-self: flex-start; }
+    .so-pill.knitting { border-color: var(--accent); color: var(--accent); }
+    .so-empty { color: var(--text-muted); font-size: 14px; padding: 8px 2px; }
+
+    .so-form { display: grid; gap: 10px; }
+    .so-field label { display: block; font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--text-muted); margin: 0 0 4px; font-weight: 700; }
+    .so-field input, .so-field textarea, .so-field select {
+      width: 100%; box-sizing: border-box; background: var(--bg-elev); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 11px; font-size: 15px;
+      font-family: inherit;
+    }
+    .so-field textarea { min-height: 80px; line-height: 1.5; resize: vertical; }
+    .so-field textarea.so-body { min-height: 220px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 14px; }
+    .so-field input:focus, .so-field textarea:focus, .so-field select:focus { outline: none; border-color: var(--accent); }
+    .so-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .so-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .so-row.end { justify-content: flex-end; }
+    .so-row.between { justify-content: space-between; }
+    .so-title { font-size: 22px; font-weight: 700; margin: 4px 0 2px; word-break: break-word; }
+    .so-sub { color: var(--text-muted); font-size: 13.5px; margin: 0 0 14px; }
+    .so-sub a { color: var(--accent); }
+    .so-back { color: var(--text-muted); text-decoration: none; font-size: 14px; display: inline-block; margin-bottom: 8px; }
+
+    /* counters */
+    .so-counter {
+      background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 10px 12px; margin: 0 0 8px;
+    }
+    .so-counter-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .so-counter-name { font-weight: 600; font-size: 15px; background: transparent; border: none; color: var(--text);
+      padding: 2px 0; min-width: 0; flex: 1; font-family: inherit; }
+    .so-counter-name:focus { outline: none; border-bottom: 1px solid var(--accent); }
+    .so-counter-row { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 6px; }
+    .so-counter-btn {
+      width: 64px; height: 56px; font-size: 28px; border-radius: 14px; border: 1px solid var(--border);
+      background: var(--bg); color: var(--text); cursor: pointer; touch-action: manipulation;
+    }
+    .so-counter-btn.plus { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+    .so-counter-val { font-size: 34px; font-weight: 700; min-width: 90px; text-align: center; font-variant-numeric: tabular-nums; }
+    .so-counter-val small { font-size: 14px; color: var(--text-muted); font-weight: 400; }
+    .so-counter-val.done { color: var(--accent); }
+    .so-counter-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
+    .so-counter-foot input { width: 70px; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); padding: 5px 7px; font-size: 13px; }
+
+    /* notes timeline */
+    .so-note { border-left: 2px solid var(--border); padding: 4px 0 4px 12px; margin: 0 0 10px; }
+    .so-note-at { font-size: 11.5px; color: var(--text-muted); display: flex; justify-content: space-between; gap: 8px; }
+    .so-note-text { font-size: 14.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
+    .so-note.ask { border-left-color: var(--accent); }
+    .so-note-text a { color: var(--accent); }
+
+    /* links, files, photos */
+    .so-link { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0;
+      border-bottom: 1px dashed var(--border); }
+    .so-link a { color: var(--accent); word-break: break-all; font-size: 14px; }
+    .so-photos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .so-photo { position: relative; aspect-ratio: 1; border-radius: var(--radius-sm); overflow: hidden;
+      background: var(--bg-elev); border: 1px solid var(--border); }
+    .so-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .so-photo button { position: absolute; top: 4px; right: 4px; font-size: 11px; padding: 2px 6px; }
+    .so-file-input { display: none; }
+    .so-inline-form { display: flex; gap: 6px; margin-top: 6px; }
+    .so-inline-form input { flex: 1; min-width: 0; background: var(--bg-elev); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 14px; }
+    .so-ask { display: flex; gap: 6px; margin-top: 6px; }
+    .so-ask input { flex: 1; min-width: 0; background: var(--bg-elev); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 9px 10px; font-size: 14px; }
+    .so-tag { display: inline-block; font-size: 11.5px; padding: 2px 7px; border-radius: 999px;
+      background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); margin: 2px 4px 0 0; }
+    .so-danger-zone { margin-top: 26px; padding-top: 12px; border-top: 1px dashed var(--border); }
+    details.so-more > summary { cursor: pointer; font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--text-muted); font-weight: 700; margin-bottom: 8px; }
+    .so-savestate { font-size: 12px; color: var(--text-muted); }
+    @media (min-width: 560px) { .so-photos { grid-template-columns: repeat(4, 1fr); } }
+  </style>
+</head>
+<body>
+  <!-- Sign-in (only if she isn't already signed in to Petrichor on this device) -->
+  <section id="signin-screen" class="signin-screen" hidden>
+    <div class="signin-card">
+      <button class="js-theme-toggle ghost small signin-theme-toggle" title="Light / dark" aria-label="Toggle light or dark">&#9728;</button>
+      <h1>Sonder</h1>
+      <p class="muted">Sign in with the code sent to your email.</p>
+      <form id="signin-form" class="signin-form" autocomplete="off">
+        <input type="email" id="signin-email" placeholder="you@example.com" required />
+        <input type="text" id="signin-code" inputmode="numeric" pattern="[0-9]*"
+               maxlength="8" autocomplete="one-time-code" placeholder="Enter code" hidden />
+        <button type="submit" id="signin-submit" class="primary">Send code</button>
+        <button type="button" id="signin-restart" class="ghost small" hidden>Use a different email</button>
+      </form>
+      <p id="signin-msg" class="signin-msg"></p>
+      <button type="button" id="signin-have-code" class="linklike small">I already have a code</button>
+      <p class="muted small"><a href="/">&larr; Back to Petrichor</a></p>
+    </div>
+  </section>
+
+  <section id="setup-error" class="signin-screen" hidden>
+    <div class="signin-card">
+      <h1>Setup needed</h1>
+      <p id="setup-error-msg" class="error"></p>
+    </div>
+  </section>
+
+  <div id="so-shell" hidden>
+    <header class="so-head">
+      <h1><a href="#/">&#129526; Sonder</a></h1>
+      <div class="so-head-actions">
+        <button class="js-theme-toggle ghost small" title="Light / dark" aria-label="Toggle light or dark">&#9728;</button>
+        <a href="/" class="ghost small" title="Back to Petrichor">&larr; Home</a>
+      </div>
+    </header>
+    <main class="so-main" id="so-main"></main>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <input type="file" id="so-file-input" class="so-file-input" />
+
+  <script src="/sonder/sonder.js"></script>
+</body>
+</html>

@@ -9,14 +9,15 @@
     "api/sill.py": { "maxDuration": 30 },
     "api/chess.py": { "maxDuration": 30 },
     "api/practice.py": { "maxDuration": 30 },
-    "api/wake.py": { "maxDuration": 60 }
+    "api/wake.py": { "maxDuration": 60 },
+    "api/sonder_ask.py": { "maxDuration": 60 }
   },
   "rewrites": [
     { "source": "/(.*)", "destination": "/public/$1" }
   ],
   "headers": [
     {
-      "source": "/(app.js|drawer.js|drawer.html|index.html|sw.js|manifest.webmanifest)",
+      "source": "/(app.js|drawer.js|drawer.html|index.html|sw.js|manifest.webmanifest|sonder/index.html|sonder/sonder.js|sonder/manifest.webmanifest)",
       "headers": [
         { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
       ]
