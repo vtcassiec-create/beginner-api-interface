@@ -21,7 +21,7 @@ import urllib.request
 
 import anthropic
 
-MODEL = "claude-opus-4-8"
+MODEL = "claude-opus-5-5"
 HTTP_TIMEOUT = 15
 MAX_CONTEXT_CHARS = 24000
 MAX_QUESTION_CHARS = 1500
