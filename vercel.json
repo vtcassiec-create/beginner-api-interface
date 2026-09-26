@@ -1,38 +1,82 @@
 {
   "framework": null,
   "functions": {
-    "api/chat.py": { "maxDuration": 300 },
-    "api/backup.py": { "maxDuration": 60 },
-    "api/tts.py": { "maxDuration": 60 },
-    "api/ears.py": { "maxDuration": 60 },
-    "api/keepwarm.py": { "maxDuration": 60 },
-    "api/sill.py": { "maxDuration": 30 },
-    "api/chess.py": { "maxDuration": 30 },
-    "api/practice.py": { "maxDuration": 30 },
-    "api/wake.py": { "maxDuration": 60 },
-    "api/sonder_ask.py": { "maxDuration": 60 }
+    "api/chat.py": {
+      "maxDuration": 300
+    },
+    "api/backup.py": {
+      "maxDuration": 60
+    },
+    "api/tts.py": {
+      "maxDuration": 60
+    },
+    "api/ears.py": {
+      "maxDuration": 60
+    },
+    "api/keepwarm.py": {
+      "maxDuration": 60
+    },
+    "api/sill.py": {
+      "maxDuration": 30
+    },
+    "api/chess.py": {
+      "maxDuration": 30
+    },
+    "api/practice.py": {
+      "maxDuration": 30
+    },
+    "api/wake.py": {
+      "maxDuration": 60
+    },
+    "api/sonder_ask.py": {
+      "maxDuration": 60
+    },
+    "api/bench.py": {
+      "maxDuration": 30
+    }
   },
   "rewrites": [
-    { "source": "/(.*)", "destination": "/public/$1" }
+    {
+      "source": "/(.*)",
+      "destination": "/public/$1"
+    }
   ],
   "headers": [
     {
       "source": "/(app.js|drawer.js|drawer.html|index.html|sw.js|manifest.webmanifest|sonder/index.html|sonder/sonder.js|sonder/manifest.webmanifest)",
       "headers": [
-        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
       ]
     },
     {
       "source": "/",
       "headers": [
-        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
       ]
     }
   ],
   "crons": [
-    { "path": "/api/surprise", "schedule": "0 20 * * *" },
-    { "path": "/api/backup", "schedule": "0 8 * * *" },
-    { "path": "/api/keepwarm", "schedule": "*/30 * * * *" },
-    { "path": "/api/wake", "schedule": "0 * * * *" }
+    {
+      "path": "/api/surprise",
+      "schedule": "0 20 * * *"
+    },
+    {
+      "path": "/api/backup",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/keepwarm",
+      "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/wake",
+      "schedule": "0 * * * *"
+    }
   ]
 }
