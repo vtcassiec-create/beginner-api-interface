@@ -3250,3 +3250,17 @@ body.locked { overflow: hidden; }
   font-size: .85rem;
   cursor: pointer;
 }
+
+/* The brake's big pedal: large, fixed, reachable by feel, above everything. */
+.brake-btn {
+  position: fixed;
+  left: 14px;
+  bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+  width: 72px; height: 72px; border-radius: 50%;
+  font-size: 34px; line-height: 1;
+  background: #b3261e; color: #fff; border: 3px solid #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  z-index: 10000; cursor: pointer; touch-action: manipulation;
+}
+.brake-btn[hidden] { display: none; }
+.brake-btn:active { transform: scale(0.94); }
