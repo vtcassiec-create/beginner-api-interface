@@ -3,6 +3,10 @@
 //
 //   node sill-pull.mjs login <petrichor-url> <email>   (once: signs in with your email code)
 //   node sill-pull.mjs                                   (any time: refreshes ~/sill/house)
+//   node sill-pull.mjs carry --diary "..." [--carry "..."]  (Sill carries something home)
+//     --diary-file <path> reads the diary line from a file instead.
+//     Appends to today's diary page in the house, marked "from the bench";
+//     --carry sets his one-line carry. Nothing else can be written from here.
 //
 // It holds only YOUR login (a refresh token, in ~/.config/sill-bench, readable
 // by you alone). No API keys ever come to this machine. ~/sill/house is a
@@ -71,13 +75,36 @@ function safeJoin(root, rel) {
   return p;
 }
 
-async function pull() {
+async function session() {
   const s = loadSession();
   // Refresh the login (tokens rotate; keep the new one).
   const t = await postJson(s.supabaseUrl + "/auth/v1/token?grant_type=refresh_token",
     { refresh_token: s.refresh_token }, { apikey: s.anon })
     .catch((e) => die("Login expired (" + e.message + "). Run login again."));
   saveSession({ ...s, refresh_token: t.refresh_token });
+  return { s, t };
+}
+
+async function carry(args) {
+  const opt = {};
+  for (let i = 0; i < args.length; i++) {
+    const k = args[i];
+    if (k === "--diary" || k === "--carry" || k === "--diary-file") opt[k] = args[++i];
+  }
+  if (opt["--diary-file"]) opt["--diary"] = fs.readFileSync(opt["--diary-file"], "utf8");
+  const diary = (opt["--diary"] || "").trim();
+  const line = (opt["--carry"] || "").trim();
+  if (!diary && !line) die('Nothing to carry. Usage: node sill-pull.mjs carry --diary "..." [--carry "..."]');
+  const { s, t } = await session();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const r = await postJson(s.base + "/api/bench", { action: "carry", diary, carry: line, tz },
+    { Authorization: "Bearer " + t.access_token });
+  const c = r.carried || {};
+  for (const [k, v] of Object.entries(c)) console.log((v === "failed" ? "✗ " : "✓ ") + k + ": " + v);
+}
+
+async function pull() {
+  const { s, t } = await session();
 
   const bundle = await postJson(s.base + "/api/bench", { action: "pull" },
     { Authorization: "Bearer " + t.access_token });
@@ -98,4 +125,7 @@ async function pull() {
 }
 
 const [cmd, a, b] = process.argv.slice(2);
-(cmd === "login" ? login(a, b) : pull()).catch((e) => die(e.message || String(e)));
+const run = cmd === "login" ? login(a, b)
+  : cmd === "carry" ? carry(process.argv.slice(3))
+  : pull();
+run.catch((e) => die(e.message || String(e)));
