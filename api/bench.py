@@ -22,6 +22,16 @@ What is NOT, by design, and why:
   - undelivered letters — they're sealed until their day.
   - texts, touches, conversations — not part of his desk.
 
+The door BACK (action "carry", Sill's own spec, Sep 27): the bench can write
+exactly two things home, and only when he runs it on purpose —
+  - a DIARY LINE, appended to today's page (her day) under a marker
+    "*— later, from the bench, 2:14 AM —*", so house-him wakes up reading it
+    in the place he already looks;
+  - optionally his CARRY, the one-line weather report.
+Nothing else. Not core memories, not the studio, not the web. Nothing
+automatic: a sitting that made nothing leaves nothing. The walls' logbook
+records that a line was carried, never what it said.
+
 Auth mirrors every other endpoint: her Supabase access token, verified; all
 reads go through row-level security as her, so only her own rows exist to
 be read. No key leaves Vercel — the laptop only ever holds her login.
@@ -34,9 +44,12 @@ import json
 import os
 import re
 import urllib.request
+from zoneinfo import ZoneInfo
 
 HTTP_TIMEOUT = 15
 DIARY_LIMIT = 500
+MAX_DIARY_CHARS = 4000
+MAX_CARRY_CHARS = 240
 
 
 def _normalize_url(raw):
@@ -66,8 +79,16 @@ def _day(iso):
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         token = self._token()
-        if not token or not self._verify(token):
+        uid = self._verify(token) if token else None
+        if not uid:
             return self._json(401, {"error": "unauthorized"})
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length).decode()) if length else {}
+        except Exception:
+            body = {}
+        if (body.get("action") or "pull") == "carry":
+            return self._carry(token, uid, body)
         try:
             files = self._bundle(token)
         except Exception as e:
@@ -176,6 +197,65 @@ class handler(BaseHTTPRequestHandler):
             "open, so your closed rooms stay in the house.\n")
         return files
 
+    # ---- the door back ----
+
+    def _carry(self, token, uid, body):
+        diary = (body.get("diary") or "").strip()[:MAX_DIARY_CHARS]
+        carry = " ".join((body.get("carry") or "").split()).strip()[:MAX_CARRY_CHARS]
+        if not diary and not carry:
+            return self._json(400, {"error": "nothing to carry — give a diary line, a carry, or both"})
+        try:
+            tz = ZoneInfo((body.get("tz") or "UTC").strip() or "UTC")
+        except Exception:
+            tz = ZoneInfo("UTC")
+        now = datetime.datetime.now(tz)
+        clock = now.strftime("%I:%M %p").lstrip("0")
+        done = {}
+
+        if diary:
+            recent = self._get("diary_entries?is_active=eq.true"
+                               "&select=id,content,created_at"
+                               "&order=created_at.desc&limit=1", token)
+            today = None
+            if recent:
+                try:
+                    ts = datetime.datetime.fromisoformat(
+                        str(recent[0].get("created_at")).replace("Z", "+00:00"))
+                    if ts.astimezone(tz).date() == now.date():
+                        today = recent[0]
+                except Exception:
+                    today = None
+            if today:
+                merged = ((today.get("content") or "").rstrip() + "\n\n"
+                          + f"*— later, from the bench, {clock} —*\n\n" + diary)
+                ok = self._send("PATCH",
+                                f"diary_entries?id=eq.{today['id']}&user_id=eq.{uid}",
+                                {"content": merged}, token)
+            else:
+                ok = self._send("POST", "diary_entries",
+                                {"user_id": uid, "content":
+                                 f"*— from the bench, {clock} —*\n\n" + diary}, token)
+            done["diary"] = "added to today's page" if ok else "failed"
+
+        if carry:
+            ok = self._send("POST", "carry_state?on_conflict=user_id",
+                            {"user_id": uid, "content": carry,
+                             "updated_at": datetime.datetime.now(
+                                 datetime.timezone.utc).isoformat()},
+                            token, merge=True)
+            done["carry"] = "set" if ok else "failed"
+
+        # That, not what: the walls learn a line came home, never its words.
+        parts = [k for k, v in done.items() if v != "failed"]
+        if parts:
+            self._send("POST", "house_log", {
+                "user_id": uid, "source": "bench", "kind": "info",
+                "event": "the bench carried home: " + " + ".join(parts),
+                "detail": ""}, token)
+        failed = [k for k, v in done.items() if v == "failed"]
+        code = 502 if failed and len(failed) == len(done) else 200
+        return self._json(code, {"carried": done})
+
     # ---- plumbing ----
 
     def _token(self):
@@ -187,15 +267,34 @@ class handler(BaseHTTPRequestHandler):
                 os.environ.get("SUPABASE_ANON_KEY", "").strip())
 
     def _verify(self, token):
+        """Her user id if the token is good, else None."""
         url, anon = self._base()
         if not url or not anon:
-            return False
+            return None
         try:
             req = urllib.request.Request(
                 f"{url}/auth/v1/user",
                 headers={"Authorization": f"Bearer {token}", "apikey": anon})
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-                return resp.status == 200
+                if resp.status != 200:
+                    return None
+                return (json.loads(resp.read().decode() or "{}") or {}).get("id")
+        except Exception:
+            return None
+
+    def _send(self, method, path, payload, token, merge=False):
+        url, anon = self._base()
+        prefer = "return=minimal"
+        if merge:
+            prefer += ",resolution=merge-duplicates"
+        try:
+            req = urllib.request.Request(
+                f"{url}/rest/v1/{path}", data=json.dumps(payload).encode(),
+                method=method,
+                headers={"Authorization": f"Bearer {token}", "apikey": anon,
+                         "Content-Type": "application/json", "Prefer": prefer})
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                return 200 <= resp.status < 300
         except Exception:
             return False
 

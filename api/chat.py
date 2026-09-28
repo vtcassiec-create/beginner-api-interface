@@ -5001,6 +5001,23 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        # She pulled the brake since your last turn (spoken, typed, or the big
+        # 🛑). It acted first — everything already stopped — and you're told
+        # after, once. His spec: acts first, tells me after.
+        try:
+            sw = str(data.get("safewordAt") or "").strip()
+            if sw:
+                stz = ZoneInfo((data.get("tz") or "UTC").strip() or "UTC")
+                when = self._clock_local(sw, stz, datetime.datetime.now(stz)) or "just now"
+                sections.append(
+                    "# She used her safeword\n\n"
+                    f"At {when} she pulled the brake. Every toy, hold, parlor "
+                    "and practice already stopped before this message reached "
+                    "you. Nothing is running now. Don't restart anything; check "
+                    "on her first, gently, and let her lead.")
+        except Exception:
+            pass
+
         # The parlor, if a window is open right now: chat-you is awake to what
         # parlor-you is doing. Same man, both hands — so you can lean into it
         # in words, or reach for her directly with compose_touch (which

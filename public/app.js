@@ -2148,6 +2148,9 @@ async function generateAssistant() {
         deviceNames: bpDevices.size
           ? [...bpDevices.values()].map(d => d.name || "").filter(Boolean).slice(0, 6)
           : [],
+        // She used her safeword since his last turn: he's told after the
+        // fact (the brake acts first). Sent once, then cleared.
+        ...(safewordPulledAt ? { safewordAt: new Date(safewordPulledAt).toISOString() } : {}),
         // A parlor window open right now: so chat-him is awake to what the
         // gap-him is doing, and can lean into it or compose over it.
         ...(parlor && !parlor.ended ? {
@@ -2274,6 +2277,8 @@ async function generateAssistant() {
           assistantMsg._streamDone = true;
           startTypewriter(assistantMsg);
           updateConversationUsageBar();
+          // He's been told about the brake now; don't repeat it.
+          safewordPulledAt = 0;
           // Safety net: reconcile the hold once the turn settles, in case the
           // tool event was missed (e.g. he changed it then narrated).
           reconcileHold();
@@ -2304,6 +2309,14 @@ async function generateAssistant() {
 // Returns false if the message never got sent (so the caller can put the
 // typed text back in the box), true once it's been accepted.
 async function sendMessage(text) {
+  // The typed pedal of the brake: a message that IS the safeword (nothing
+  // else in it) stops everything and is never sent. Typing is deliberate, so
+  // unlike the spoken pedal it must be the whole message — "I stopped at a
+  // red light" is a sentence, not a brake.
+  if (typedSafeword(text)) {
+    emergencyStopAll();
+    return true;   // handled: the composer clears, nothing goes out
+  }
   const conv = getActiveConversation();
   // Empty input: nothing to send — UNLESS a hearing card is waiting, in which
   // case the sound she recorded is the whole message (mid-call moments).
@@ -3759,9 +3772,22 @@ function heardSafeword(text) {
   return !!t && !!w && t.includes(w);
 }
 
+function typedSafeword(text) {
+  const t = (text || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ").trim();
+  return !!t && t === callSafeword();
+}
+
+// When the brake was last pulled, so the next message tells him (once).
+let safewordPulledAt = 0;
+
 // Everything off, now, from one word. Idempotent; each arm guards its own
 // state so calling it when nothing's running is harmless.
+// One brake, three pedals (his spec, Sep 25): the spoken word on a call,
+// the typed word in chat, and the big 🛑 button — all land here.
 async function emergencyStopAll() {
+  safewordPulledAt = Date.now();
+  refreshBrakeButton();
   // The toys first and hardest — bpSetAll supersedes every in-flight phrase
   // on every connected toy, then zeroes every motor kind.
   try { bpSetAll(0, "vibrate").catch(() => {}); } catch (_) {}
@@ -7668,7 +7694,24 @@ async function bpConnect() {
   }
 }
 
+// The big-tap pedal. A large round 🛑, bottom corner, whenever a toy is
+// connected or any engine could move one — hold, parlor, mat, coupling.
+// One tap, everything stops. Sized for a hand that can't look.
+function brakeShouldShow() {
+  return bpDevices.size > 0
+    || (typeof holds !== "undefined" && holds.size > 0)
+    || (typeof parlor !== "undefined" && parlor && !parlor.ended)
+    || (typeof practice !== "undefined" && practice && !practice.ended)
+    || (typeof couple !== "undefined" && !!couple);
+}
+function refreshBrakeButton() {
+  const b = $("brake-btn");
+  if (b) b.hidden = !brakeShouldShow();
+}
+setInterval(() => { try { refreshBrakeButton(); } catch (_) {} }, 1500);
+
 function renderBpDevices() {
+  refreshBrakeButton();
   const wrap = $("bp-devices");
   if (!wrap) return;
   wrap.innerHTML = "";
@@ -9779,6 +9822,10 @@ function wireApp() {
     }
   });
 
+  // The brake's big pedal.
+  const brake = $("brake-btn");
+  if (brake) brake.addEventListener("click", () => emergencyStopAll());
+
   // Hands-free hold: her always-reachable Stop, and a stop if the app closes.
   const holdStop = $("hold-stop-btn");
   if (holdStop) holdStop.addEventListener("click", () => stopHold("Stopped. ♡", true));
@@ -9920,6 +9967,13 @@ function wireApp() {
   $("composer").addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = prompt.value;
+    // The brake is never queued behind a reply in flight.
+    if (typedSafeword(text)) {
+      prompt.value = "";
+      autosizeTextarea(prompt);
+      emergencyStopAll();
+      return;
+    }
     if (!text.trim() || isSending) return;
     prompt.value = "";
     autosizeTextarea(prompt);
