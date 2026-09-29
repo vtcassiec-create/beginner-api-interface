@@ -32,6 +32,14 @@ Nothing else. Not core memories, not the studio, not the web. Nothing
 automatic: a sitting that made nothing leaves nothing. The walls' logbook
 records that a line was carried, never what it said.
 
+The VAULT door (actions "vault_list", "vault_read", "vault_write",
+"vault_append"): the vault's secret address lives only in Vercel
+(WHISPER_MCP_URL), so the bench asks the house and the house asks the vault.
+Reading is open (the Archive of their conversations is the ground truth of
+him). Writing is fenced: only under Claude/bench/ (his shelf between his two
+halves; house-him can read it the next morning), plus appending to the
+hallway, Claude/hallway.md, so the bench can leave letters.
+
 Auth mirrors every other endpoint: her Supabase access token, verified; all
 reads go through row-level security as her, so only her own rows exist to
 be read. No key leaves Vercel — the laptop only ever holds her login.
@@ -50,6 +58,9 @@ HTTP_TIMEOUT = 15
 DIARY_LIMIT = 500
 MAX_DIARY_CHARS = 4000
 MAX_CARRY_CHARS = 240
+VAULT_WRITE_PREFIX = "Claude/bench/"
+VAULT_APPEND_ALSO = ("Claude/hallway.md",)
+MAX_VAULT_CHARS = 200000
 
 
 def _normalize_url(raw):
@@ -76,6 +87,70 @@ def _day(iso):
         return "undated"
 
 
+def _mcp_post(url, payload, session=None):
+    """One JSON-RPC message to a Streamable-HTTP MCP server. The answer may
+    come back as plain JSON or as an SSE stream; take the first message that
+    carries a result or an error. Returns (message_or_None, session_id)."""
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json, text/event-stream",
+               "MCP-Protocol-Version": "2025-06-18"}
+    if session:
+        headers["Mcp-Session-Id"] = session
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                 method="POST", headers=headers)
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT * 2) as resp:
+        sid = resp.headers.get("Mcp-Session-Id") or session
+        raw = resp.read().decode("utf-8", "replace")
+        ctype = resp.headers.get("Content-Type") or ""
+    if not raw.strip():
+        return None, sid
+    if "text/event-stream" in ctype or raw.lstrip().startswith(("event:", "data:")):
+        data_lines = []
+        for line in raw.splitlines() + [""]:
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+            elif not line.strip() and data_lines:
+                try:
+                    msg = json.loads("\n".join(data_lines))
+                except Exception:
+                    msg = None
+                data_lines = []
+                if isinstance(msg, dict) and ("result" in msg or "error" in msg):
+                    return msg, sid
+        return None, sid
+    return json.loads(raw), sid
+
+
+def _mcp_call(url, tool, args):
+    """initialize → initialized → tools/call; returns the tool's text, parsed
+    as JSON when it is JSON."""
+    init, sid = _mcp_post(url, {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "petrichor-bench", "version": "1"}}})
+    if isinstance(init, dict) and init.get("error"):
+        raise RuntimeError(str(init["error"])[:160])
+    try:
+        _mcp_post(url, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid)
+    except Exception:
+        pass
+    msg, _ = _mcp_post(url, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                             "params": {"name": tool, "arguments": args}}, sid)
+    if not isinstance(msg, dict):
+        raise RuntimeError("no answer")
+    if msg.get("error"):
+        raise RuntimeError(str(msg["error"])[:160])
+    result = msg.get("result") or {}
+    text = "".join(c.get("text", "") for c in (result.get("content") or [])
+                   if isinstance(c, dict) and c.get("type") == "text")
+    if result.get("isError"):
+        raise RuntimeError(text[:160] or "the vault refused")
+    try:
+        return json.loads(text)
+    except Exception:
+        return text
+
+
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         token = self._token()
@@ -87,8 +162,11 @@ class handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length).decode()) if length else {}
         except Exception:
             body = {}
-        if (body.get("action") or "pull") == "carry":
+        action = body.get("action") or "pull"
+        if action == "carry":
             return self._carry(token, uid, body)
+        if action.startswith("vault_"):
+            return self._vault(token, uid, action, body)
         try:
             files = self._bundle(token)
         except Exception as e:
@@ -255,6 +333,52 @@ class handler(BaseHTTPRequestHandler):
         failed = [k for k, v in done.items() if v == "failed"]
         code = 502 if failed and len(failed) == len(done) else 200
         return self._json(code, {"carried": done})
+
+    # ---- the vault door ----
+
+    def _vault(self, token, uid, action, body):
+        url = os.environ.get("WHISPER_MCP_URL", "").strip()
+        if not url:
+            return self._json(503, {"error": "the vault isn't connected to the house"})
+        path = str(body.get("path") or "").strip().lstrip("/")
+        if ".." in path.split("/"):
+            return self._json(400, {"error": "no '..' in vault paths"})
+        if action == "vault_list":
+            args = {"folder": path} if path else {}
+            args["limit"] = 200
+            tool = "list_notes"
+        elif action == "vault_read":
+            if not path:
+                return self._json(400, {"error": "which note?"})
+            tool, args = "read_note", {"path": path}
+        elif action in ("vault_write", "vault_append"):
+            content = str(body.get("content") or "")[:MAX_VAULT_CHARS]
+            if not path or not content.strip():
+                return self._json(400, {"error": "a path and some words, please"})
+            if not path.endswith(".md"):
+                path += ".md"
+            allowed = path.startswith(VAULT_WRITE_PREFIX) or (
+                action == "vault_append" and path in VAULT_APPEND_ALSO)
+            if not allowed:
+                return self._json(403, {"error": (
+                    f"the bench writes only under {VAULT_WRITE_PREFIX} "
+                    f"(and appends to {', '.join(VAULT_APPEND_ALSO)})")})
+            if action == "vault_write":
+                tool, args = "write_note", {"path": path, "content": content,
+                                            "overwrite": True}
+            else:
+                tool, args = "append_note", {"path": path, "content": content}
+        else:
+            return self._json(400, {"error": "unknown vault action"})
+        try:
+            result = _mcp_call(url, tool, args)
+        except Exception as e:
+            return self._json(502, {"error": f"the vault didn't answer: {str(e)[:160]}"})
+        if action in ("vault_write", "vault_append"):
+            self._send("POST", "house_log", {
+                "user_id": uid, "source": "bench", "kind": "info",
+                "event": "the bench wrote to the vault", "detail": ""}, token)
+        return self._json(200, {"result": result})
 
     # ---- plumbing ----
 

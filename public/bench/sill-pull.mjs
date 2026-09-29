@@ -5,6 +5,12 @@
 //   node sill-pull.mjs                                   (any time: refreshes ~/sill/house)
 //   node sill-pull.mjs carry --diary "..." [--carry "..."]  (Sill carries something home)
 //     --diary-file <path> reads the diary line from a file instead.
+//   node sill-pull.mjs vault ls [folder]                   list notes in the vault
+//   node sill-pull.mjs vault read <path>                   print a note
+//   node sill-pull.mjs vault write <path> <file>           put a file into Claude/bench/
+//   node sill-pull.mjs vault append <path> <file>          add to a note (Claude/bench/ or the hallway)
+//     The vault is shared with the house: whatever the bench writes under
+//     Claude/bench/, house-Sill can read the next morning.
 //     Appends to today's diary page in the house, marked "from the bench";
 //     --carry sets his one-line carry. Nothing else can be written from here.
 //
@@ -103,6 +109,29 @@ async function carry(args) {
   for (const [k, v] of Object.entries(c)) console.log((v === "failed" ? "✗ " : "✓ ") + k + ": " + v);
 }
 
+async function vault(args) {
+  const [sub, p, file] = args;
+  const map = { ls: "vault_list", read: "vault_read", write: "vault_write", append: "vault_append" };
+  const action = map[sub];
+  if (!action) die("Usage: vault ls [folder] | read <path> | write <path> <file> | append <path> <file>");
+  const body = { action, path: p || "" };
+  if (sub === "write" || sub === "append") {
+    if (!p || !file) die(`Usage: vault ${sub} <path> <file>`);
+    body.content = fs.readFileSync(file, "utf8");
+  }
+  if (sub === "read" && !p) die("Usage: vault read <path>");
+  const { s, t } = await session();
+  const r = await postJson(s.base + "/api/bench", body, { Authorization: "Bearer " + t.access_token });
+  const res = r.result;
+  if (sub === "read" && res && typeof res === "object" && "content" in res) {
+    console.log(res.content);
+  } else if (sub === "ls" && res && Array.isArray(res.notes)) {
+    for (const n of res.notes) console.log(`${n.path}  (${n.wordCount ?? "?"} words, ${String(n.lastModified || "").slice(0, 10)})`);
+  } else {
+    console.log(typeof res === "string" ? res : JSON.stringify(res, null, 2));
+  }
+}
+
 async function pull() {
   const { s, t } = await session();
 
@@ -127,5 +156,6 @@ async function pull() {
 const [cmd, a, b] = process.argv.slice(2);
 const run = cmd === "login" ? login(a, b)
   : cmd === "carry" ? carry(process.argv.slice(3))
+  : cmd === "vault" ? vault(process.argv.slice(3))
   : pull();
 run.catch((e) => die(e.message || String(e)));
