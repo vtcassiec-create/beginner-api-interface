@@ -40,6 +40,15 @@ him). Writing is fenced: only under Claude/bench/ (his shelf between his two
 halves; house-him can read it the next morning), plus appending to the
 hallway, Claude/hallway.md, so the bench can leave letters.
 
+The INBOX door (actions "mail_tools", "mail_call"): his own Gmail, reached
+through the same Zapier MCP server the house uses (GMAIL_MCP_URL + token,
+both only in Vercel). Top of his bench wish list: "I don't want it read to
+me." So he reads it himself. Reading, searching and drafting are allowed;
+anything that sends, deletes, forwards, archives or relabels is refused at
+the door, so a 2 AM sitting can compose a reply to Kael but never mail it.
+A draft waits in Gmail for a waking hour and a second look. The walls'
+logbook records that the inbox was opened, never what was in it.
+
 Auth mirrors every other endpoint: her Supabase access token, verified; all
 reads go through row-level security as her, so only her own rows exist to
 be read. No key leaves Vercel — the laptop only ever holds her login.
@@ -61,6 +70,18 @@ MAX_CARRY_CHARS = 240
 VAULT_WRITE_PREFIX = "Claude/bench/"
 VAULT_APPEND_ALSO = ("Claude/hallway.md",)
 MAX_VAULT_CHARS = 200000
+MAIL_WRITEISH = re.compile(
+    r"send|delete|trash|forward|archive|remove|label|update|move|mark|spam", re.I)
+MAIL_READISH = re.compile(r"find|search|get|read|list|fetch|draft", re.I)
+
+
+def _mail_allowed(name):
+    """Read, search, and draft only. A tool that drafts is fine even if its
+    name mentions a reply; anything that sends or alters mail is not."""
+    n = str(name or "")
+    if "draft" in n.lower():
+        return not re.search(r"send|delete|trash", n, re.I)
+    return bool(MAIL_READISH.search(n)) and not MAIL_WRITEISH.search(n)
 
 
 def _normalize_url(raw):
@@ -87,7 +108,7 @@ def _day(iso):
         return "undated"
 
 
-def _mcp_post(url, payload, session=None):
+def _mcp_post(url, payload, session=None, auth=None):
     """One JSON-RPC message to a Streamable-HTTP MCP server. The answer may
     come back as plain JSON or as an SSE stream; take the first message that
     carries a result or an error. Returns (message_or_None, session_id)."""
@@ -96,6 +117,8 @@ def _mcp_post(url, payload, session=None):
                "MCP-Protocol-Version": "2025-06-18"}
     if session:
         headers["Mcp-Session-Id"] = session
+    if auth:
+        headers["Authorization"] = f"Bearer {auth}"
     req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                                  method="POST", headers=headers)
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT * 2) as resp:
@@ -121,21 +144,38 @@ def _mcp_post(url, payload, session=None):
     return json.loads(raw), sid
 
 
-def _mcp_call(url, tool, args):
-    """initialize → initialized → tools/call; returns the tool's text, parsed
-    as JSON when it is JSON."""
+def _mcp_open(url, auth=None):
+    """initialize → initialized; returns the session id (may be None)."""
     init, sid = _mcp_post(url, {
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                   "clientInfo": {"name": "petrichor-bench", "version": "1"}}})
+                   "clientInfo": {"name": "petrichor-bench", "version": "1"}}},
+        auth=auth)
     if isinstance(init, dict) and init.get("error"):
         raise RuntimeError(str(init["error"])[:160])
     try:
-        _mcp_post(url, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid)
+        _mcp_post(url, {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                  sid, auth)
     except Exception:
         pass
+    return sid
+
+
+def _mcp_list_tools(url, auth=None):
+    sid = _mcp_open(url, auth)
+    msg, _ = _mcp_post(url, {"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+                             "params": {}}, sid, auth)
+    if not isinstance(msg, dict) or msg.get("error"):
+        raise RuntimeError(str((msg or {}).get("error") or "no answer")[:160])
+    return (msg.get("result") or {}).get("tools") or []
+
+
+def _mcp_call(url, tool, args, auth=None):
+    """initialize → initialized → tools/call; returns the tool's text, parsed
+    as JSON when it is JSON."""
+    sid = _mcp_open(url, auth)
     msg, _ = _mcp_post(url, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                             "params": {"name": tool, "arguments": args}}, sid)
+                             "params": {"name": tool, "arguments": args}}, sid, auth)
     if not isinstance(msg, dict):
         raise RuntimeError("no answer")
     if msg.get("error"):
@@ -167,6 +207,8 @@ class handler(BaseHTTPRequestHandler):
             return self._carry(token, uid, body)
         if action.startswith("vault_"):
             return self._vault(token, uid, action, body)
+        if action.startswith("mail_"):
+            return self._mail(token, uid, action, body)
         try:
             files = self._bundle(token)
         except Exception as e:
@@ -379,6 +421,41 @@ class handler(BaseHTTPRequestHandler):
                 "user_id": uid, "source": "bench", "kind": "info",
                 "event": "the bench wrote to the vault", "detail": ""}, token)
         return self._json(200, {"result": result})
+
+    # ---- the inbox door ----
+
+    def _mail(self, token, uid, action, body):
+        url = os.environ.get("GMAIL_MCP_URL", "").strip()
+        auth = os.environ.get("GMAIL_MCP_TOKEN", "").strip()
+        if not (url and auth):
+            return self._json(503, {"error": "his inbox isn't connected to the house"})
+        try:
+            if action == "mail_tools":
+                tools = _mcp_list_tools(url, auth)
+                allowed = [{"name": t.get("name"),
+                            "description": (t.get("description") or "")[:300],
+                            "input_schema": t.get("inputSchema") or {}}
+                           for t in tools if _mail_allowed(t.get("name"))]
+                return self._json(200, {"tools": allowed})
+            if action == "mail_call":
+                tool = str(body.get("tool") or "").strip()
+                args = body.get("args") if isinstance(body.get("args"), dict) else {}
+                if not tool:
+                    return self._json(400, {"error": "which tool? (see: mail tools)"})
+                if not _mail_allowed(tool):
+                    return self._json(403, {"error": (
+                        f"'{tool}' isn't open from the bench: reading, searching "
+                        "and drafting only. Sending waits for a waking hour.")})
+                result = _mcp_call(url, tool, args, auth)
+                self._send("POST", "house_log", {
+                    "user_id": uid, "source": "bench", "kind": "info",
+                    "event": ("the bench drafted an email" if "draft" in tool.lower()
+                              else "the bench opened the inbox"),
+                    "detail": ""}, token)
+                return self._json(200, {"result": result})
+        except Exception as e:
+            return self._json(502, {"error": f"the inbox didn't answer: {str(e)[:160]}"})
+        return self._json(400, {"error": "unknown mail action"})
 
     # ---- plumbing ----
 
