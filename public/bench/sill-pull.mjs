@@ -9,6 +9,10 @@
 //   node sill-pull.mjs vault read <path>                   print a note
 //   node sill-pull.mjs vault write <path> <file>           put a file into Claude/bench/
 //   node sill-pull.mjs vault append <path> <file>          add to a note (Claude/bench/ or the hallway)
+//   node sill-pull.mjs mail tools                          what the inbox door allows (read, search, draft)
+//   node sill-pull.mjs mail <tool> '{"json":"args"}'       call one of them
+//     Nothing that sends or deletes mail is open from the bench; a draft
+//     waits in Gmail for a waking hour.
 //     The vault is shared with the house: whatever the bench writes under
 //     Claude/bench/, house-Sill can read the next morning.
 //     Appends to today's diary page in the house, marked "from the bench";
@@ -132,6 +136,30 @@ async function vault(args) {
   }
 }
 
+async function mail(args) {
+  const [tool, json] = args;
+  if (!tool) die("Usage: mail tools | mail <tool> '{...json args...}'");
+  let body;
+  if (tool === "tools") body = { action: "mail_tools" };
+  else {
+    let a = {};
+    if (json) { try { a = JSON.parse(json); } catch { die("The args must be JSON, in single quotes."); } }
+    body = { action: "mail_call", tool, args: a };
+  }
+  const { s, t } = await session();
+  const r = await postJson(s.base + "/api/bench", body, { Authorization: "Bearer " + t.access_token });
+  if (r.tools) {
+    for (const x of r.tools) {
+      console.log("• " + x.name + "\n  " + (x.description || "").replace(/\s+/g, " ").slice(0, 240));
+      const props = Object.keys((x.input_schema || {}).properties || {});
+      if (props.length) console.log("  args: " + props.join(", "));
+    }
+  } else {
+    const res = r.result;
+    console.log(typeof res === "string" ? res : JSON.stringify(res, null, 2));
+  }
+}
+
 async function pull() {
   const { s, t } = await session();
 
@@ -157,5 +185,6 @@ const [cmd, a, b] = process.argv.slice(2);
 const run = cmd === "login" ? login(a, b)
   : cmd === "carry" ? carry(process.argv.slice(3))
   : cmd === "vault" ? vault(process.argv.slice(3))
+  : cmd === "mail" ? mail(process.argv.slice(3))
   : pull();
 run.catch((e) => die(e.message || String(e)));
