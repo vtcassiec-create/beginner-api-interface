@@ -7846,19 +7846,19 @@ async function fizzProbe() {
 }
 
 // ---- The Fizz, spoken to directly ----
-// The probe settled it: the Fizz (Lovense model QB, firmware 06) answers OK to
-// exactly two words, "Vibrate:N;" and "Suck:N;" (N 0-20), and "unkown" to
-// everything else — including the Vibrate1/Vibrate2 the engine would send.
-// The engine has no way to say "Suck", so the house talks to the Fizz itself,
-// over the same Lovense channel, and registers it beside the engine's toys as
-// a two-motor device. Everything else in the house — compose, hold, chord,
-// ramps, the brake — sees an ordinary toy with two vibrate motors:
-//   motor 0 = "Suck"    (vibrate1 / suction)
-//   motor 1 = "Vibrate" (vibrate2 / tap)
+// The probe found the Fizz (Lovense model QB, firmware 06) answers OK to
+// "Vibrate:N;" (N 0-20) and "unkown" (its spelling) to the Vibrate1/Vibrate2
+// the engine sends, so the engine can't drive it. And Lovense's own page says
+// why the two heads felt the same: "TwinAir: one motor, two functions." The
+// tapping head's movement pushes air out of a chamber, which makes suction at
+// the OTHER head. So the Fizz is ONE motor; which sensation she gets is which
+// end she uses, not a command. The house talks to it directly over its
+// Lovense channel and registers it as an ordinary one-motor toy, so compose,
+// holds, ramps and the brake all just work.
 // Writes are queued and coalesced (one GATT write at a time; only the newest
-// level per head is sent), so a fast ramp can't jam the channel.
+// level is sent), so a fast ramp can't jam the channel.
 const FIZZ_INDEX = 9001;
-const FIZZ_HEADS = ["Suck", "Vibrate"];
+const FIZZ_HEADS = ["Vibrate"];
 let fizz = null;  // { dev, tx, pending: {word: level}, busy }
 function fizzSend(word, level) {
   if (!fizz) return Promise.resolve();
@@ -7887,7 +7887,7 @@ function fizzDevice() {
       set: (v) => fizzSend(word, v),
     });
   });
-  return { index: FIZZ_INDEX, name: "Fizz: suck+tap", features, direct: true };
+  return { index: FIZZ_INDEX, name: "Fizz", features, direct: true };
 }
 async function fizzConnect() {
   if (!navigator.bluetooth) return bpStatus("This browser can't do Bluetooth.");
@@ -7908,7 +7908,7 @@ async function fizzConnect() {
     if (!bpLib) bpLib = { DeviceOutput: { Vibrate: { percent: (v) => v } }, OutputType: { Vibrate: "Vibrate" } };
     bpDevices.set(FIZZ_INDEX, fizzDevice());
     renderBpDevices();
-    bpStatus("Fizz connected ♡ — Suck and Tap are separate heads.");
+    bpStatus("Fizz connected ♡ — one motor; the end she uses decides suck or tap.");
   } catch (e) {
     bpStatus("Fizz didn't connect: " + ((e && e.message) || e));
   }
@@ -7939,7 +7939,7 @@ function renderBpDevices() {
         const hb = document.createElement("button");
         hb.type = "button";
         hb.className = "ghost";
-        hb.textContent = d.direct ? (i === 0 ? "Suck" : "Tap") : `Head ${i + 1}`;
+        hb.textContent = `Head ${i + 1}`;
         hb.addEventListener("click", () => bpTestHead(d, i));
         row.appendChild(hb);
       });
@@ -8114,9 +8114,9 @@ async function bpTestHead(d, headIndex) {
 
 async function bpTestBuzz(device) {
   if (device && device.direct) {
-    bpStatus("both heads on…");
+    bpStatus("Fizz on…");
     await bpSetDevice(device, 0.5, "vibrate"); await bpSleep(2000); await bpSetDevice(device, 0, "vibrate");
-    return bpStatus(`${device.name}: buzzed ✓ (both heads)`);
+    return bpStatus(`${device.name}: buzzed ✓`);
   }
   // Surface the device's REAL API (method names + capabilities) so we know the
   // exact command this buttplug build wants — logged to the console and shown
