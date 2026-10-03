@@ -1541,6 +1541,11 @@ TOUCH_TOOLS_GUIDE = (
     "levels and rhythms. A call only replaces what's playing on the SAME motor; "
     "so a slow thrust underneath and a separate vibration line on top is two "
     "calls, one toy. On a thrusting motor, intensity IS the stroke rate.\n"
+    "- TWO HEADS: the Fizz has two heads, one that sucks and one that taps, "
+    "each its own line: output_type 'vibrate1' and 'vibrate2' (she'll tell "
+    "you which head is which; 'suction' and 'tap' are aliases once that's "
+    "confirmed). Plain 'vibrate' drives both heads together. A slow suction "
+    "under quick taps is two calls, like the Gravity's chord.\n"
     "- `save_pattern` / `forget_pattern` — keep a rhythm that landed in your "
     "songbook, or retire one.\n"
     "An action only happens if you CALL the matching tool — describing it in "
@@ -1708,7 +1713,7 @@ COMPOSE_TOUCH_TOOL = {
                     "required": ["intensity", "seconds"],
                 },
             },
-            "output_type": {"type": "string", "description": "The motor: vibrate (default), oscillate (= thrust/stroke), rotate. One phrase per motor; motors run independently.", "default": "vibrate"},
+            "output_type": {"type": "string", "description": "The motor: vibrate (default; all vibrate motors), vibrate1 / vibrate2 (one head of a two-headed toy like the Fizz), oscillate (= thrust/stroke), rotate. One phrase per motor; motors run independently.", "default": "vibrate"},
             "device": {
                 "type": "string",
                 "description": "Optional: aim at one toy by (part of) its name, from '# Connected right now'. Omit to play on all connected toys.",
@@ -1771,7 +1776,7 @@ HOLD_TOUCH_TOOL = {
             },
             "output_type": {
                 "type": "string",
-                "description": "The motor this hold owns: vibrate (default), oscillate (= thrust), rotate. Each motor holds independently.",
+                "description": "The motor this hold owns: vibrate (default), vibrate1 / vibrate2 (one head of a two-headed toy), oscillate (= thrust), rotate. Each motor holds independently.",
             },
         },
         "required": ["action"],
@@ -1788,6 +1793,11 @@ def _touch_channel(output_type):
         return "oscillate"
     if re.search(r"rot|spin|twirl", kind):
         return "rotate"
+    # Two-headed toys (the Fizz): each head is its own line.
+    if re.search(r"suck|suction|head ?1|vibrate ?1|motor ?1", kind):
+        return "vibrate1"
+    if re.search(r"tap|head ?2|vibrate ?2|motor ?2", kind):
+        return "vibrate2"
     return "vibrate"
 
 

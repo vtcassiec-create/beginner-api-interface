@@ -5816,7 +5816,7 @@ function focusAndSelect(id) {
   });
 }
 
-function flashToast(text, isError = false) {
+function flashToast(text, isError = false, sticky = false) {
   const el = $("toast");
   el.textContent = text;
   el.className = "toast" + (isError ? " error" : "");
@@ -5828,7 +5828,10 @@ function flashToast(text, isError = false) {
   if (el.parentNode !== target) target.appendChild(el);
   el.hidden = false;
   clearTimeout(flashToast._t);
-  flashToast._t = setTimeout(() => { el.hidden = true; }, 1500);
+  // Errors linger long enough to read (and screenshot); a sticky one stays
+  // until she taps it. Tapping any toast dismisses it.
+  el.onclick = () => { el.hidden = true; };
+  if (!sticky) flashToast._t = setTimeout(() => { el.hidden = true; }, isError ? 6000 : 1500);
 }
 
 // ---------- Core memories ----------
@@ -7510,6 +7513,8 @@ function holdLoopSteps(h) {
 }
 
 function holdKindWord(kind) {
+  if (kind === "Vibrate1") return "head 1";
+  if (kind === "Vibrate2") return "head 2";
   return kind === "Oscillate" ? "thrust" : kind === "Rotate" ? "spin" : "vibe";
 }
 
@@ -7563,7 +7568,7 @@ async function reconcileHold() {
   for (const row of rows) {
     if (!row || !row.active) continue;
     const outputType = row.output_type || "vibrate";
-    const kind = bpOutputKind(outputType);
+    const kind = bpChannel(outputType);
     if (seen.has(kind)) continue;  // two rows on one motor: first wins
     seen.add(kind);
     const target = Math.max(0, Math.min(1, Number(row.intensity) || 0));
@@ -7668,8 +7673,15 @@ async function bpConnect() {
     bpStatus("loading the device engine…");
     // No build step in this app, so pull the library + its in-browser WASM
     // engine straight from a CDN as ES modules.
-    const buttplug = await import("https://esm.sh/buttplug");
-    const wasm = await import("https://esm.sh/buttplug-wasm");
+    // PINNED. Unpinned imports silently picked up buttplug 5.0.2 (Sep 20,
+    // 2026) two days after the Gravity's chord was proven on these exact
+    // versions; a toy then crashed mid-connect with a runtime error. The
+    // engine moves only when we move it, on purpose, after a test.
+    const buttplug = await import("https://esm.sh/buttplug@5.0.1");
+    // Our own copy of the engine (public/vendor/buttplug/README.md): upstream
+    // 3.0.0 with one device-table entry retargeted so a Lovense Fizz ("QB")
+    // is recognized instead of panicking the engine mid-connect.
+    const wasm = await import("/vendor/buttplug/buttplug-wasm.mjs");
     bpLib = buttplug;  // keep the module so Test buzz can build output commands
 
     if (!bpClient) {
@@ -7727,66 +7739,104 @@ function renderBpDevices() {
     test.textContent = "Test buzz";
     test.addEventListener("click", () => bpTestBuzz(d));
     row.appendChild(test);
+    // Two vibrate motors (the Fizz: suction + tapping): one button per head,
+    // so she can tell us which is which.
+    const heads = bpMotors(d, "Vibrate");
+    if (heads.length >= 2) {
+      heads.forEach((_, i) => {
+        const hb = document.createElement("button");
+        hb.type = "button";
+        hb.className = "ghost";
+        hb.textContent = `Head ${i + 1}`;
+        hb.addEventListener("click", () => bpTestHead(d, i));
+        row.appendChild(hb);
+      });
+    }
     wrap.appendChild(row);
   }
 }
 
-// His output_type words → buttplug v4 output kinds. "Oscillate" is the
-// Gravity's stroke motor (buttplug's name for thrusting); he may reach for
-// any of the natural words, so match loosely. This is also the CHANNEL key:
-// "thrust", "stroke" and "oscillate" are one motor, not three holds.
-function bpOutputKind(outputType) {
-  const kind = String(outputType || "vibrate").toLowerCase();
-  if (/osc|thrust|stroke|pump/.test(kind)) return "Oscillate";
-  if (/rot|spin|twirl/.test(kind)) return "Rotate";
-  return "Vibrate";
+// His output_type words → a motor LINE. "Oscillate" is the Gravity's stroke
+// motor (buttplug's name for thrusting); he may reach for any natural word,
+// so match loosely. A HEAD number picks one motor of a kind on toys that have
+// two of them — the Fizz (one head sucks, one taps): "vibrate1"/"suction"
+// and "vibrate2"/"tap". Plain "vibrate" drives every vibrate motor at once.
+function bpParse(outputType) {
+  const t = String(outputType || "vibrate").toLowerCase();
+  if (/osc|thrust|stroke|pump/.test(t)) return { kind: "Oscillate", head: null };
+  if (/rot|spin|twirl/.test(t)) return { kind: "Rotate", head: null };
+  if (/suck|suction|head ?1|vibrate ?1|motor ?1/.test(t)) return { kind: "Vibrate", head: 0 };
+  if (/tap|head ?2|vibrate ?2|motor ?2/.test(t)) return { kind: "Vibrate", head: 1 };
+  return { kind: "Vibrate", head: null };
+}
+function bpOutputKind(outputType) { return bpParse(outputType).kind; }
+// The CHANNEL key holds and the hard stops use: "thrust", "stroke" and
+// "oscillate" are one line; "suction" and "vibrate1" are one line.
+function bpChannel(outputType) {
+  const p = bpParse(outputType);
+  return p.head == null ? p.kind : `${p.kind}${p.head + 1}`;
 }
 
-// Set an output level (0..1) on every connected toy at once, via the v4
-// generic-output call the Test buzz proved: runOutput(DeviceOutput.<Kind>.
-// percent(v)). The kind comes from the pattern's output_type — this is what
-// un-flattened the Gravity: before, EVERY output_type was sent as Vibrate,
-// so its oscillation motor was never addressed after touch went local. A toy
-// that lacks the requested motor falls back to vibrate rather than going
-// silent (so a Lush and a Gravity can share the same phrase).
+// The device's motors that carry an output kind, in index order.
+function bpMotors(d, kind) {
+  try {
+    const ot = (bpLib && bpLib.OutputType && bpLib.OutputType[kind]) || kind;
+    const fs = d.features ? [...d.features.values()] : [];
+    return fs.filter((f) => { try { return f.hasOutput(ot); } catch (_) { return false; } })
+      .sort((x, y) => x.index - y.index);
+  } catch (_) { return []; }
+}
+
+// Which motor lines on toy d a phrase of this output_type plays on. A head
+// number on a one-motor toy lands on its one motor (so "suction" still
+// reaches a Lush); a kind the toy lacks falls back to its vibrate motors (so a
+// Lush and a Gravity can share one phrase). Each line has its own key, so
+// ownership — and the chord — is per motor.
+function bpLines(d, outputType) {
+  const { kind, head } = bpParse(outputType);
+  for (const k of kind === "Vibrate" ? ["Vibrate"] : [kind, "Vibrate"]) {
+    const motors = bpMotors(d, k);
+    if (!motors.length) continue;
+    const pick = (k === kind && head != null)
+      ? [motors[Math.min(head, motors.length - 1)]]
+      : motors;
+    return pick.map((f) => ({ d, kind: k, feat: f, key: `${d.index}:${k}:${f.index}` }));
+  }
+  // No feature map (an older build): address the whole toy.
+  return [{ d, kind, feat: null, key: `${d.index}:${kind}` }];
+}
+
+// Set one motor line to a level (0..1), via the v4 generic-output call the
+// Test buzz proved: runOutput(DeviceOutput.<Kind>.percent(v)) — on the one
+// feature when we know it, so a level lands on the motor it names, only.
 // Each motor is its own line: the engine writes the Gravity's vibrate and
-// thrust as SEPARATE commands (buttplug's Lovense handler forms one command
-// per output), so setting one never resets the other. The house used to undo
-// that itself — an oscillate phrase ending at 0 also zeroed the vibe motor —
-// which is exactly why "everything I've ever done with it has been half the
-// device". It doesn't anymore: a level lands on the motor it names, only.
-async function bpSetDevice(d, level, outputType) {
+// thrust (and the Fizz's two heads) as SEPARATE commands, so setting one never
+// resets another — the house used to undo that itself, which is exactly why
+// "everything I've ever done with it has been half the device".
+async function bpSetLine(line, level) {
   const lib = bpLib || {};
   const v = Math.max(0, Math.min(1, Number(level) || 0));
-  const kind = bpOutputKind(outputType);
   try {
-    const out = lib.DeviceOutput && lib.DeviceOutput[kind];
-    const vib = lib.DeviceOutput && lib.DeviceOutput.Vibrate;
-    if (out) {
-      let p = d.runOutput(out.percent(v));
-      if (kind !== "Vibrate" && vib) {
-        // A toy WITHOUT the requested motor vibrates instead (so a Lush and
-        // a Gravity can share one phrase); that fallback carries its own
-        // zero, so nothing hums on after the phrase ends.
-        p = p.catch(() => d.runOutput(vib.percent(v)));
-      }
-      await p;
-    } else if (typeof d.vibrate === "function") {
-      await d.vibrate(v);
-    }
-    bpLevels.set(bpKey(d, kind), v);
-  } catch (e) { /* one toy hiccupping shouldn't stop the others */ }
+    const out = lib.DeviceOutput && lib.DeviceOutput[line.kind];
+    if (out && line.feat) await line.feat.runOutput(out.percent(v));
+    else if (out) await line.d.runOutput(out.percent(v));
+    else if (typeof line.d.vibrate === "function") await line.d.vibrate(v);
+    bpLevels.set(line.key, v);
+  } catch (e) { /* one motor hiccupping shouldn't stop the others */ }
 }
 
-// A direct set of ONE motor kind on EVERY toy — what the hard stops use.
-// Supersedes every in-flight phrase on that motor of every toy (the per-motor
-// tokens move on), so a zero here truly stills that line room-wide.
+async function bpSetDevice(d, level, outputType) {
+  await Promise.allSettled(bpLines(d, outputType).map((l) => bpSetLine(l, level)));
+}
+
+// A direct set of one output on EVERY toy — what the hard stops use.
+// Supersedes every in-flight phrase on those motors (their tokens move on),
+// so a zero here truly stills that line room-wide.
 async function bpSetAll(level, outputType) {
   const seq = ++bpPlaySeq;
-  const kind = bpOutputKind(outputType);
-  const all = [...bpDevices.values()];
-  for (const d of all) bpPlayTokens.set(bpKey(d, kind), seq);
-  await Promise.allSettled(all.map((d) => bpSetDevice(d, level, outputType)));
+  const lines = [...bpDevices.values()].flatMap((d) => bpLines(d, outputType));
+  for (const l of lines) bpPlayTokens.set(l.key, seq);
+  await Promise.allSettled(lines.map((l) => bpSetLine(l, level)));
 }
 
 // Which toys a phrase is aimed at: no target = all of them; a target matches
@@ -7799,34 +7849,33 @@ function bpResolveTargets(target) {
 }
 
 // Play a {intensity, seconds, ramp?} phrase over time — to every toy, or
-// (target) to just the toys whose name matches. Ownership is PER MOTOR, not
-// per toy (bpPlayTokens keyed by toy+kind): a new phrase supersedes the old
-// one on exactly the motors it touches. So a rhythm aimed at the Lush doesn't
-// cancel the Gemini's — and a vibration line on the Gravity doesn't cancel
-// the thrust line already running underneath it. Two calls, two motors, one
-// toy: a chord. Between steps a motor holds its last level (runOutput is
-// continuous), so overlapping phrases splice with no restart.
+// (target) to just the toys whose name matches. Ownership is PER MOTOR
+// (bpPlayTokens keyed by toy+kind+motor): a new phrase supersedes the old one
+// on exactly the motors it touches. So a rhythm aimed at the Lush doesn't
+// cancel the Gemini's; a vibration line on the Gravity doesn't cancel the
+// thrust underneath it; the Fizz's taps don't cancel its suction. Two calls,
+// two motors, one toy: a chord. Between steps a motor holds its last level
+// (runOutput is continuous), so overlapping phrases splice with no restart.
 // A step with `ramp: true` GLIDES from the motor's previous level to its own
-// over its seconds (linear, a tick every RAMP_TICK_MS) instead of stepping —
-// the curve he asked for in place of the staircase.
+// over its seconds (linear, a tick every RAMP_TICK_MS) instead of stepping.
 // Fire-and-forget by design: callers don't await the playback.
 let bpPlaySeq = 0;
-const bpPlayTokens = new Map();  // `${toy}:${kind}` -> seq of the phrase that owns it
-const bpLevels = new Map();      // `${toy}:${kind}` -> last level sent (ramps start here)
+const bpPlayTokens = new Map();  // line key -> seq of the phrase that owns it
+const bpLevels = new Map();      // line key -> last level sent (ramps start here)
 const RAMP_TICK_MS = 250;
-function bpKey(d, kind) { return `${d.index}:${kind}`; }
 const bpSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function bpPlay(steps, outputType, target) {
   if (!Array.isArray(steps)) return;
   const devs = bpResolveTargets(target);
   if (!devs.length) return;
-  const kind = bpOutputKind(outputType);
+  const lines = devs.flatMap((d) => bpLines(d, outputType));
+  if (!lines.length) return;
   const seq = ++bpPlaySeq;
-  for (const d of devs) bpPlayTokens.set(bpKey(d, kind), seq);
+  for (const l of lines) bpPlayTokens.set(l.key, seq);
   // A motor leaves this phrase when a newer one claims it or its toy drops.
-  const liveNow = () => devs.filter((d) =>
-    bpPlayTokens.get(bpKey(d, kind)) === seq && bpDevices.has(d.index));
-  let prev = bpLevels.get(bpKey(devs[0], kind)) || 0;
+  const liveNow = () => lines.filter((l) =>
+    bpPlayTokens.get(l.key) === seq && bpDevices.has(l.d.index));
+  let prev = bpLevels.get(lines[0].key) || 0;
   for (const s of steps) {
     const v = Math.max(0, Math.min(1, Number(s && s.intensity) || 0));
     const ms = Math.max(50, (Number(s && s.seconds) || 0.2) * 1000);
@@ -7836,7 +7885,7 @@ async function bpPlay(steps, outputType, target) {
         const live = liveNow();
         if (!live.length) return;
         const level = prev + (v - prev) * (i / ticks);
-        await Promise.allSettled(live.map((d) => bpSetDevice(d, level, outputType)));
+        await Promise.allSettled(live.map((l) => bpSetLine(l, level)));
         await bpSleep(RAMP_TICK_MS);
       }
       const rest = ms - ticks * RAMP_TICK_MS;
@@ -7844,10 +7893,28 @@ async function bpPlay(steps, outputType, target) {
     } else {
       const live = liveNow();
       if (!live.length) return;
-      await Promise.allSettled(live.map((d) => bpSetDevice(d, v, outputType)));
+      await Promise.allSettled(live.map((l) => bpSetLine(l, v)));
       await bpSleep(ms);
     }
     prev = v;
+  }
+}
+
+// Buzz ONE motor for a moment — so a two-headed toy can be mapped by feel:
+// tap "Head 1", notice whether it sucked or tapped.
+async function bpTestHead(d, headIndex) {
+  const motors = bpMotors(d, "Vibrate");
+  const f = motors[headIndex];
+  const out = bpLib && bpLib.DeviceOutput && bpLib.DeviceOutput.Vibrate;
+  if (!f || !out) return bpStatus("that toy has no such head.");
+  try {
+    bpStatus(`${d.name || "toy"}: head ${headIndex + 1} on…`);
+    await f.runOutput(out.percent(0.5));
+    await bpSleep(1500);
+    await f.runOutput(out.percent(0));
+    bpStatus(`${d.name || "toy"}: that was head ${headIndex + 1}.`);
+  } catch (e) {
+    bpStatus("head " + (headIndex + 1) + " didn't answer: " + ((e && e.message) || e));
   }
 }
 
@@ -9996,13 +10063,29 @@ function wireApp() {
 // (e.g. only on a particular device) makes a send/attach "just disappear"
 // with no clue; this turns that into a legible message.
 function installErrorSurfacing() {
+  // An error used to flash for a second and a half and vanish before anyone
+  // could read it ("it disappears so quickly"). Now it stays until tapped,
+  // shows in the Direct device panel when that's where it happened, and goes
+  // on the walls' logbook (the error's text only) so it can be read later.
+  const surface = (msg) => {
+    try { flashToast("⚠️ " + msg, true, true); } catch (_) {}
+    try { if ($("bp-status") && bpClient) bpStatus("error: " + msg); } catch (_) {}
+    try {
+      if (db && state.user) {
+        db.from("house_log").insert({
+          user_id: state.user.id, source: "app", kind: "error",
+          event: "the app hit an error", detail: String(msg).slice(0, 200),
+        }).then(() => {}, () => {});
+      }
+    } catch (_) {}
+  };
   window.addEventListener("error", (e) => {
-    try { flashToast("⚠️ " + (e.message || "unexpected error"), true); } catch (_) {}
+    const where = e.filename ? ` (${String(e.filename).split("/").pop()}:${e.lineno || "?"})` : "";
+    surface((e.message || "unexpected error") + where);
   });
   window.addEventListener("unhandledrejection", (e) => {
     const r = e.reason;
-    const msg = (r && (r.message || r.error_description || r.toString())) || "unexpected error";
-    try { flashToast("⚠️ " + msg, true); } catch (_) {}
+    surface((r && (r.message || r.error_description || r.toString())) || "unexpected error");
   });
 }
 
