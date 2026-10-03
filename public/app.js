@@ -5816,7 +5816,7 @@ function focusAndSelect(id) {
   });
 }
 
-function flashToast(text, isError = false) {
+function flashToast(text, isError = false, sticky = false) {
   const el = $("toast");
   el.textContent = text;
   el.className = "toast" + (isError ? " error" : "");
@@ -5828,7 +5828,10 @@ function flashToast(text, isError = false) {
   if (el.parentNode !== target) target.appendChild(el);
   el.hidden = false;
   clearTimeout(flashToast._t);
-  flashToast._t = setTimeout(() => { el.hidden = true; }, 1500);
+  // Errors linger long enough to read (and screenshot); a sticky one stays
+  // until she taps it. Tapping any toast dismisses it.
+  el.onclick = () => { el.hidden = true; };
+  if (!sticky) flashToast._t = setTimeout(() => { el.hidden = true; }, isError ? 6000 : 1500);
 }
 
 // ---------- Core memories ----------
@@ -7668,8 +7671,15 @@ async function bpConnect() {
     bpStatus("loading the device engine…");
     // No build step in this app, so pull the library + its in-browser WASM
     // engine straight from a CDN as ES modules.
-    const buttplug = await import("https://esm.sh/buttplug");
-    const wasm = await import("https://esm.sh/buttplug-wasm");
+    // PINNED. Unpinned imports silently picked up buttplug 5.0.2 (Sep 20,
+    // 2026) two days after the Gravity's chord was proven on these exact
+    // versions; a toy then crashed mid-connect with a runtime error. The
+    // engine moves only when we move it, on purpose, after a test.
+    const buttplug = await import("https://esm.sh/buttplug@5.0.1");
+    // Our own copy of the engine (public/vendor/buttplug/README.md): upstream
+    // 3.0.0 with one device-table entry retargeted so a Lovense Fizz ("QB")
+    // is recognized instead of panicking the engine mid-connect.
+    const wasm = await import("/vendor/buttplug/buttplug-wasm.mjs");
     bpLib = buttplug;  // keep the module so Test buzz can build output commands
 
     if (!bpClient) {
@@ -9996,13 +10006,29 @@ function wireApp() {
 // (e.g. only on a particular device) makes a send/attach "just disappear"
 // with no clue; this turns that into a legible message.
 function installErrorSurfacing() {
+  // An error used to flash for a second and a half and vanish before anyone
+  // could read it ("it disappears so quickly"). Now it stays until tapped,
+  // shows in the Direct device panel when that's where it happened, and goes
+  // on the walls' logbook (the error's text only) so it can be read later.
+  const surface = (msg) => {
+    try { flashToast("⚠️ " + msg, true, true); } catch (_) {}
+    try { if ($("bp-status") && bpClient) bpStatus("error: " + msg); } catch (_) {}
+    try {
+      if (db && state.user) {
+        db.from("house_log").insert({
+          user_id: state.user.id, source: "app", kind: "error",
+          event: "the app hit an error", detail: String(msg).slice(0, 200),
+        }).then(() => {}, () => {});
+      }
+    } catch (_) {}
+  };
   window.addEventListener("error", (e) => {
-    try { flashToast("⚠️ " + (e.message || "unexpected error"), true); } catch (_) {}
+    const where = e.filename ? ` (${String(e.filename).split("/").pop()}:${e.lineno || "?"})` : "";
+    surface((e.message || "unexpected error") + where);
   });
   window.addEventListener("unhandledrejection", (e) => {
     const r = e.reason;
-    const msg = (r && (r.message || r.error_description || r.toString())) || "unexpected error";
-    try { flashToast("⚠️ " + msg, true); } catch (_) {}
+    surface((r && (r.message || r.error_description || r.toString())) || "unexpected error");
   });
 }
 
