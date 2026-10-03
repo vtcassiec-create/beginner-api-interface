@@ -7761,6 +7761,89 @@ function bpShowLog() {
   box.hidden = false;
 }
 
+// ---- The Fizz probe ----
+// The engine connects the Fizz (model QB) but its per-motor words are wrong:
+// the toy answers "unknown,Vibrate1:10;". Nobody has published the Fizz's
+// commands yet, so we ask the toy. This opens the toy's own Lovense channel
+// directly (the same one the engine uses), sends each candidate at a gentle
+// level for a second, records the toy's reply, and zeroes it again. A reply
+// that isn't "unknown" marks a word the Fizz speaks; what she FEELS tells us
+// which head it moved.
+const FIZZ_SERVICE = "51420001-0023-4bd4-bbd5-a6920e4c5653";
+const FIZZ_TX = "51420002-0023-4bd4-bbd5-a6920e4c5653";
+const FIZZ_RX = "51420003-0023-4bd4-bbd5-a6920e4c5653";
+const FIZZ_PROBES = [
+  ["Vibrate:5;", "Vibrate:0;"],
+  ["Suction:5;", "Suction:0;"],
+  ["Suck:5;", "Suck:0;"],
+  ["Sucking:5;", "Sucking:0;"],
+  ["Tap:5;", "Tap:0;"],
+  ["Tapping:5;", "Tapping:0;"],
+  ["Pulse:5;", "Pulse:0;"],
+  ["Air:Level:2;", "Air:Level:0;"],
+  ["Pump:2;", "Pump:0;"],
+  ["Thrusting:5;", "Thrusting:0;"],
+  ["Rotate:5;", "Rotate:0;"],
+  ["Fingering:5;", "Fingering:0;"],
+  ["Oscillate:5;", "Oscillate:0;"],
+  ["Mply:5:0;", "Mply:0:0;"],
+  ["Mply:0:5;", "Mply:0:0;"],
+  ["Vibrate1:5;", "Vibrate1:0;"],
+  ["Vibrate2:5;", "Vibrate2:0;"],
+];
+async function fizzProbe() {
+  const out = $("fizz-probe-out");
+  const say = (t) => { if (out) { out.hidden = false; out.textContent = t; } };
+  if (!navigator.bluetooth) return say("This browser can't do Bluetooth.");
+  let dev, server;
+  try {
+    dev = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "LVS-" }], optionalServices: [FIZZ_SERVICE] });
+    server = dev.gatt.connected ? dev.gatt : await dev.gatt.connect();
+  } catch (e) { return say("Couldn't open the toy: " + ((e && e.message) || e)); }
+  let tx, rx;
+  try {
+    const svc = await server.getPrimaryService(FIZZ_SERVICE);
+    tx = await svc.getCharacteristic(FIZZ_TX);
+    rx = await svc.getCharacteristic(FIZZ_RX);
+    await rx.startNotifications();
+  } catch (e) { return say("The toy's channel didn't open: " + ((e && e.message) || e)); }
+  let last = "";
+  const onNote = (ev) => {
+    try { last += new TextDecoder().decode(ev.target.value); } catch (_) {}
+  };
+  rx.addEventListener("characteristicvaluechanged", onNote);
+  const send = async (cmd, waitMs) => {
+    last = "";
+    await tx.writeValue(new TextEncoder().encode(cmd));
+    await bpSleep(waitMs);
+    return last.trim() || "(no reply)";
+  };
+  const lines = [];
+  try {
+    lines.push("DeviceType; → " + await send("DeviceType;", 600));
+    lines.push("Battery; → " + await send("Battery;", 600));
+    say(lines.join("\n") + "\n\ntrying commands… a gentle second each");
+    const began = Date.now();
+    for (const [on, off] of FIZZ_PROBES) {
+      // Her brake outranks the experiment.
+      if (safewordPulledAt > began) { lines.push("stopped — the brake was pulled."); break; }
+      const reply = await send(on, 1200);
+      await send(off, 300);
+      const ok = !/unknown|^ER|err/i.test(reply) && reply !== "(no reply)";
+      lines.push((ok ? "✅ " : "·  ") + on + " → " + reply);
+      say(lines.join("\n") + "\n\n…");
+    }
+  } catch (e) {
+    lines.push("stopped: " + ((e && e.message) || e));
+  } finally {
+    try { await tx.writeValue(new TextEncoder().encode("Vibrate:0;")); } catch (_) {}
+    rx.removeEventListener("characteristicvaluechanged", onNote);
+  }
+  lines.push("\nDone. ✅ marks words the Fizz answered without \"unknown\".");
+  say(lines.join("\n"));
+}
+
 function renderBpDevices() {
   refreshBrakeButton();
   const wrap = $("bp-devices");
@@ -9935,6 +10018,11 @@ function wireApp() {
     catch (_) { flashToast("Couldn't copy — a screenshot works too.", true); }
   });
   $("bp-log-show")?.addEventListener("click", bpShowLog);
+  $("fizz-probe-btn")?.addEventListener("click", fizzProbe);
+  $("fizz-probe-copy")?.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText($("fizz-probe-out").textContent || ""); flashToast("Probe results copied ♡"); }
+    catch (_) { flashToast("Couldn't copy — a screenshot works too.", true); }
+  });
 
   // The brake's big pedal.
   const brake = $("brake-btn");

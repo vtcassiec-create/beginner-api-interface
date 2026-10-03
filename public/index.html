@@ -922,6 +922,12 @@
         <div id="bp-status" class="muted small">Not connected.</div>
         <div id="bp-devices" class="bp-devices"></div>
         <button type="button" id="bp-log-show" class="linklike small">engine log</button>
+        <div class="fizz-probe">
+          <button type="button" id="fizz-probe-btn" class="ghost small">🧪 Probe the Fizz's commands</button>
+          <p class="muted small">Tries a list of command words on the Fizz, gently, one second each, and shows which ones it understands. Hold it in your hand and notice what each ✅ does.</p>
+          <pre id="fizz-probe-out" class="bp-log" hidden></pre>
+          <button type="button" id="fizz-probe-copy" class="ghost small">📋 Copy probe results</button>
+        </div>
         <div id="bp-log-wrap" hidden>
           <p class="muted small">What the device engine said last. Copy it and paste it to Lintel.</p>
           <pre id="bp-log" class="bp-log"></pre>
