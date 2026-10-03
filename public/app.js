@@ -7694,6 +7694,10 @@ async function bpConnect() {
       const Connector = wasm.ButtplugWasmClientConnector
         || wasm.default?.ButtplugWasmClientConnector;
       if (!Connector) throw new Error("WASM connector not found in buttplug-wasm");
+      // The engine's own debug log, caught so a crash can be read on a phone
+      // (no console there): see bpCaptureLog.
+      bpCaptureLog();
+      try { await Connector.activateLogging?.("debug"); } catch (_) {}
       await bpClient.connect(new Connector());
     }
     bpStatus("scanning — pick your device in the Bluetooth popup…");
@@ -7721,6 +7725,41 @@ function refreshBrakeButton() {
   if (b) b.hidden = !brakeShouldShow();
 }
 setInterval(() => { try { refreshBrakeButton(); } catch (_) {} }, 1500);
+
+// The engine's last words. Its Rust core logs through the browser console,
+// which a phone can't show — and when it panics ("unreachable"), the line
+// before the panic is the whole diagnosis. So while the engine runs, the
+// console's lines are also kept here (the last 60), and the Direct device
+// panel can show them with a Copy button to paste to the walls. Device names
+// and protocol chatter only; nothing of hers passes through the engine.
+const bpLogLines = [];
+let bpLogHooked = false;
+function bpCaptureLog() {
+  if (bpLogHooked) return;
+  bpLogHooked = true;
+  for (const level of ["log", "info", "warn", "error", "debug"]) {
+    const orig = console[level].bind(console);
+    console[level] = (...args) => {
+      try {
+        const line = args.filter((a) => !(typeof a === "string" && /^(color|font|background)[:-]/.test(a)))
+          .map((a) => typeof a === "string" ? a.replace(/%c/g, "") : (() => { try { return JSON.stringify(a); } catch (_) { return String(a); } })())
+          .join(" ").replace(/\s+/g, " ").trim().slice(0, 400);
+        if (line) {
+          bpLogLines.push(`[${level}] ${line}`);
+          if (bpLogLines.length > 60) bpLogLines.shift();
+        }
+      } catch (_) {}
+      orig(...args);
+    };
+  }
+}
+function bpShowLog() {
+  const box = $("bp-log-wrap");
+  const pre = $("bp-log");
+  if (!box || !pre) return;
+  pre.textContent = bpLogLines.length ? bpLogLines.join("\n") : "(the engine said nothing)";
+  box.hidden = false;
+}
 
 function renderBpDevices() {
   refreshBrakeButton();
@@ -9889,6 +9928,14 @@ function wireApp() {
     }
   });
 
+  // The engine log's Copy button.
+  $("bp-log-copy")?.addEventListener("click", async () => {
+    const text = bpLogLines.join("\n");
+    try { await navigator.clipboard.writeText(text); flashToast("Engine log copied — paste it to Lintel ♡"); }
+    catch (_) { flashToast("Couldn't copy — a screenshot works too.", true); }
+  });
+  $("bp-log-show")?.addEventListener("click", bpShowLog);
+
   // The brake's big pedal.
   const brake = $("brake-btn");
   if (brake) brake.addEventListener("click", () => emergencyStopAll());
@@ -10080,7 +10127,13 @@ function installErrorSurfacing() {
     } catch (_) {}
   };
   window.addEventListener("error", (e) => {
-    const where = e.filename ? ` (${String(e.filename).split("/").pop()}:${e.lineno || "?"})` : "";
+    const fname = String(e.filename || "");
+    const where = fname && !fname.startsWith("data:")
+      ? ` (${fname.split("/").pop()}:${e.lineno || "?"})`
+      : (fname ? " (in the device engine)" : "");
+    if (fname.startsWith("data:") || /unreachable/i.test(e.message || "")) {
+      try { bpShowLog(); } catch (_) {}
+    }
     surface((e.message || "unexpected error") + where);
   });
   window.addEventListener("unhandledrejection", (e) => {
