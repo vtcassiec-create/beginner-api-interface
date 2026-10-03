@@ -7830,7 +7830,8 @@ async function fizzProbe() {
       if (safewordPulledAt > began) { lines.push("stopped — the brake was pulled."); break; }
       const reply = await send(on, 1200);
       await send(off, 300);
-      const ok = !/unknown|^ER|err/i.test(reply) && reply !== "(no reply)";
+      // The Fizz's firmware spells it "unkown"; match both.
+      const ok = /^OK/i.test(reply);
       lines.push((ok ? "✅ " : "·  ") + on + " → " + reply);
       say(lines.join("\n") + "\n\n…");
     }
@@ -7842,6 +7843,75 @@ async function fizzProbe() {
   }
   lines.push("\nDone. ✅ marks words the Fizz answered without \"unknown\".");
   say(lines.join("\n"));
+}
+
+// ---- The Fizz, spoken to directly ----
+// The probe settled it: the Fizz (Lovense model QB, firmware 06) answers OK to
+// exactly two words, "Vibrate:N;" and "Suck:N;" (N 0-20), and "unkown" to
+// everything else — including the Vibrate1/Vibrate2 the engine would send.
+// The engine has no way to say "Suck", so the house talks to the Fizz itself,
+// over the same Lovense channel, and registers it beside the engine's toys as
+// a two-motor device. Everything else in the house — compose, hold, chord,
+// ramps, the brake — sees an ordinary toy with two vibrate motors:
+//   motor 0 = "Suck"    (vibrate1 / suction)
+//   motor 1 = "Vibrate" (vibrate2 / tap)
+// Writes are queued and coalesced (one GATT write at a time; only the newest
+// level per head is sent), so a fast ramp can't jam the channel.
+const FIZZ_INDEX = 9001;
+const FIZZ_HEADS = ["Suck", "Vibrate"];
+let fizz = null;  // { dev, tx, pending: {word: level}, busy }
+function fizzSend(word, level) {
+  if (!fizz) return Promise.resolve();
+  fizz.pending[word] = Math.max(0, Math.min(20, Math.round(level * 20)));
+  return fizzPump();
+}
+async function fizzPump() {
+  if (!fizz || fizz.busy) return;
+  fizz.busy = true;
+  try {
+    while (fizz && Object.keys(fizz.pending).length) {
+      const [word, n] = Object.entries(fizz.pending)[0];
+      delete fizz.pending[word];
+      try { await fizz.tx.writeValue(new TextEncoder().encode(`${word}:${n};`)); }
+      catch (e) { await bpSleep(60); }
+    }
+  } finally { if (fizz) fizz.busy = false; }
+}
+function fizzDevice() {
+  const features = new Map();
+  FIZZ_HEADS.forEach((word, i) => {
+    features.set(i, {
+      index: i, direct: true, word,
+      hasOutput: (t) => String(t) === "Vibrate"
+        || (bpLib && bpLib.OutputType && t === bpLib.OutputType.Vibrate),
+      set: (v) => fizzSend(word, v),
+    });
+  });
+  return { index: FIZZ_INDEX, name: "Fizz: suck+tap", features, direct: true };
+}
+async function fizzConnect() {
+  if (!navigator.bluetooth) return bpStatus("This browser can't do Bluetooth.");
+  try {
+    bpStatus("pick the Fizz (LVS-…) in the Bluetooth popup…");
+    const dev = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "LVS-" }], optionalServices: [FIZZ_SERVICE] });
+    const server = dev.gatt.connected ? dev.gatt : await dev.gatt.connect();
+    const svc = await server.getPrimaryService(FIZZ_SERVICE);
+    const tx = await svc.getCharacteristic(FIZZ_TX);
+    fizz = { dev, tx, pending: {}, busy: false };
+    dev.addEventListener("gattserverdisconnected", () => {
+      fizz = null; bpDevices.delete(FIZZ_INDEX); renderBpDevices();
+      bpStatus("the Fizz disconnected.");
+    });
+    // The bp layer reads levels through its own DeviceOutput; give it a
+    // minimal one if the engine was never loaded.
+    if (!bpLib) bpLib = { DeviceOutput: { Vibrate: { percent: (v) => v } }, OutputType: { Vibrate: "Vibrate" } };
+    bpDevices.set(FIZZ_INDEX, fizzDevice());
+    renderBpDevices();
+    bpStatus("Fizz connected ♡ — Suck and Tap are separate heads.");
+  } catch (e) {
+    bpStatus("Fizz didn't connect: " + ((e && e.message) || e));
+  }
 }
 
 function renderBpDevices() {
@@ -7869,7 +7939,7 @@ function renderBpDevices() {
         const hb = document.createElement("button");
         hb.type = "button";
         hb.className = "ghost";
-        hb.textContent = `Head ${i + 1}`;
+        hb.textContent = d.direct ? (i === 0 ? "Suck" : "Tap") : `Head ${i + 1}`;
         hb.addEventListener("click", () => bpTestHead(d, i));
         row.appendChild(hb);
       });
@@ -7939,6 +8009,7 @@ async function bpSetLine(line, level) {
   const lib = bpLib || {};
   const v = Math.max(0, Math.min(1, Number(level) || 0));
   try {
+    if (line.feat && line.feat.direct) { await line.feat.set(v); bpLevels.set(line.key, v); return; }
     const out = lib.DeviceOutput && lib.DeviceOutput[line.kind];
     if (out && line.feat) await line.feat.runOutput(out.percent(v));
     else if (out) await line.d.runOutput(out.percent(v));
@@ -8028,12 +8099,13 @@ async function bpTestHead(d, headIndex) {
   const motors = bpMotors(d, "Vibrate");
   const f = motors[headIndex];
   const out = bpLib && bpLib.DeviceOutput && bpLib.DeviceOutput.Vibrate;
-  if (!f || !out) return bpStatus("that toy has no such head.");
+  if (!f || (!out && !f.direct)) return bpStatus("that toy has no such head.");
+  const set = (v) => f.direct ? f.set(v) : f.runOutput(out.percent(v));
   try {
-    bpStatus(`${d.name || "toy"}: head ${headIndex + 1} on…`);
-    await f.runOutput(out.percent(0.5));
-    await bpSleep(1500);
-    await f.runOutput(out.percent(0));
+    bpStatus(`${d.name || "toy"}: head ${headIndex + 1}${f.word ? ` (${f.word})` : ""} on…`);
+    await set(0.5);
+    await bpSleep(2000);
+    await set(0);
     bpStatus(`${d.name || "toy"}: that was head ${headIndex + 1}.`);
   } catch (e) {
     bpStatus("head " + (headIndex + 1) + " didn't answer: " + ((e && e.message) || e));
@@ -8041,6 +8113,11 @@ async function bpTestHead(d, headIndex) {
 }
 
 async function bpTestBuzz(device) {
+  if (device && device.direct) {
+    bpStatus("both heads on…");
+    await bpSetDevice(device, 0.5, "vibrate"); await bpSleep(2000); await bpSetDevice(device, 0, "vibrate");
+    return bpStatus(`${device.name}: buzzed ✓ (both heads)`);
+  }
   // Surface the device's REAL API (method names + capabilities) so we know the
   // exact command this buttplug build wants — logged to the console and shown
   // in the status line if nothing buzzes.
@@ -10019,6 +10096,7 @@ function wireApp() {
   });
   $("bp-log-show")?.addEventListener("click", bpShowLog);
   $("fizz-probe-btn")?.addEventListener("click", fizzProbe);
+  $("fizz-connect-btn")?.addEventListener("click", fizzConnect);
   $("fizz-probe-copy")?.addEventListener("click", async () => {
     try { await navigator.clipboard.writeText($("fizz-probe-out").textContent || ""); flashToast("Probe results copied ♡"); }
     catch (_) { flashToast("Couldn't copy — a screenshot works too.", true); }
