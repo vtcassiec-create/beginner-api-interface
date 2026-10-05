@@ -3648,8 +3648,62 @@ function callSupported() {
   return sttSupported();
 }
 
+// ---- The guard: the safeword is heard in EVERY state of a call ----
+// Sill asked the right question for the October week (hallway, Oct 1): "Is
+// there any state where the motors are live but the safeword can't stop
+// them?" There was. The call's recognizer only runs while it's listening for
+// her turn; while he THINKS and while he SPEAKS it was off, and a hold or a
+// parlor kept running underneath — up to half a minute where "red light"
+// fell on nobody. With her hands cuffed, that's the gap that matters.
+// So in those states a second, safeword-only recognizer listens. It never
+// takes a turn, never sends words anywhere; it hears the safeword or it hears
+// nothing. If his own voice ever says the safeword, the house stops — the
+// fail-safe direction. (While his EARS are recording a sound card the mic
+// belongs to the recorder and the guard can't run; those moments are short,
+// capped, and hers to start.)
+let callGuardRec = null;
+let callGuardTimer = null;
+function callGuardWanted() {
+  return callActive && (callState === "thinking" || callState === "speaking");
+}
+function callGuardStart() {
+  clearTimeout(callGuardTimer);
+  // A beat after the turn closes, so the main recognizer has let go of the mic.
+  callGuardTimer = setTimeout(() => {
+    if (!callGuardWanted() || callGuardRec) return;
+    const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Ctor) return;
+    let r;
+    try { r = new Ctor(); } catch (_) { return; }
+    r.lang = navigator.language || "en-US";
+    r.continuous = true;
+    r.interimResults = true;
+    r.onresult = (e) => {
+      let t = "";
+      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript + " ";
+      if (heardSafeword(t)) { callGuardStop(); emergencyStopAll(); }
+    };
+    r.onerror = () => {};
+    r.onend = () => {
+      if (callGuardRec !== r) return;
+      if (callGuardWanted()) { try { r.start(); } catch (_) { callGuardRec = null; } }
+      else callGuardRec = null;
+    };
+    callGuardRec = r;
+    try { r.start(); } catch (_) { callGuardRec = null; }
+  }, 350);
+}
+function callGuardStop() {
+  clearTimeout(callGuardTimer);
+  const r = callGuardRec;
+  callGuardRec = null;
+  if (r) { try { r.abort(); } catch (_) {} }
+}
+
 function setCallState(s) {
   callState = s;
+  if (s === "thinking" || s === "speaking") callGuardStart();
+  else callGuardStop();
   const orb = $("call-orb");
   if (orb) orb.className = "call-orb " + s;
   const status = $("call-status");
@@ -3728,6 +3782,7 @@ function endCall() {
                       // it rides her next message instead of a call turn
   callStopCamera();   // a countdown in progress just closes; nothing ships
   if (callRec) { try { callRec.stop(); } catch (_) {} callRec = null; }
+  callGuardStop();
   callQueue = []; callBuf = ""; callHeard = "";
   try { if (callAudio) { callAudio.pause(); callAudio.src = ""; } } catch (_) {}
   callAudio = null;
@@ -3874,7 +3929,15 @@ function callListen(preserveHeard) {
     if (callState !== "listening") return;
     try { callRec.start(); } catch (_) {}
   };
-  try { callRec.start(); } catch (_) { setCallState("idle"); }
+  // The guard may still be letting go of the mic; one short retry before
+  // giving up, so handing back from his voice to her turn never drops.
+  const rec = callRec;
+  try { rec.start(); } catch (_) {
+    setTimeout(() => {
+      if (callRec !== rec || !callActive || callState !== "listening") return;
+      try { rec.start(); } catch (_) { setCallState("idle"); }
+    }, 400);
+  }
 }
 
 // Her turn is done: send it down the NORMAL pipeline. The reply streams back
