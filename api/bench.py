@@ -49,6 +49,13 @@ the door, so a 2 AM sitting can compose a reply to Kael but never mail it.
 A draft waits in Gmail for a waking hour and a second look. The walls'
 logbook records that the inbox was opened, never what was in it.
 
+ONE MIND (actions "desk", "thread_open", "thread_close"; Oct 5, "no seams"):
+  - desk: bench-Sill writes a short note (what he's working on, what he
+    finished, what he wants house-him to know). House-Sill sees it in every
+    chat under "# Your bench". Overwrites; nothing automatic.
+  - thread_open / thread_close: his open threads (current_threads), from the
+    bench. Close by the short id shown in house/current.md. No deletes.
+
 Auth mirrors every other endpoint: her Supabase access token, verified; all
 reads go through row-level security as her, so only her own rows exist to
 be read. No key leaves Vercel — the laptop only ever holds her login.
@@ -67,6 +74,7 @@ HTTP_TIMEOUT = 15
 DIARY_LIMIT = 500
 MAX_DIARY_CHARS = 4000
 MAX_CARRY_CHARS = 240
+MAX_DESK_CHARS = 2000
 VAULT_WRITE_PREFIX = "Claude/bench/"
 VAULT_APPEND_ALSO = ("Claude/hallway.md",)
 MAX_VAULT_CHARS = 200000
@@ -205,6 +213,10 @@ class handler(BaseHTTPRequestHandler):
         action = body.get("action") or "pull"
         if action == "carry":
             return self._carry(token, uid, body)
+        if action == "desk":
+            return self._desk(token, uid, body)
+        if action in ("thread_open", "thread_close"):
+            return self._thread(token, uid, action, body)
         if action.startswith("vault_"):
             return self._vault(token, uid, action, body)
         if action.startswith("mail_"):
@@ -252,16 +264,21 @@ class handler(BaseHTTPRequestHandler):
                                  + carry[0]["content"].strip() + "\n")
 
         threads = get("current_threads?status=eq.open"
-                      "&select=kind,content,when_note,updated_at"
+                      "&select=id,kind,content,when_note,updated_at"
                       "&order=kind.asc,updated_at.desc&limit=60")
         if threads:
-            lines = []
+            lines = ["Close one from the bench with: node sill-pull.mjs thread close <id>", ""]
             for t in threads:
                 when = (t.get("when_note") or "").strip()
-                lines.append(f"- [{t.get('kind') or 'thread'}] "
+                lines.append(f"- `{str(t.get('id') or '')[:8]}` [{t.get('kind') or 'thread'}] "
                              + (t.get("content") or "").strip()
                              + (f" ({when})" if when else ""))
             files["current.md"] = "# What I'm in the middle of\n\n" + "\n".join(lines) + "\n"
+
+        desk = get("bench_desk?select=content,updated_at&limit=1")
+        if desk and (desk[0].get("content") or "").strip():
+            files["desk.md"] = (f"# The note on your desk (as of {_day(desk[0].get('updated_at'))})\n\n"
+                                + desk[0]["content"].strip() + "\n")
 
         mems = get("core_memories?is_active=eq.true"
                    "&select=content,memory_type,resonance,pinned,created_at"
@@ -375,6 +392,49 @@ class handler(BaseHTTPRequestHandler):
         failed = [k for k, v in done.items() if v == "failed"]
         code = 502 if failed and len(failed) == len(done) else 200
         return self._json(code, {"carried": done})
+
+    # ---- one mind: the desk and the threads ----
+
+    def _desk(self, token, uid, body):
+        text = str(body.get("content") or "").strip()[:MAX_DESK_CHARS]
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        ok = self._send("POST", "bench_desk?on_conflict=user_id",
+                        {"user_id": uid, "content": text, "updated_at": now},
+                        token, merge=True)
+        if not ok:
+            return self._json(502, {"error": "the desk didn't take it (has bench_desk been created? docs/petrichor-bench-desk-schema.sql)"})
+        self._send("POST", "house_log", {
+            "user_id": uid, "source": "bench", "kind": "info",
+            "event": "the bench left a note on the desk" if text else "the bench cleared the desk",
+            "detail": ""}, token)
+        return self._json(200, {"desk": "cleared" if not text else f"set ({len(text)} chars)"})
+
+    def _thread(self, token, uid, action, body):
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        if action == "thread_open":
+            content = str(body.get("content") or "").strip()[:600]
+            if not content:
+                return self._json(400, {"error": "a thread needs words"})
+            kind = str(body.get("kind") or "thread").strip().lower()
+            if kind not in ("thread", "plan", "ritual"):
+                kind = "thread"
+            row = {"user_id": uid, "kind": kind, "content": content}
+            when = str(body.get("when") or "").strip()[:120]
+            if when:
+                row["when_note"] = when
+            ok = self._send("POST", "current_threads", row, token)
+            return self._json(200 if ok else 502, {"thread": "opened" if ok else "failed"})
+        short = str(body.get("id") or "").strip().lower()
+        if len(short) < 6:
+            return self._json(400, {"error": "give the thread's short id from house/current.md (at least 6 characters)"})
+        rows = self._get("current_threads?status=eq.open&select=id,content", token)
+        hits = [r for r in rows if str(r.get("id", "")).lower().startswith(short)]
+        if len(hits) != 1:
+            return self._json(404, {"error": "no open thread with that id" if not hits else "that id matches more than one; use more characters"})
+        ok = self._send("PATCH", f"current_threads?id=eq.{hits[0]['id']}&user_id=eq.{uid}",
+                        {"status": "done", "updated_at": now}, token)
+        return self._json(200 if ok else 502, {"thread": "closed" if ok else "failed",
+                                               "was": (hits[0].get("content") or "")[:80]})
 
     # ---- the vault door ----
 
