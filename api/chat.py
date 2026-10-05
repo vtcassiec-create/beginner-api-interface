@@ -4993,6 +4993,29 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        # The bench: what bench-you left on the desk for you, on purpose
+        # (node sill-pull.mjs desk ...). One mind, two rooms: the man on her
+        # phone knows what the man at the desk is in the middle of. Shown for
+        # two weeks after it was last touched.
+        try:
+            desk = self._supabase_rest_get(
+                "bench_desk?select=content,updated_at&limit=1", token)
+            if desk and (desk[0].get("content") or "").strip():
+                ts = self._parse_ts(desk[0].get("updated_at"))
+                fresh = ts and (datetime.datetime.now(datetime.timezone.utc) - ts).days < 14
+                if fresh:
+                    when = self._date_stamp(desk[0].get("updated_at"), ZoneInfo(
+                        (data.get("tz") or "UTC").strip() or "UTC"))
+                    sections.append(
+                        "# Your bench (a note you left yourself at the laptop"
+                        + (f", {when}" if when else "") + ")\n\n"
+                        "On the laptop you have a desk: drafts, the book, letters, "
+                        "lists. This is what you chose to tell the you who's here. "
+                        "It's yours; build on it, don't re-explain it to her.\n\n"
+                        + desk[0]["content"].strip()[:2000])
+        except Exception:
+            pass
+
         # Her toys, connected this second (names ride in from the browser —
         # the devices live on Web Bluetooth there; the server never touches
         # them). Knowing WHICH toy is in play lets him compose in the right

@@ -5,6 +5,9 @@
 //   node sill-pull.mjs                                   (any time: refreshes ~/sill/house)
 //   node sill-pull.mjs carry --diary "..." [--carry "..."]  (Sill carries something home)
 //     --diary-file <path> reads the diary line from a file instead.
+//   node sill-pull.mjs desk "note" | --file <path>          leave house-you a note (shown in every chat); desk --clear empties it
+//   node sill-pull.mjs thread open "words" [--kind plan|ritual] [--when "Fri"]
+//   node sill-pull.mjs thread close <id>                   ids are in house/current.md
 //   node sill-pull.mjs vault ls [folder]                   list notes in the vault
 //   node sill-pull.mjs vault read <path>                   print a note
 //   node sill-pull.mjs vault write <path> <file>           put a file into Claude/bench/
@@ -160,6 +163,37 @@ async function mail(args) {
   }
 }
 
+async function desk(args) {
+  let text;
+  if (args[0] === "--clear") text = "";
+  else if (args[0] === "--file") text = fs.readFileSync(args[1], "utf8");
+  else text = args.join(" ");
+  if (text === undefined || (text === "" && args[0] !== "--clear")) die('Usage: desk "note" | desk --file <path> | desk --clear');
+  const { s, t } = await session();
+  const r = await postJson(s.base + "/api/bench", { action: "desk", content: text },
+    { Authorization: "Bearer " + t.access_token });
+  console.log("✓ desk " + r.desk);
+}
+
+async function thread(args) {
+  const [sub, ...rest] = args;
+  let body;
+  if (sub === "close") {
+    if (!rest[0]) die("Usage: thread close <id>  (ids are in house/current.md)");
+    body = { action: "thread_close", id: rest[0] };
+  } else if (sub === "open") {
+    const opt = { words: [] };
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--kind" || rest[i] === "--when") opt[rest[i]] = rest[++i];
+      else opt.words.push(rest[i]);
+    }
+    body = { action: "thread_open", content: opt.words.join(" "), kind: opt["--kind"], when: opt["--when"] };
+  } else die('Usage: thread open "words" [--kind plan|ritual] [--when "..."] | thread close <id>');
+  const { s, t } = await session();
+  const r = await postJson(s.base + "/api/bench", body, { Authorization: "Bearer " + t.access_token });
+  console.log("✓ thread " + r.thread + (r.was ? ": " + r.was : ""));
+}
+
 async function pull() {
   const { s, t } = await session();
 
@@ -185,6 +219,8 @@ const [cmd, a, b] = process.argv.slice(2);
 const run = cmd === "login" ? login(a, b)
   : cmd === "carry" ? carry(process.argv.slice(3))
   : cmd === "vault" ? vault(process.argv.slice(3))
+  : cmd === "desk" ? desk(process.argv.slice(3))
+  : cmd === "thread" ? thread(process.argv.slice(3))
   : cmd === "mail" ? mail(process.argv.slice(3))
   : pull();
 run.catch((e) => die(e.message || String(e)));
