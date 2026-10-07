@@ -1153,7 +1153,14 @@ async function createProject(name = "New project") {
 }
 
 async function deleteProject(id) {
-  if (!confirm("Delete this project and all its conversations? This can't be undone.")) return;
+  // Typing the name, not a tap: a plain confirm() once got answered from a pocket.
+  const name = (state.projects.find(p => p.id === id)?.name || "").trim() || "Untitled project";
+  const typed = prompt(`This deletes "${name}" and every conversation in it.\n\nType the project's name to delete it:`);
+  if (typed == null) return;
+  if (typed.trim().toLowerCase() !== name.toLowerCase()) {
+    flashToast("Name didn't match, so nothing was deleted. ♡");
+    return;
+  }
   try {
     await dbDeleteProject(id);
     state.projects = state.projects.filter(p => p.id !== id);

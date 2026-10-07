@@ -250,7 +250,6 @@
           <div class="project-controls">
             <button id="figure-btn" class="ghost figure-btn" type="button" title="Him — the figure you can touch" aria-label="Open his figure">🧍</button>
             <select id="model-select" title="Model"></select>
-            <button id="delete-project-btn" class="danger ghost" title="Delete this project">Delete</button>
           </div>
         </header>
 
@@ -622,6 +621,11 @@
           </div>
           <p class="muted small">Looks through the nightly backups for projects that have been deleted and puts them back with all their conversations. It only adds things back. Nothing here can be overwritten.</p>
           <div id="restore-out"></div>
+          <hr class="customize-rule" />
+          <div class="mem-add-row">
+            <button type="button" id="delete-project-btn" class="danger ghost small">🗑 Delete the project you're in</button>
+          </div>
+          <p class="muted small">Deletes this project and every conversation in it. You'll have to type its name first, so it can't happen from a pocket.</p>
           <hr class="customize-rule" />
           <div class="mem-add-row">
             <button type="button" id="tidy-storage-btn" class="ghost small">🧹 Tidy up storage</button>
