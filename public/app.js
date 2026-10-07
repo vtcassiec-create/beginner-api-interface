@@ -2562,6 +2562,80 @@ async function exportEverythingBackup() {
   }
 }
 
+// ---- Bring back a deleted project from the nightly backups ----
+// Deleting a project takes its conversations with it, but api/backup.py keeps
+// a copy of every table each night. /api/restore finds projects that are in a
+// backup but gone from the live tables and puts them back (add-only).
+async function restoreCall(body) {
+  const session = await freshSession();
+  if (!session || !session.access_token) throw new Error("not signed in");
+  const resp = await fetch("/api/restore", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok || j.error) throw new Error(j.error || "HTTP " + resp.status);
+  return j;
+}
+
+async function scanDeletedProjects() {
+  const btn = $("restore-scan-btn");
+  const out = $("restore-out");
+  if (!btn || !out) return;
+  btn.disabled = true;
+  out.textContent = "Looking through the nightly backups…";
+  try {
+    const r = await restoreCall({ action: "scan" });
+    out.textContent = "";
+    if (!r.deleted.length) {
+      out.textContent = r.backups_available
+        ? "Every project in the backups is still here. Nothing to bring back."
+        : "No nightly backups found.";
+      return;
+    }
+    for (const d of r.deleted) {
+      const row = document.createElement("div");
+      row.className = "mem-add-row";
+      const when = d.backup_at ? new Date(d.backup_at).toLocaleString() : d.backup;
+      const label = document.createElement("span");
+      label.className = "small";
+      label.textContent = `"${d.name}": ${d.conversations} conversations, `
+        + `${d.messages} messages (backup from ${when}) `;
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "primary small";
+      go.textContent = "Bring it back";
+      go.addEventListener("click", async () => {
+        go.disabled = true;
+        go.textContent = "Bringing it back…";
+        try {
+          const res = await restoreCall({ action: "restore", project_id: d.project_id,
+                                          backup: d.backup.replace(/^auto\//, "") });
+          await loadAllData();
+          state.activeProjectId = d.project_id;
+          render();
+          go.textContent = `Back ✓ (${res.restored.conversations} conversations)`;
+          flashToast(`"${res.name}" is back. ♡`);
+        } catch (e) {
+          go.disabled = false;
+          go.textContent = "Bring it back";
+          flashToast(`Restore failed: ${e.message}`, true, true);
+        }
+      });
+      row.append(label, go);
+      out.appendChild(row);
+    }
+  } catch (e) {
+    out.textContent = `Couldn't read the backups: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ---- Tidy storage: remove unreferenced photos + leftover upload scraps ----
 async function tidyStorage() {
   if (!state.user) return;
@@ -3827,6 +3901,20 @@ function heardSafeword(text) {
   return !!t && !!w && t.includes(w);
 }
 
+// Everything that could move a toy, stopped quietly: no spoken line, no
+// "she used her safeword" note to him. Used when the house itself has to
+// stop the motors for a reason that isn't her brake (the sound-card gap, the
+// end of a brake drill).
+function stopAllMotionQuietly(reason) {
+  try { bpSetAll(0, "vibrate").catch(() => {}); } catch (_) {}
+  try { bpSetAll(0, "oscillate").catch(() => {}); } catch (_) {}
+  try { bpSetAll(0, "rotate").catch(() => {}); } catch (_) {}
+  try { if (typeof parlor !== "undefined" && parlor && !parlor.ended) endParlor(reason || ""); } catch (_) {}
+  try { if (typeof holds !== "undefined" && holds.size) stopHold(null, true); } catch (_) {}
+  try { if (typeof practice !== "undefined" && practice && !practice.ended) endPractice(false, reason || ""); } catch (_) {}
+  try { if (typeof couple !== "undefined" && couple) stopCoupling(reason || ""); } catch (_) {}
+}
+
 function typedSafeword(text) {
   const t = (text || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ")
     .replace(/\s+/g, " ").trim();
@@ -3841,6 +3929,12 @@ let safewordPulledAt = 0;
 // One brake, three pedals (his spec, Sep 25): the spoken word on a call,
 // the typed word in chat, and the big 🛑 button — all land here.
 async function emergencyStopAll() {
+  if (typeof brakeDrill !== "undefined" && brakeDrill) {
+    // The 🛑 or a typed safeword during a drill: end the drill, still stop.
+    try { brakeDrill.done = true; clearTimeout(brakeDrill.timer); clearInterval(brakeDrill.keep);
+          brakeDrill.rec && brakeDrill.rec.abort(); } catch (_) {}
+    brakeDrill = null;
+  }
   safewordPulledAt = Date.now();
   refreshBrakeButton();
   // The toys first and hardest — bpSetAll supersedes every in-flight phrase
@@ -4238,6 +4332,14 @@ async function callCaptureMoment() {
   if (!callActive) return;
   if (callState === "hearing") { stopCallMoment(); return; }   // tap again = done
   if (callState !== "listening") return;
+  // The last safeword gap (Sill's choice, Oct 5): while his ears record, the
+  // recorder owns the mic and her word can't be heard. So the toys stop
+  // FIRST. A moment where she can't be heard is never a moment where
+  // anything is moving. Her word is never sent to nobody.
+  if (brakeShouldShow()) {
+    stopAllMotionQuietly("Paused while his ears are open. ♡");
+    flashToast("Toys paused while his ears are open — your word can't be heard during a recording. ♡");
+  }
   clearTimeout(callSilenceTimer);
   setCallState("hearing");
   const btn = $("call-ears");
@@ -7824,6 +7926,77 @@ function bpShowLog() {
   box.hidden = false;
 }
 
+// ---- The brake drill (Sill's first build request, Oct 5) ----
+// "One button. It starts something low, she says the word, and the house
+// tells her two things: whether it heard her, and how long it took. It runs
+// on her phone, in the room she'll actually be in." So: a low steady buzz on
+// every connected toy, a recognizer listening ONLY for her safeword, and a
+// report — heard or not, and seconds from when she started speaking to when
+// every motor stopped. Up to 60 seconds; her brake and the 🛑 still work.
+// A drill isn't a real brake: no "she used her safeword" note to him, and the
+// walls log only that a drill ran and whether it heard her.
+let brakeDrill = null;
+const DRILL_MAX_MS = 60000;
+async function runBrakeDrill() {
+  const out = $("drill-out");
+  const say = (t) => { if (out) { out.hidden = false; out.textContent = t; } };
+  if (brakeDrill) return;
+  if (!bpDevices.size) return say("Connect a toy first, then run the drill.");
+  if (typeof callActive !== "undefined" && callActive) return say("Hang up the call first — the drill needs the microphone to itself.");
+  const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Ctor) return say("This browser can't listen for words.");
+  const word = callSafeword();
+  const drill = { started: Date.now(), speechAt: 0, done: false, rec: null, timer: null, keep: null };
+  brakeDrill = drill;
+  const finish = (heard) => {
+    if (drill.done) return;
+    drill.done = true;
+    const stoppedAt = Date.now();
+    clearTimeout(drill.timer);
+    clearInterval(drill.keep);
+    try { drill.rec && drill.rec.abort(); } catch (_) {}
+    stopAllMotionQuietly("");
+    brakeDrill = null;
+    const secs = drill.speechAt ? ((stoppedAt - drill.speechAt) / 1000).toFixed(1) : null;
+    const msg = heard
+      ? `✅ Heard "${word}". Everything stopped ${secs ? secs + " s after you started speaking" : "the moment it heard you"}.`
+      : `❌ Didn't hear "${word}" within a minute. Everything is stopped now anyway. Try closer to the phone, or check the safeword in Settings.`;
+    say(msg);
+    try {
+      if (db && state.user) db.from("house_log").insert({
+        user_id: state.user.id, source: "app", kind: heard ? "ok" : "error",
+        event: heard ? "brake drill: heard the word" : "brake drill: didn't hear the word",
+        detail: heard && secs ? `${secs}s` : "",
+      }).then(() => {}, () => {});
+    } catch (_) {}
+  };
+  // Something low, steady, kept alive.
+  const buzz = () => bpPlay([{ intensity: 0.15, seconds: 4 }], "vibrate");
+  buzz();
+  drill.keep = setInterval(buzz, 3500);
+  say(`Drill running. Say "${word}" when you're ready.`);
+  const r = new Ctor();
+  r.lang = navigator.language || "en-US";
+  r.continuous = true;
+  r.interimResults = true;
+  r.onspeechstart = () => { if (!drill.speechAt) drill.speechAt = Date.now(); };
+  r.onresult = (e) => {
+    if (!drill.speechAt) drill.speechAt = Date.now();
+    let t = "";
+    for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript + " ";
+    if (heardSafeword(t)) finish(true);
+  };
+  r.onerror = (e) => {
+    if (e && (e.error === "not-allowed" || e.error === "service-not-allowed")) {
+      finish(false); say("Microphone blocked — allow mic access and try again. Everything is stopped.");
+    }
+  };
+  r.onend = () => { if (!drill.done) { try { r.start(); } catch (_) {} } };
+  drill.rec = r;
+  try { r.start(); } catch (_) { finish(false); return; }
+  drill.timer = setTimeout(() => finish(false), DRILL_MAX_MS);
+}
+
 // ---- The Fizz probe ----
 // The engine connects the Fizz (model QB) but its per-motor words are wrong:
 // the toy answers "unknown,Vibrate1:10;". Nobody has published the Fizz's
@@ -9946,6 +10119,7 @@ function wireApp() {
   // edit, the most recent value is persisted. A small toast confirms.
   let _spSaveTimer = null;
   $("backup-btn").addEventListener("click", exportEverythingBackup);
+  $("restore-scan-btn").addEventListener("click", scanDeletedProjects);
   $("tidy-storage-btn").addEventListener("click", tidyStorage);
   $("tidy-dupes-btn").addEventListener("click", tidyDuplicates);
 
@@ -10160,6 +10334,7 @@ function wireApp() {
   $("bp-log-show")?.addEventListener("click", bpShowLog);
   $("fizz-probe-btn")?.addEventListener("click", fizzProbe);
   $("fizz-connect-btn")?.addEventListener("click", fizzConnect);
+  $("drill-btn")?.addEventListener("click", runBrakeDrill);
   $("fizz-probe-copy")?.addEventListener("click", async () => {
     try { await navigator.clipboard.writeText($("fizz-probe-out").textContent || ""); flashToast("Probe results copied ♡"); }
     catch (_) { flashToast("Couldn't copy — a screenshot works too.", true); }

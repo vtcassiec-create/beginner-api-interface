@@ -618,6 +618,12 @@
           <p class="muted small">Saves a single file (his words and memories — not the photo images themselves, which stay in private storage). It can't be opened by anyone but you, and it's your safety net if anything ever happens to the database.</p>
           <hr class="customize-rule" />
           <div class="mem-add-row">
+            <button type="button" id="restore-scan-btn" class="primary">↩ Bring back a deleted project</button>
+          </div>
+          <p class="muted small">Looks through the nightly backups for projects that have been deleted and puts them back with all their conversations. It only adds things back. Nothing here can be overwritten.</p>
+          <div id="restore-out"></div>
+          <hr class="customize-rule" />
+          <div class="mem-add-row">
             <button type="button" id="tidy-storage-btn" class="ghost small">🧹 Tidy up storage</button>
           </div>
           <p class="muted small">Clears photo files that aren't attached to anything anymore, plus leftover upload scraps. Your attached photos are never touched.</p>
@@ -922,6 +928,11 @@
         </div>
         <div id="bp-status" class="muted small">Not connected.</div>
         <div id="bp-devices" class="bp-devices"></div>
+        <div class="brake-drill">
+          <button type="button" id="drill-btn" class="ghost">🧪 Brake drill</button>
+          <p class="muted small">Starts a toy low. Say your safeword. The house tells you whether it heard you, and how fast everything stopped. Try it in the room you'll really be in.</p>
+          <div id="drill-out" class="bp-log" hidden></div>
+        </div>
         <button type="button" id="bp-log-show" class="linklike small">engine log</button>
         <div class="fizz-probe">
           <button type="button" id="fizz-probe-btn" class="ghost small">🧪 Probe the Fizz's commands</button>
