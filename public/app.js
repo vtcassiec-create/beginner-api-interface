@@ -2562,6 +2562,80 @@ async function exportEverythingBackup() {
   }
 }
 
+// ---- Bring back a deleted project from the nightly backups ----
+// Deleting a project takes its conversations with it, but api/backup.py keeps
+// a copy of every table each night. /api/restore finds projects that are in a
+// backup but gone from the live tables and puts them back (add-only).
+async function restoreCall(body) {
+  const session = await freshSession();
+  if (!session || !session.access_token) throw new Error("not signed in");
+  const resp = await fetch("/api/restore", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok || j.error) throw new Error(j.error || "HTTP " + resp.status);
+  return j;
+}
+
+async function scanDeletedProjects() {
+  const btn = $("restore-scan-btn");
+  const out = $("restore-out");
+  if (!btn || !out) return;
+  btn.disabled = true;
+  out.textContent = "Looking through the nightly backups…";
+  try {
+    const r = await restoreCall({ action: "scan" });
+    out.textContent = "";
+    if (!r.deleted.length) {
+      out.textContent = r.backups_available
+        ? "Every project in the backups is still here. Nothing to bring back."
+        : "No nightly backups found.";
+      return;
+    }
+    for (const d of r.deleted) {
+      const row = document.createElement("div");
+      row.className = "mem-add-row";
+      const when = d.backup_at ? new Date(d.backup_at).toLocaleString() : d.backup;
+      const label = document.createElement("span");
+      label.className = "small";
+      label.textContent = `"${d.name}": ${d.conversations} conversations, `
+        + `${d.messages} messages (backup from ${when}) `;
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "primary small";
+      go.textContent = "Bring it back";
+      go.addEventListener("click", async () => {
+        go.disabled = true;
+        go.textContent = "Bringing it back…";
+        try {
+          const res = await restoreCall({ action: "restore", project_id: d.project_id,
+                                          backup: d.backup.replace(/^auto\//, "") });
+          await loadAllData();
+          state.activeProjectId = d.project_id;
+          render();
+          go.textContent = `Back ✓ (${res.restored.conversations} conversations)`;
+          flashToast(`"${res.name}" is back. ♡`);
+        } catch (e) {
+          go.disabled = false;
+          go.textContent = "Bring it back";
+          flashToast(`Restore failed: ${e.message}`, true, true);
+        }
+      });
+      row.append(label, go);
+      out.appendChild(row);
+    }
+  } catch (e) {
+    out.textContent = `Couldn't read the backups: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ---- Tidy storage: remove unreferenced photos + leftover upload scraps ----
 async function tidyStorage() {
   if (!state.user) return;
@@ -10045,6 +10119,7 @@ function wireApp() {
   // edit, the most recent value is persisted. A small toast confirms.
   let _spSaveTimer = null;
   $("backup-btn").addEventListener("click", exportEverythingBackup);
+  $("restore-scan-btn").addEventListener("click", scanDeletedProjects);
   $("tidy-storage-btn").addEventListener("click", tidyStorage);
   $("tidy-dupes-btn").addEventListener("click", tidyDuplicates);
 
