@@ -375,6 +375,8 @@ async function enterApp() {
 
 // ---------- Data layer ----------
 
+const ACTIVE_PROJECT_KEY = "petrichor-active-project";
+
 async function loadAllData() {
   const { data: projectRows, error: pErr } = await db
     .from("projects").select("*").order("created_at", { ascending: false });
@@ -398,9 +400,15 @@ async function loadAllData() {
   }
 
   state.projects = projects;
-  state.activeProjectId = state.activeProjectId && projects.find(p => p.id === state.activeProjectId)
-    ? state.activeProjectId
-    : projects[0]?.id || null;
+  // Open the project she was last in. Failing that, the newest one that has
+  // conversations: a blank "My first project" auto-made after a delete once
+  // hid her real (restored) project by being newer.
+  let remembered = null;
+  try { remembered = localStorage.getItem(ACTIVE_PROJECT_KEY); } catch (_) {}
+  const pick = [state.activeProjectId, remembered].find(id => id && projects.find(p => p.id === id));
+  state.activeProjectId = pick
+    || (projects.find(p => (p.conversations || []).some(c => (c.messages || []).length)) || projects[0])?.id
+    || null;
 
   restoreConversationBackups(); // recover anything a failed save left only on-device
 }
@@ -1179,6 +1187,7 @@ function closeSidebar() {
 
 function selectProject(id) {
   state.activeProjectId = id;
+  try { localStorage.setItem(ACTIVE_PROJECT_KEY, id); } catch (_) {}
   state.activeView = "chat";       // start each project on its chat
   state.activeDocumentId = null;
   state.coWrite = false;           // co-write is per-piece; reset on project switch
