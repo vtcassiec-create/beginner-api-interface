@@ -6255,6 +6255,7 @@ async function addOrSaveDiaryEntry() {
 // calls api/dream as the signed-in user). Cards are written by the dreamer.
 const DREAM_MODELS = [
   { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5 — quick, gentle on cost (default)" },
+  { id: "claude-haiku-5-5", label: "Haiku 5.5 — newer, still quick" },
   { id: "claude-sonnet-4-6", label: "Sonnet 4.6 — richer dreaming" },
   { id: "claude-opus-4-8", label: "Opus 4.8 — deepest (priciest)" },
 ];
@@ -6309,6 +6310,86 @@ async function loadDreamControls() {
         new Date(st.last_dreamed_at).toLocaleString(undefined,
           { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
     } catch (e) { /* leave blank */ }
+  }
+}
+
+// Sill's A/B test before switching dreamers: one day, two models, side by
+// side, nothing saved. The server flags any "exact words" not really said.
+const DREAM_COMPARE_MODELS = ["claude-haiku-4-5-20251001", "claude-haiku-5-5"];
+
+async function compareDreamers() {
+  const day = $("dream-compare-day").value;
+  const out = $("dream-compare-out");
+  const btn = $("dream-compare-btn");
+  if (!day) { flashToast("Pick a day to dream first."); return; }
+  btn.disabled = true;
+  out.textContent = "Dreaming the day twice… (up to a couple of minutes)";
+  try {
+    const session = await freshSession();
+    if (!session || !session.access_token) throw new Error("signed out");
+    const [a, b] = DREAM_COMPARE_MODELS;
+    const resp = await fetch(`/api/dream?source=compare&day=${day}&cards=5`
+      + `&a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${session.access_token}` },
+    });
+    const r = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(r.reason || `Server returned ${resp.status}`);
+    if (r.status !== "compared") { out.textContent = r.reason || r.status; return; }
+    out.textContent = "";
+    const head = document.createElement("p");
+    head.className = "muted small";
+    head.textContent = `${r.messages_read} messages from ${day}.`;
+    out.appendChild(head);
+    const grid = document.createElement("div");
+    grid.className = "dream-compare-grid";
+    for (const res of r.results) {
+      const col = document.createElement("div");
+      col.className = "dream-compare-col";
+      const h = document.createElement("h4");
+      h.textContent = (DREAM_MODELS.find(m => m.id === res.model)?.label.split(" — ")[0]) || res.model;
+      col.appendChild(h);
+      if (res.error) {
+        const p = document.createElement("p");
+        p.className = "small";
+        p.textContent = `Couldn't dream: ${res.error}`;
+        col.appendChild(p);
+      }
+      for (const c of res.cards || []) {
+        const card = document.createElement("div");
+        card.className = "dream-compare-card";
+        const t = document.createElement("strong");
+        t.textContent = c.title;
+        const g = document.createElement("p");
+        g.textContent = c.gist;
+        card.append(t, g);
+        if (c.pinned_facts.length) {
+          const ul = document.createElement("ul");
+          ul.className = "small";
+          for (const f of c.pinned_facts) {
+            const li = document.createElement("li");
+            li.textContent = (c.not_verbatim.includes(f) ? "⚠ " : "📌 ") + f;
+            ul.appendChild(li);
+          }
+          card.appendChild(ul);
+        }
+        const extra = c.not_verbatim.filter(q => !c.pinned_facts.includes(q));
+        if (extra.length) {
+          const w = document.createElement("p");
+          w.className = "small";
+          w.textContent = "⚠ quoted in the gist but not said that day: "
+            + extra.map(q => `"${q}"`).join(", ");
+          card.appendChild(w);
+        }
+        col.appendChild(card);
+      }
+      grid.appendChild(col);
+    }
+    out.appendChild(grid);
+  } catch (e) {
+    out.textContent = `Couldn't compare: ${e.message}`;
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -10298,6 +10379,7 @@ function wireApp() {
   $("dream-now-btn").addEventListener("click", triggerDreamNow);
   $("dream-backfill-btn").addEventListener("click", triggerDreamBackfill);
   $("dream-model").addEventListener("change", onDreamModelChange);
+  $("dream-compare-btn").addEventListener("click", compareDreamers);
   $("dream-enabled").addEventListener("change", onDreamEnabledChange);
 
   // The figure — always one tap away from the chat header, as specified:

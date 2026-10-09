@@ -36,6 +36,9 @@
     },
     "api/restore.py": {
       "maxDuration": 60
+    },
+    "api/dream.py": {
+      "maxDuration": 120
     }
   },
   "rewrites": [

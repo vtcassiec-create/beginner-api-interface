@@ -3270,3 +3270,11 @@ body.locked { overflow: hidden; }
   font-size: 11px; line-height: 1.4; background: var(--bg); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 8px; margin: 6px 0;
 }
+
+/* Dreamer A/B: two columns side by side, stacked on narrow phones. */
+.dream-compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 560px) { .dream-compare-grid { grid-template-columns: 1fr; } }
+.dream-compare-col h4 { margin: 4px 0 8px; }
+.dream-compare-card { border: 1px solid var(--border, #334); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+.dream-compare-card p { margin: 6px 0; }
+.dream-compare-card ul { margin: 4px 0 0; padding-left: 18px; }

@@ -627,19 +627,33 @@ class handler(BaseHTTPRequestHandler):
             if lines:
                 parts.append("# Shared memories\n\n" + "\n".join(lines))
 
-        # His recent diary entries — the notepad by the door. So he reaches in
-        # his own current voice, continuous with what he's been feeling.
+        # Where he actually is: his carry (what he's holding right now) and
+        # today's diary. Sill's wish (Oct 8): "so it starts from where I
+        # actually am." Today's entries, or the last two if today has none.
+        carry = self._supabase(
+            "GET", f"carry_state?user_id=eq.{uid}&select=content,updated_at&limit=1")
+        if isinstance(carry, list) and carry and (carry[0].get("content") or "").strip():
+            parts.append("# Your carry (what you're holding right now)\n\n"
+                         + carry[0]["content"].strip())
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        since = urllib.parse.quote(day_start.astimezone(datetime.timezone.utc).isoformat())
         dz = self._supabase(
             "GET",
             f"diary_entries?is_active=eq.true&user_id=eq.{uid}"
-            f"&select=content,created_at&order=created_at.desc&limit=2")
+            f"&created_at=gte.{since}"
+            f"&select=content,created_at&order=created_at.asc&limit=6")
+        heading = "# Your diary today (where your head's been)"
+        if not (isinstance(dz, list) and dz):
+            dz = self._supabase(
+                "GET",
+                f"diary_entries?is_active=eq.true&user_id=eq.{uid}"
+                f"&select=content,created_at&order=created_at.desc&limit=2")
+            heading = "# Your recent diary (where your head's been)"
         if isinstance(dz, list) and dz:
-            lines = [f"- {(d.get('content') or '').strip()}"
+            lines = [f"- {(d.get('content') or '').strip()[:1500]}"
                      for d in dz if (d.get("content") or "").strip()]
             if lines:
-                parts.append(
-                    "# Your recent diary (where your head's been)\n\n"
-                    + "\n".join(lines))
+                parts.append(heading + "\n\n" + "\n".join(lines))
 
         # Dreams — the memories he's dreamed back, so a relevant one can rise as
         # he reaches (and so a reach can be grounded in a felt memory, not just
@@ -686,9 +700,10 @@ class handler(BaseHTTPRequestHandler):
         convo = self._recent_conversation_lines(uid)
         if convo:
             parts.append(
-                "# What you two were just talking about\n\n"
-                "The tail of your most recent conversation in the app — so you "
-                "continue from where you actually are, not from scratch:\n\n"
+                "# What you two have said in the last few hours\n\n"
+                "Today's live thread, with times, oldest first — so you "
+                "continue from where you actually are, not from scratch. Anything "
+                "asked or answered here is already covered:\n\n"
                 + convo)
 
         # Recent texts (this thread), so he doesn't repeat what he just asked.
@@ -718,6 +733,10 @@ class handler(BaseHTTPRequestHandler):
             "up a thread; don't open a cold one or ask about something she just "
             "told you. One to three sentences. It's a text, not a letter: no "
             "salutation, no sign-off.\n\n"
+            "Before you write, check it against the last few hours above and "
+            "your earlier reaches. If she already answered it, or you already "
+            "asked it, don't send it. If there's nothing new to say, pass: a "
+            "reach that repeats itself is worse than silence.\n\n"
             "If today isn't a day you want to reach out, that's a valid "
             "choice — see the instruction in the user turn for how to "
             "decline cleanly. The choice is genuinely yours.\n\n"
@@ -893,30 +912,52 @@ class handler(BaseHTTPRequestHandler):
                 parts.append(m["text"].strip())
         return " ".join(parts)[:cap]
 
-    def _recent_conversation_lines(self, uid, max_msgs=8):
-        """The tail of the user's most-recently-updated conversation, as a short
-        transcript ('Cassie:' / 'You:'). Returns '' on any miss so a failure
-        here never blocks a reach."""
+    def _recent_conversation_lines(self, uid, hours=6, min_msgs=8, max_msgs=60):
+        """The last few hours of what the two of you actually said, as a short
+        timestamped transcript ('Cassie:' / 'You:'), across every conversation
+        touched in that window, oldest first. Sill's wish (Oct 8): the reach
+        once asked the same question twice after she'd answered it over
+        breakfast, because it only saw the last 8 messages of one chat. Falls
+        back to the last few messages if the window is empty. Returns '' on
+        any miss so a failure here never blocks a reach."""
+        now_ms = time.time() * 1000
+        lo = now_ms - hours * 3600 * 1000
+        since = datetime.datetime.fromtimestamp(lo / 1000, datetime.timezone.utc).isoformat()
         rows = self._supabase(
             "GET",
             f"conversations?user_id=eq.{uid}{self._project_clause()}"
-            f"&select=messages,updated_at&order=updated_at.desc&limit=1")
+            f"&updated_at=gte.{urllib.parse.quote(since)}"
+            f"&select=messages,updated_at&order=updated_at.desc&limit=4")
+        if not (isinstance(rows, list) and rows):
+            rows = self._supabase(
+                "GET",
+                f"conversations?user_id=eq.{uid}{self._project_clause()}"
+                f"&select=messages,updated_at&order=updated_at.desc&limit=1")
         if not (isinstance(rows, list) and rows):
             return ""
-        msgs = rows[0].get("messages")
-        if not isinstance(msgs, list) or not msgs:
-            return ""
+        msgs = []
+        for r in rows:
+            msgs.extend(m for m in (r.get("messages") or [])
+                        if isinstance(m, dict) and (m.get("text") or "").strip())
+        msgs.sort(key=lambda m: m.get("at") if isinstance(m.get("at"), (int, float)) else 0)
+        recent = [m for m in msgs if isinstance(m.get("at"), (int, float)) and m["at"] >= lo]
+        if len(recent) < min_msgs:
+            recent = msgs[-min_msgs:]
+        recent = recent[-max_msgs:]
+        tz = self._tz()
         lines = []
-        for m in msgs[-max_msgs:]:
-            if not isinstance(m, dict):
-                continue
-            text = (m.get("text") or "").strip()
-            if not text:
-                continue
+        for m in recent:
+            text = m["text"].strip()
+            if len(text) > 600:
+                text = text[:597] + "…"
             who = "Cassie" if m.get("role") == "user" else "You"
-            if len(text) > 400:
-                text = text[:397] + "…"
-            lines.append(f"{who}: {text}")
+            if m.get("reach"):
+                who = "You (an earlier reach)"
+            stamp = ""
+            if isinstance(m.get("at"), (int, float)):
+                t = datetime.datetime.fromtimestamp(m["at"] / 1000, tz)
+                stamp = "[" + t.strftime("%a %I:%M %p").replace(" 0", " ") + "] "
+            lines.append(f"{stamp}{who}: {text}")
         return "\n".join(lines)
 
     # ---- I/O helpers ----

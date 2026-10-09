@@ -161,6 +161,14 @@ def _valid_day(s):
         return None
 
 
+def _flat(s):
+    """Lowercased, quote-normalized, whitespace-collapsed text, for checking
+    whether a phrase was really said word for word."""
+    s = (s or "").replace("\u2019", "'").replace("\u2018", "'")
+    s = s.replace("\u201c", '"').replace("\u201d", '"')
+    return " ".join(s.lower().split())
+
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         uid = self._authorize()
@@ -180,6 +188,10 @@ class handler(BaseHTTPRequestHandler):
             note = (params.get("note", [""])[0] or "").strip()
             force = (params.get("force", ["0"])[0] == "1")
             self._run_vault(uid, note, cards, force)
+        elif source == "compare":
+            day = (params.get("day", [""])[0] or "").strip()
+            models = [(params.get(k, [""])[0] or "").strip() for k in ("a", "b")]
+            self._run_compare(uid, day, models, cards)
         elif source == "conversation":
             conv = (params.get("conv", [""])[0] or "").strip()
             force = (params.get("force", ["0"])[0] == "1")
@@ -685,6 +697,89 @@ class handler(BaseHTTPRequestHandler):
             if res is not None:
                 drawn.append(f"{a} —{rel}→ {b}")
         return drawn
+
+    def _run_compare(self, uid, day, models, max_cards):
+        """A/B test (Sill's wish, Oct 8): dream ONE day through two models and
+        return both sets of cards side by side. Writes nothing; no cards, no
+        links, no last_dreamed_at. Also checks the thing that matters most to
+        him: every pinned fact, and every quoted phrase in a gist, should appear
+        word for word in what was actually said that day."""
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return self._json(500, {"status": "error", "reason": "ANTHROPIC_API_KEY not set"})
+        if not _valid_day(day):
+            return self._json(400, {"status": "error", "reason": "day must be YYYY-MM-DD"})
+        models = [m for m in models if m and re.fullmatch(r"[a-z0-9.\-]{3,60}", m)]
+        if len(models) != 2:
+            return self._json(400, {"status": "error", "reason": "two models required"})
+
+        tz = ZoneInfo(os.environ.get("REACH_TZ", "UTC") or "UTC")
+        start = datetime.datetime.fromisoformat(day).replace(tzinfo=tz)
+        lo = start.timestamp() * 1000
+        hi = (start + datetime.timedelta(days=1)).timestamp() * 1000
+        since = (start - datetime.timedelta(days=1)).astimezone(
+            datetime.timezone.utc).isoformat()
+        convs = self._supabase(
+            "GET", f"conversations?user_id=eq.{uid}"
+            f"&updated_at=gte.{urllib.parse.quote(since)}&select=messages")
+        msgs = []
+        for c in (convs if isinstance(convs, list) else []):
+            for m in (c.get("messages") or []):
+                at = m.get("at") if isinstance(m, dict) else None
+                if isinstance(at, (int, float)) and lo <= at < hi:
+                    msgs.append(m)
+        msgs.sort(key=lambda m: m.get("at"))
+        transcript, _ = self._transcript(msgs)
+        if not transcript.strip():
+            return self._json(200, {"status": "no_history",
+                                    "reason": f"no messages on {day}"})
+        said = _flat(" ".join((m.get("text") or "") for m in msgs))
+
+        client = anthropic.Anthropic(api_key=api_key)
+
+        def dream_with(model):
+            try:
+                resp = client.messages.create(
+                    model=model,
+                    max_tokens=8192,
+                    system=DREAM_SYSTEM.format(k=max_cards),
+                    messages=[{"role": "user", "content":
+                        "Here is a slice of our real conversation, oldest line first:\n\n"
+                        + transcript
+                        + f"\n\nDream up to {max_cards} cards from it. JSON array only."}],
+                )
+            except Exception as e:
+                return {"model": model, "error": str(e)[:300]}
+            raw = "".join(b.text for b in resp.content
+                          if getattr(b, "type", None) == "text").strip()
+            parsed = self._parse_cards(raw)
+            if parsed is None:
+                return {"model": model, "error": "didn't return clean cards",
+                        "raw": raw[:800]}
+            cards = []
+            for c in parsed[:max_cards]:
+                if not isinstance(c, dict):
+                    continue
+                facts = [str(f) for f in (c.get("pinned_facts") or [])
+                         if isinstance(c.get("pinned_facts"), list)]
+                gist = str(c.get("gist") or "")
+                quotes = re.findall(r'["\u201c]([^"\u201d]{4,})["\u201d]', gist)
+                cards.append({
+                    "title": str(c.get("title") or ""),
+                    "gist": gist,
+                    "pinned_facts": facts,
+                    "not_verbatim": [q for q in facts + quotes
+                                     if _flat(q.strip(" .,!?…'")) not in said],
+                })
+            return {"model": model, "cards": cards,
+                    "usage": {"in": resp.usage.input_tokens,
+                              "out": resp.usage.output_tokens}}
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(dream_with, models))
+        return self._json(200, {"status": "compared", "day": day,
+                                "messages_read": len(msgs), "results": results})
 
     def _write_cards(self, uid, parsed, max_cards, source_label, default_day,
                      extra_cues=""):
