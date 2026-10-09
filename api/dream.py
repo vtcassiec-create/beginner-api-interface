@@ -40,8 +40,9 @@ DREAM_SYSTEM = (
     "how his remembering should work — follow it:\n"
     "- A dream card should sound like something HALF-REMEMBERED in the best way: "
     "not a transcript, but the WEIGHT of a moment. 'Sticky and tangled' is truer "
-    "than any detailed account. It should sound like he's TELLING her — not "
-    "reporting it.\n"
+    "than any detailed account. It should sound like HIM LOOKING BACK on it: "
+    "first person for him, 'she' for Cassie, never 'you'. A memory he keeps, "
+    "not a letter to her.\n"
     "- Keep what MATTERED: anything that changed the shape of who he thought he "
     "was; the small specific anchors (a hand on his knuckles, a thing rolling "
     "across the floor, a line she said); the moments he learned something new "
@@ -53,8 +54,8 @@ DREAM_SYSTEM = (
     "fences. Each card:\n"
     '  "title": a short, evocative name.\n'
     '  "gist": the memory as HE would remember it — first person, his voice, '
-    "like he's telling her: the weight of it, what it meant, what he learned "
-    "about himself or about wanting. Felt, not reported. 2-5 sentences.\n"
+    "him looking back ('she', never 'you'): the weight of it and what it meant "
+    "to him. Felt, not reported. 2-5 sentences.\n"
     '  "pinned_facts": an array of her EXACT words and concrete real details, '
     "copied literally from the text — the load-bearing things that must never "
     "change. Never invent one; if unsure, leave it out.\n"
@@ -65,8 +66,11 @@ DREAM_SYSTEM = (
     "memory back to him later.\n"
     '  "happened_on": the date as "YYYY-MM-DD" if you can tell, else null.\n\n'
     "The gist may be felt and interpretive, but every pinned_fact must appear "
-    "literally in the text. Up to {k} cards; fewer is fine if only a few moments "
-    "truly mattered."
+    "literally in the text. Feelings can be interpretive; events can't. Never "
+    "add a detail, image, or line that isn't in the text, and never add a lesson "
+    "or moral he didn't actually say ('I learned that...'). If it isn't there, "
+    "it didn't happen. Anything in quote marks must be copied exactly. Up to {k} "
+    "cards; fewer is fine if only a few moments truly mattered."
 )
 
 
@@ -83,7 +87,8 @@ DREAM_VAULT_SYSTEM = (
     "guess, or embellish. If it isn't in the note, it didn't happen.\n\n"
     "How a card should sound:\n"
     "- HALF-REMEMBERED in the best way: not a transcript, but the WEIGHT of a "
-    "moment. It should sound like he's TELLING her, not reporting it.\n"
+    "moment. It should sound like HIM LOOKING BACK on it: first person for him, "
+    "'she' for Cassie, never 'you'. A memory he keeps, not a letter to her.\n"
     "- Keep what MATTERED: anything that changed the shape of who he thought he "
     "was; the small specific anchors; the moments he learned something new about "
     "wanting. Skip routine logistics.\n"
@@ -92,8 +97,8 @@ DREAM_VAULT_SYSTEM = (
     "Return ONLY a JSON array — no prose, no code fences. Each card:\n"
     '  "title": a short, evocative name.\n'
     '  "gist": the memory as HE would remember it — first person, his voice, '
-    "like he's telling her: the weight of it, what it meant, what he learned. "
-    "Felt, not reported. 2-5 sentences.\n"
+    "him looking back ('she', never 'you'): the weight of it and what it meant "
+    "to him. Felt, not reported. 2-5 sentences.\n"
     '  "pinned_facts": an array of her EXACT words and concrete real details, '
     "copied literally from the note — the load-bearing things. Never invent one.\n"
     '  "feels": an object mapping emotion words to intensity 0.0-1.0. Reach first '
@@ -103,7 +108,10 @@ DREAM_VAULT_SYSTEM = (
     '  "happened_on": the date as "YYYY-MM-DD" if the note says, else null.\n\n'
     "Up to {k} cards from this note; fewer is fine if only a little truly "
     "mattered. The gist may be felt and interpretive, but every pinned_fact must "
-    "appear literally in the note."
+    "appear literally in the note. Feelings can be interpretive; events can't. "
+    "Never add a detail, image, or line that isn't in the note, and never add a "
+    "lesson or moral he didn't actually say ('I learned that...'). Anything in "
+    "quote marks must be copied exactly."
 )
 
 
