@@ -6352,7 +6352,9 @@ async function compareDreamers() {
       if (res.error) {
         const p = document.createElement("p");
         p.className = "small";
-        p.textContent = `Couldn't dream: ${res.error}`;
+        p.textContent = `Couldn't dream: ${res.error}`
+          + (res.raw ? `\n\nWhat it said instead: ${res.raw}` : "");
+        p.style.whiteSpace = "pre-wrap";
         col.appendChild(p);
       }
       for (const c of res.cards || []) {
