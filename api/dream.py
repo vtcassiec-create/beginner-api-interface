@@ -754,8 +754,14 @@ class handler(BaseHTTPRequestHandler):
                           if getattr(b, "type", None) == "text").strip()
             parsed = self._parse_cards(raw)
             if parsed is None:
-                return {"model": model, "error": "didn't return clean cards",
-                        "raw": raw[:800]}
+                why = "didn't return clean cards"
+                if getattr(resp, "stop_reason", "") == "max_tokens":
+                    why += " (ran out of room mid-answer)"
+                elif getattr(resp, "stop_reason", "") == "refusal":
+                    why += " (it declined this day)"
+                elif not raw:
+                    why += " (its answer had no text)"
+                return {"model": model, "error": why, "raw": raw[:400]}
             cards = []
             for c in parsed[:max_cards]:
                 if not isinstance(c, dict):
@@ -838,14 +844,22 @@ class handler(BaseHTTPRequestHandler):
         return "\n".join(lines), last_at
 
     def _parse_cards(self, raw):
-        i, j = raw.find("["), raw.rfind("]")
-        if i == -1 or j == -1 or j < i:
-            return None
-        try:
-            v = json.loads(raw[i:j + 1])
-            return v if isinstance(v, list) else None
-        except Exception:
-            return None
+        """The card list out of the model's reply. Forgiving about the wrapper:
+        code fences, a sentence before or after, or an object holding the list
+        (newer models sometimes answer {"cards": [...]}). Returns None only if
+        no list of cards is anywhere in it."""
+        raw = re.sub(r"```(?:json)?", "", raw or "").strip()
+        dec = json.JSONDecoder()
+        for k in [m.start() for m in re.finditer(r"[\[{]", raw)]:
+            try:
+                v, _ = dec.raw_decode(raw, k)
+            except ValueError:
+                continue
+            if isinstance(v, dict):
+                v = next((x for x in v.values() if isinstance(x, list)), None)
+            if isinstance(v, list) and any(isinstance(c, dict) for c in v):
+                return v
+        return None
 
     def _supabase(self, method, path, body=None):
         url = _normalize_url(os.environ.get("SUPABASE_URL", ""))
