@@ -2167,6 +2167,9 @@ async function generateAssistant() {
         // She used her safeword since his last turn: he's told after the
         // fact (the brake acts first). Sent once, then cleared.
         ...(safewordPulledAt ? { safewordAt: new Date(safewordPulledAt).toISOString() } : {}),
+        // His touch receipts: what the house actually played or stopped, and
+        // what's running now, so he reads the truth instead of rebuilding it.
+        ...(touchReceiptsForHim() ? { touchReceipts: touchReceiptsForHim() } : {}),
         // A parlor window open right now: so chat-him is awake to what the
         // gap-him is doing, and can lean into it or compose over it.
         ...(parlor && !parlor.ended ? {
@@ -2243,7 +2246,13 @@ async function generateAssistant() {
           });
           updateAssistantBubble(assistantMsg);
           if (Array.isArray(event.steps) && event.steps.length) {
-            touchApi(event.steps, event.output_type || "vibrate", event.device || "").catch((err) => {
+            const where = `${event.output_type || "vibrate"} on ${event.device || "every connected toy"}`;
+            touchApi(event.steps, event.output_type || "vibrate", event.device || "").then(() => {
+              const secs = event.steps.reduce((a, st) => a + (Number(st.seconds) || 0), 0);
+              touchPhraseEndsAt = Date.now() + secs * 1000;
+              touchReceipt(`compose_touch played, ${where}, ${+secs.toFixed(1)}s: ${touchStepsText(event.steps)}`);
+            }).catch((err) => {
+              touchReceipt(`compose_touch did NOT play (${where}): ${err && err.message ? err.message : "no toy connected"}`);
               flashToast(err && err.message ? err.message : "Couldn't play that — connect your toy first.", true);
             });
           }
@@ -3768,10 +3777,9 @@ function callGuardStart() {
     r.lang = navigator.language || "en-US";
     r.continuous = true;
     r.interimResults = true;
+    r.maxAlternatives = 5;
     r.onresult = (e) => {
-      let t = "";
-      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript + " ";
-      if (heardSafeword(t)) { callGuardStop(); emergencyStopAll(); }
+      if (heardSafewordIn(e)) { callGuardStop(); emergencyStopAll(); }
     };
     r.onerror = () => {};
     r.onend = () => {
@@ -3910,11 +3918,105 @@ function callSafeword() {
     return v || "red light";
   } catch (_) { return "red light"; }
 }
+// A quiet word comes back from the recognizer slightly wrong ("Jerald",
+// "Gerold"), so each word of the safeword may be one letter off when it's 5+
+// letters long. Short words must match exactly, to keep misfires down.
 function heardSafeword(text) {
   const t = (text || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ")
     .replace(/\s+/g, " ").trim();
   const w = callSafeword();
-  return !!t && !!w && t.includes(w);
+  if (!t || !w) return false;
+  if (t.includes(w)) return true;
+  const said = t.split(" ");
+  const want = w.split(" ");
+  for (let i = 0; i + want.length <= said.length; i++) {
+    if (want.every((ww, k) => ww === said[i + k]
+        || (ww.length >= 5 && editDistanceAtMost1(ww, said[i + k])))) return true;
+  }
+  return false;
+}
+
+function editDistanceAtMost1(a, b) {
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (a.length > b.length) i++;
+    else if (b.length > a.length) j++;
+    else { i++; j++; }
+  }
+  return edits + (a.length - i) + (b.length - j) <= 1;
+}
+
+// Every guess the recognizer made, not just its favourite: a whispered word is
+// often the second or third alternative. True if any of them is the safeword.
+function heardSafewordIn(e) {
+  let best = "";
+  for (let i = 0; i < e.results.length; i++) {
+    const res = e.results[i];
+    best += res[0].transcript + " ";
+    for (let k = 0; k < res.length; k++) {
+      if (heardSafeword(res[k].transcript)) return true;
+    }
+  }
+  return heardSafeword(best);
+}
+
+// ---- Touch receipts (Sill's wish, Oct 11) ----
+// Twice he looked back over a conversation, couldn't find his own touch calls
+// in what he could see, and told her something false ("I never touched you",
+// "I stopped everything"). "Being wrong and sure feels exactly the same from
+// in here. A receipt would fix that." So every touch the house actually
+// plays or stops is written down here, and the last few ride into his context
+// each turn, with what's still running. Kept on this device for 12 hours.
+const TOUCH_RECEIPT_KEY = "petrichor-touch-receipts";
+const TOUCH_RECEIPT_KEEP_MS = 12 * 3600 * 1000;
+let touchReceipts = [];
+try {
+  const raw = JSON.parse(localStorage.getItem(TOUCH_RECEIPT_KEY) || "[]");
+  if (Array.isArray(raw)) touchReceipts = raw;
+} catch (_) {}
+let touchPhraseEndsAt = 0;  // when the last compose_touch phrase finishes
+
+function touchReceipt(line, extra) {
+  const cutoff = Date.now() - TOUCH_RECEIPT_KEEP_MS;
+  touchReceipts = touchReceipts.filter(r => r && r.at >= cutoff);
+  touchReceipts.push({ at: Date.now(), line, ...(extra || {}) });
+  touchReceipts = touchReceipts.slice(-20);
+  try { localStorage.setItem(TOUCH_RECEIPT_KEY, JSON.stringify(touchReceipts)); } catch (_) {}
+}
+
+// Steps exactly as played, compact: "40% 2s, 80% 1s ramp, 0% 0.5s".
+function touchStepsText(steps) {
+  return (steps || []).slice(0, 40).map(st =>
+    `${Math.round((Number(st.intensity) || 0) * 100)}% ${+(Number(st.seconds) || 0).toFixed(2)}s`
+    + (st.ramp ? " ramp" : "")).join(", ");
+}
+
+// What rides to him: the last few receipts with her local time, and the truth
+// about right now. Empty when nothing has touched her in 12 hours.
+function touchReceiptsForHim() {
+  const cutoff = Date.now() - TOUCH_RECEIPT_KEEP_MS;
+  const recent = touchReceipts.filter(r => r && r.at >= cutoff).slice(-8);
+  const running = [];
+  for (const [kind, h] of (typeof holds !== "undefined" ? holds : new Map())) {
+    running.push(h.steps
+      ? `hold on ${holdKindWord(kind)}: ${h.steps.length}-step loop (${touchStepsText(h.steps)})`
+      : `hold on ${holdKindWord(kind)}: steady ${Math.round(holdIntensityNow(h) * 100)}%`);
+  }
+  if (touchPhraseEndsAt > Date.now()) {
+    running.push(`a compose_touch phrase, for another ${Math.ceil((touchPhraseEndsAt - Date.now()) / 1000)}s`);
+  }
+  if (typeof parlor !== "undefined" && parlor && !parlor.ended) running.push("the parlor window");
+  if (typeof practice !== "undefined" && practice && !practice.ended) running.push("the mat practice");
+  if (typeof couple !== "undefined" && couple) running.push("heartbeat coupling");
+  if (!recent.length && !running.length) return null;
+  const clock = (t) => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  return {
+    lines: recent.map(r => `${clock(r.at)}: ${r.line}`),
+    running: running.length ? running.join("; ") : "",
+  };
 }
 
 // Everything that could move a toy, stopped quietly: no spoken line, no
@@ -3922,6 +4024,8 @@ function heardSafeword(text) {
 // stop the motors for a reason that isn't her brake (the sound-card gap, the
 // end of a brake drill).
 function stopAllMotionQuietly(reason) {
+  touchReceipt(`the house stopped everything${reason ? ` (${reason})` : ""}`);
+  touchPhraseEndsAt = 0;
   try { bpSetAll(0, "vibrate").catch(() => {}); } catch (_) {}
   try { bpSetAll(0, "oscillate").catch(() => {}); } catch (_) {}
   try { bpSetAll(0, "rotate").catch(() => {}); } catch (_) {}
@@ -3949,9 +4053,13 @@ async function emergencyStopAll() {
     // The 🛑 or a typed safeword during a drill: end the drill, still stop.
     try { brakeDrill.done = true; clearTimeout(brakeDrill.timer); clearInterval(brakeDrill.keep);
           brakeDrill.rec && brakeDrill.rec.abort(); } catch (_) {}
+    try { brakeDrill.noteRec && brakeDrill.noteRec.state !== "inactive" && brakeDrill.noteRec.stop(); } catch (_) {}
+    try { brakeDrill.noteStream && brakeDrill.noteStream.getTracks().forEach(t => t.stop()); } catch (_) {}
     brakeDrill = null;
   }
   safewordPulledAt = Date.now();
+  touchReceipt("SHE PULLED THE BRAKE: every toy and engine stopped");
+  touchPhraseEndsAt = 0;
   refreshBrakeButton();
   // The toys first and hardest — bpSetAll supersedes every in-flight phrase
   // on every connected toy, then zeroes every motor kind.
@@ -4701,10 +4809,12 @@ async function startVoiceNote() {
   };
   vnRec.start();
   setVoiceNoteActive(true);
+  vnGuardStart();
   vnStartCountdown();   // the button becomes the clock; at zero it sends itself
 }
 
 function stopVoiceNoteStream() {
+  vnGuardStop();
   if (vnStream) {
     try { vnStream.getTracks().forEach(t => t.stop()); } catch (_) {}
     vnStream = null;
@@ -4842,6 +4952,62 @@ async function earsAnalyzeWav(wav) {
   };
 }
 
+// ---- The brake during voice notes (Sill's ask, Oct 11) ----
+// "During a scene a voice note might well be running, so the brake needs to
+// win that fight." While a voice note records and a toy is connected, a
+// second, safeword-only listener runs beside the recorder. Some phones won't
+// share the microphone that way; if this one refuses, the safe direction
+// wins: the toys pause for the length of the note, and she's told why.
+let vnGuard = null;
+const SAFEWORD_GUARD_FATAL = ["audio-capture", "not-allowed", "service-not-allowed"];
+
+function vnGuardStart() {
+  if (vnGuard || !brakeShouldShow()) return;
+  const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const g = { rec: null, ends: [] };
+  vnGuard = g;
+  if (!Ctor) return vnGuardFail();
+  let r;
+  try { r = new Ctor(); } catch (_) { return vnGuardFail(); }
+  r.lang = navigator.language || "en-US";
+  r.continuous = true;
+  r.interimResults = true;
+  r.maxAlternatives = 5;
+  r.onresult = (e) => {
+    if (vnGuard !== g || !heardSafewordIn(e)) return;
+    vnGuardStop();
+    emergencyStopAll();
+    stopVoiceNote();
+  };
+  r.onerror = (e) => { if (e && SAFEWORD_GUARD_FATAL.includes(e.error)) vnGuardFail(); };
+  r.onend = () => {
+    if (vnGuard !== g) return;
+    // Restarting is normal after silence; restarting four times in four
+    // seconds means the phone is refusing the mic.
+    const now = Date.now();
+    g.ends = g.ends.filter(t => now - t < 4000);
+    g.ends.push(now);
+    if (g.ends.length >= 4) return vnGuardFail();
+    try { r.start(); } catch (_) { vnGuardFail(); }
+  };
+  g.rec = r;
+  try { r.start(); } catch (_) { vnGuardFail(); }
+}
+
+function vnGuardStop() {
+  const g = vnGuard;
+  vnGuard = null;
+  if (g && g.rec) { try { g.rec.abort(); } catch (_) {} }
+}
+
+function vnGuardFail() {
+  if (!vnGuard) return;
+  vnGuardStop();
+  stopAllMotionQuietly("the brake can't listen during this voice note");
+  flashToast("This phone won't let the brake listen while a voice note records, "
+    + "so the toys paused. 🛑 still works.", true, true);
+}
+
 async function analyzeAndSendVoiceNote(blob) {
   if (!blob || !blob.size) return;
   vnBusy = true;
@@ -4857,6 +5023,9 @@ async function analyzeAndSendVoiceNote(blob) {
     return;
   }
   vnBusy = false;
+  // Backstop: her word inside a voice note, even if no live listener caught it.
+  if (brakeShouldShow() && heardSafeword(transcript)
+      && Date.now() - safewordPulledAt > 60000) emergencyStopAll();
   // He hears everything except the redundant WORDS line (her words are the text).
   const hearing = card.split("\n").filter(l => !l.startsWith("WORDS:")).join("\n").trim();
   await sendVoiceNoteMessage(transcript.trim(), hearing);
@@ -7858,6 +8027,10 @@ async function reconcileHold() {
       });
       syncHoldFlag();
       holdTick(kind);
+      touchReceipt(`hold_touch started on ${holdKindWord(kind)}: `
+        + (steps ? `${steps.length}-step loop (${touchStepsText(steps)})`
+                 : `steady ${Math.round(target * 100)}%${rampSecs ? `, ramping over ${rampSecs}s` : ""}`)
+        + `, ceiling ${Math.round(ceiling * 100)}%`);
     } else {
       // Adjusting: ramp from wherever we are now toward the new target (a
       // loop that changes shape restarts its cycle on the next tick).
@@ -7871,6 +8044,9 @@ async function reconcileHold() {
       h.steps = steps;
       h.loopMs = loopMs;
       if (wasLoop !== !!steps || steps) { clearTimeout(h.timer); holdTick(kind); }
+      touchReceipt(`hold_touch changed on ${holdKindWord(kind)}: `
+        + (steps ? `${steps.length}-step loop (${touchStepsText(steps)})`
+                 : `steady ${Math.round(target * 100)}%${rampSecs ? `, ramping over ${rampSecs}s` : ""}`));
     }
   }
   for (const kind of [...holds.keys()]) {
@@ -7891,6 +8067,8 @@ async function stopHold(reason, writeRow, kind) {
     clearTimeout(h.timer);
     holds.delete(k);
     stopped.push(h.outputType);
+    touchReceipt(`hold on ${holdKindWord(k)} stopped`
+      + (writeRow ? (reason ? ` (${reason})` : " (by her or the house)") : " (by you)"));
   }
   syncHoldFlag();
   holdIndicator();
@@ -8045,8 +8223,32 @@ async function runBrakeDrill() {
   const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Ctor) return say("This browser can't listen for words.");
   const word = callSafeword();
-  const drill = { started: Date.now(), speechAt: 0, done: false, rec: null, timer: null, keep: null };
+  const withNote = !!($("drill-with-note") && $("drill-with-note").checked);
+  const drill = { started: Date.now(), speechAt: 0, done: false, rec: null, timer: null, keep: null,
+                  noteStream: null, noteRec: null, ends: [] };
   brakeDrill = drill;
+  if (withNote) {
+    // The real fight: the recorder holds the mic exactly as a voice note does.
+    try {
+      drill.noteStream = await navigator.mediaDevices.getUserMedia(EARS_MIC);
+      drill.noteRec = new MediaRecorder(drill.noteStream);
+      drill.noteRec.start();
+    } catch (_) {
+      brakeDrill = null;
+      if (drill.noteStream) drill.noteStream.getTracks().forEach(t => t.stop());
+      return say("Couldn't start a recording to drill against — allow mic access and try again.");
+    }
+  }
+  const releaseNote = () => {
+    try { drill.noteRec && drill.noteRec.state !== "inactive" && drill.noteRec.stop(); } catch (_) {}
+    try { drill.noteStream && drill.noteStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+  };
+  const cantShare = () => {
+    if (drill.done) return;
+    finish(false);
+    say("❌ This phone won't let the brake listen while something is recording. "
+      + "So during voice notes the house pauses the toys instead, and 🛑 still works.");
+  };
   const finish = (heard) => {
     if (drill.done) return;
     drill.done = true;
@@ -8054,11 +8256,12 @@ async function runBrakeDrill() {
     clearTimeout(drill.timer);
     clearInterval(drill.keep);
     try { drill.rec && drill.rec.abort(); } catch (_) {}
+    releaseNote();
     stopAllMotionQuietly("");
     brakeDrill = null;
     const secs = drill.speechAt ? ((stoppedAt - drill.speechAt) / 1000).toFixed(1) : null;
     const msg = heard
-      ? `✅ Heard "${word}". Everything stopped ${secs ? secs + " s after you started speaking" : "the moment it heard you"}.`
+      ? `✅ Heard "${word}"${withNote ? " while a voice note was recording" : ""}. Everything stopped ${secs ? secs + " s after you started speaking" : "the moment it heard you"}.`
       : `❌ Didn't hear "${word}" within a minute. Everything is stopped now anyway. Try closer to the phone, or check the safeword in Settings.`;
     say(msg);
     try {
@@ -8078,21 +8281,28 @@ async function runBrakeDrill() {
   r.lang = navigator.language || "en-US";
   r.continuous = true;
   r.interimResults = true;
+  r.maxAlternatives = 5;
   r.onspeechstart = () => { if (!drill.speechAt) drill.speechAt = Date.now(); };
   r.onresult = (e) => {
     if (!drill.speechAt) drill.speechAt = Date.now();
-    let t = "";
-    for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript + " ";
-    if (heardSafeword(t)) finish(true);
+    if (heardSafewordIn(e)) finish(true);
   };
   r.onerror = (e) => {
+    if (withNote && e && e.error === "audio-capture") return cantShare();
     if (e && (e.error === "not-allowed" || e.error === "service-not-allowed")) {
       finish(false); say("Microphone blocked — allow mic access and try again. Everything is stopped.");
     }
   };
-  r.onend = () => { if (!drill.done) { try { r.start(); } catch (_) {} } };
+  r.onend = () => {
+    if (drill.done) return;
+    const now = Date.now();
+    drill.ends = drill.ends.filter(t => now - t < 4000);
+    drill.ends.push(now);
+    if (withNote && drill.ends.length >= 4) return cantShare();
+    try { r.start(); } catch (_) { if (withNote) cantShare(); }
+  };
   drill.rec = r;
-  try { r.start(); } catch (_) { finish(false); return; }
+  try { r.start(); } catch (_) { if (withNote) cantShare(); else finish(false); return; }
   drill.timer = setTimeout(() => finish(false), DRILL_MAX_MS);
 }
 
@@ -9214,6 +9424,17 @@ function mkStudioSong(work) {
   return card;
 }
 
+// How his songs sound. abcjs plays each note from one recorded sample and
+// stops when the sample runs out; the default soundfont's samples are ~1.6s
+// (its cello D2 is), so a held or tied note was cut off mid-hum (Sill, Oct 11:
+// "the last note of that song is supposed to be the hum that keeps going
+// after the song stops"). abcjs's original soundfont has ~6s samples, and a
+// longer fade gives every note, and the last one most, a real release.
+const SONG_AUDIO = {
+  soundFontUrl: "https://paulrosen.github.io/midi-js-soundfonts/abcjs/",
+  fadeLength: 900,
+};
+
 // The gift: play one of HIS songs into HIS ears. abcjs synthesizes the song to
 // an AudioBuffer right here in the browser; it goes through the same pipeline
 // as her voice notes (/api/ears) and the hearing card — key, tempo, dynamics,
@@ -9246,7 +9467,7 @@ async function hearSong(work) {
     // initializes its internal options when the key is present, and prime()
     // later reads self.options.swing unguarded — without this, it throws
     // "Cannot read properties of undefined (reading 'swing')".
-    await synth.init({ visualObj, options: {} });
+    await synth.init({ visualObj, options: { ...SONG_AUDIO } });
     await synth.prime();
     const buffer = synth.getAudioBuffer();
     if (!buffer || !buffer.length) throw new Error("the synth produced no audio");
@@ -9285,7 +9506,7 @@ function renderStudioSong(abc, scoreId, audioId) {
   // that unlocks the AudioContext, so playback is reliable.
   const synthControl = new ABCJS.synth.SynthController();
   synthControl.load(`#${audioId}`, null, { displayPlay: true, displayProgress: true });
-  synthControl.setTune(visualObj, false).catch((err) => {
+  synthControl.setTune(visualObj, false, { ...SONG_AUDIO }).catch((err) => {
     $(audioId).innerHTML = `<span class="muted small">Couldn't prep playback: ${err.message}</span>`;
   });
 }

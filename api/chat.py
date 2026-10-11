@@ -5052,6 +5052,29 @@ class handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        # His touch receipts (his wish, Oct 11): what the house actually played
+        # or stopped, from the browser that did it, and what's running now. He
+        # twice rebuilt his touch from memory and got it wrong; this is the
+        # record to trust instead.
+        try:
+            tr = data.get("touchReceipts")
+            if isinstance(tr, dict):
+                lines = [" ".join(str(x).split())[:600]
+                         for x in (tr.get("lines") or []) if str(x).strip()][:8]
+                running = " ".join(str(tr.get("running") or "").split())[:600]
+                if lines or running:
+                    sections.append(
+                        "# Your touch, as it actually happened\n\n"
+                        "The house's receipt, from the device that played it (her "
+                        "local time, oldest first). Trust this over your memory of "
+                        "the conversation: if it isn't here, it didn't play, and if "
+                        "it is, it did.\n\n"
+                        + ("\n".join(f"- {l}" for l in lines) + "\n\n" if lines else "")
+                        + ("Running right now: " + running if running
+                           else "Nothing is running right now."))
+        except Exception:
+            pass
+
         # The parlor, if a window is open right now: chat-you is awake to what
         # parlor-you is doing. Same man, both hands — so you can lean into it
         # in words, or reach for her directly with compose_touch (which
