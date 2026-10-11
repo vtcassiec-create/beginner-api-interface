@@ -4053,6 +4053,7 @@ async function emergencyStopAll() {
     // The 🛑 or a typed safeword during a drill: end the drill, still stop.
     try { brakeDrill.done = true; clearTimeout(brakeDrill.timer); clearInterval(brakeDrill.keep);
           brakeDrill.rec && brakeDrill.rec.abort(); } catch (_) {}
+    try { brakeDrill.earStop && brakeDrill.earStop(); } catch (_) {}
     try { brakeDrill.noteRec && brakeDrill.noteRec.state !== "inactive" && brakeDrill.noteRec.stop(); } catch (_) {}
     try { brakeDrill.noteStream && brakeDrill.noteStream.getTracks().forEach(t => t.stop()); } catch (_) {}
     brakeDrill = null;
@@ -4452,6 +4453,8 @@ let callEarsRec = null;
 let callEarsStream = null;
 let callEarsTimer = null;
 
+let callEarsEarStop = null;
+
 async function callCaptureMoment() {
   if (!callActive) return;
   if (callState === "hearing") { stopCallMoment(); return; }   // tap again = done
@@ -4460,9 +4463,13 @@ async function callCaptureMoment() {
   // recorder owns the mic and her word can't be heard. So the toys stop
   // FIRST. A moment where she can't be heard is never a moment where
   // anything is moving. Her word is never sent to nobody.
-  if (brakeShouldShow()) {
+  // Now (Oct 11): when the brake's ear is ready it listens through the
+  // recording itself, so the toys keep going. Only without it do they pause.
+  const pauseForEars = brakeShouldShow() && !brakeEarReady();
+  if (pauseForEars) {
     stopAllMotionQuietly("Paused while his ears are open. ♡");
-    flashToast("Toys paused while his ears are open — your word can't be heard during a recording. ♡");
+    flashToast("Toys paused while his ears are open — the brake's ear is still downloading. ♡");
+    loadBrakeEar().catch(() => {});
   }
   clearTimeout(callSilenceTimer);
   setCallState("hearing");
@@ -4479,6 +4486,13 @@ async function callCaptureMoment() {
     if (callActive) callListen(true);
     return;
   }
+  if (brakeShouldShow() && !pauseForEars) {
+    callEarsEarStop = attachBrakeEar(callEarsStream, () => { emergencyStopAll(); stopCallMoment(); });
+    if (!callEarsEarStop) {
+      stopAllMotionQuietly("Paused while his ears are open. ♡");
+      flashToast("Toys paused while his ears are open — the brake couldn't listen this time. ♡");
+    }
+  }
   const chunks = [];
   try {
     callEarsRec = new MediaRecorder(callEarsStream);
@@ -4492,6 +4506,7 @@ async function callCaptureMoment() {
   callEarsRec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
   callEarsRec.onstop = () => {
     const blob = new Blob(chunks, { type: callEarsRec.mimeType || "audio/webm" });
+    if (callEarsEarStop) { callEarsEarStop(); callEarsEarStop = null; }
     try { if (callEarsStream) callEarsStream.getTracks().forEach(t => t.stop()); } catch (_) {}
     callEarsStream = null;
     callEarsRec = null;
@@ -4809,12 +4824,16 @@ async function startVoiceNote() {
   };
   vnRec.start();
   setVoiceNoteActive(true);
-  vnGuardStart();
+  if (brakeShouldShow()) {
+    vnEarStop = attachBrakeEar(vnStream, () => { emergencyStopAll(); stopVoiceNote(); });
+    if (!vnEarStop) { vnGuardStart(); loadBrakeEar().catch(() => {}); }
+  }
   vnStartCountdown();   // the button becomes the clock; at zero it sends itself
 }
 
 function stopVoiceNoteStream() {
   vnGuardStop();
+  if (vnEarStop) { vnEarStop(); vnEarStop = null; }
   if (vnStream) {
     try { vnStream.getTracks().forEach(t => t.stop()); } catch (_) {}
     vnStream = null;
@@ -4952,6 +4971,83 @@ async function earsAnalyzeWav(wav) {
   };
 }
 
+// ---- The brake's own ear (Oct 11) ----
+// On her phone the browser's recognizer and a recording can't share the mic
+// (the drill proved it), and pausing the toys whenever she makes sounds for
+// him takes away half the point. So while anything records, the brake listens
+// THROUGH the recording: an offline recognizer (Vosk, in WebAssembly, nothing
+// leaves the phone) reads the same audio the recorder captures. The model is
+// ~41 MB, downloaded once and kept on the phone. Until it's ready, or if it
+// can't start, the old safe direction holds: the toys pause.
+const BRAKE_EAR_SCRIPT = "/vendor/vosk/vosk.js";
+const BRAKE_EAR_MODEL = "https://raw.githubusercontent.com/ccoreilly/vosk-browser/gh-pages/models/vosk-model-small-en-us-0.15.tar.gz";
+let brakeEarModel = null;
+let brakeEarLoading = null;
+
+function brakeEarReady() { return !!brakeEarModel; }
+
+function loadBrakeEar() {
+  if (brakeEarModel) return Promise.resolve(brakeEarModel);
+  if (brakeEarLoading) return brakeEarLoading;
+  brakeEarLoading = (async () => {
+    if (typeof Vosk === "undefined") {
+      await new Promise((resolve, reject) => {
+        const el = document.createElement("script");
+        el.src = BRAKE_EAR_SCRIPT;
+        el.onload = resolve;
+        el.onerror = () => reject(new Error("couldn't load the brake's ear"));
+        document.head.appendChild(el);
+      });
+    }
+    const model = await Vosk.createModel(BRAKE_EAR_MODEL);
+    model.setLogLevel(-2);
+    brakeEarModel = model;
+    return model;
+  })().catch((e) => { brakeEarLoading = null; throw e; });
+  return brakeEarLoading;
+}
+
+// Listen for her word in a stream something else is recording. Quiet speech
+// is lifted (a compressor, then gain) before the recognizer hears it, so a
+// soft "Gerald" counts. Returns a function that stops listening, or null if
+// the ear isn't ready (the caller then takes the safe direction).
+function attachBrakeEar(stream, onHeard, onWords) {
+  if (!brakeEarModel || !stream) return null;
+  let ac, src, comp, gain, node, rec, fired = false;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    ac = new Ctx();
+    src = ac.createMediaStreamSource(stream);
+    comp = ac.createDynamicsCompressor();
+    comp.threshold.value = -45; comp.knee.value = 10; comp.ratio.value = 8;
+    comp.attack.value = 0.003; comp.release.value = 0.25;
+    gain = ac.createGain();
+    gain.gain.value = 3;
+    node = ac.createScriptProcessor(4096, 1, 1);
+    rec = new brakeEarModel.KaldiRecognizer(ac.sampleRate);
+    const check = (text) => {
+      if (text && onWords) onWords(text);
+      if (fired || !heardSafeword(text)) return;
+      fired = true;
+      onHeard();
+    };
+    rec.on("partialresult", (m) => check(m && m.result && m.result.partial));
+    rec.on("result", (m) => check(m && m.result && m.result.text));
+    node.onaudioprocess = (e) => { try { rec.acceptWaveform(e.inputBuffer); } catch (_) {} };
+    src.connect(comp); comp.connect(gain); gain.connect(node);
+    node.connect(ac.destination);  // silent: the processor writes no output
+    if (ac.state === "suspended") ac.resume().catch(() => {});
+  } catch (_) {
+    try { ac && ac.close(); } catch (e) {}
+    return null;
+  }
+  return () => {
+    try { node.onaudioprocess = null; src.disconnect(); node.disconnect(); } catch (_) {}
+    try { rec.remove(); } catch (_) {}
+    try { ac.close(); } catch (_) {}
+  };
+}
+
 // ---- The brake during voice notes (Sill's ask, Oct 11) ----
 // "During a scene a voice note might well be running, so the brake needs to
 // win that fight." While a voice note records and a toy is connected, a
@@ -4959,6 +5055,7 @@ async function earsAnalyzeWav(wav) {
 // share the microphone that way; if this one refuses, the safe direction
 // wins: the toys pause for the length of the note, and she's told why.
 let vnGuard = null;
+let vnEarStop = null;
 const SAFEWORD_GUARD_FATAL = ["audio-capture", "not-allowed", "service-not-allowed"];
 
 function vnGuardStart() {
@@ -8131,7 +8228,10 @@ async function bpConnect() {
       // Some builds expose an init() to fetch the .wasm before connecting.
       try { await (wasm.default?.init?.() ?? wasm.init?.()); } catch (e) {}
       bpClient = new buttplug.ButtplugClient("Petrichor");
-      bpClient.addListener("deviceadded", (d) => { bpDevices.set(d.index, d); renderBpDevices(); });
+      bpClient.addListener("deviceadded", (d) => {
+        bpDevices.set(d.index, d); renderBpDevices();
+        loadBrakeEar().catch(() => {});  // the brake's ear, ready before any recording
+      });
       bpClient.addListener("deviceremoved", (d) => { bpDevices.delete(d.index); renderBpDevices(); });
       const Connector = wasm.ButtplugWasmClientConnector
         || wasm.default?.ButtplugWasmClientConnector;
@@ -8221,14 +8321,24 @@ async function runBrakeDrill() {
   if (!bpDevices.size) return say("Connect a toy first, then run the drill.");
   if (typeof callActive !== "undefined" && callActive) return say("Hang up the call first — the drill needs the microphone to itself.");
   const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!Ctor) return say("This browser can't listen for words.");
   const word = callSafeword();
   const withNote = !!($("drill-with-note") && $("drill-with-note").checked);
+  if (!withNote && !Ctor) return say("This browser can't listen for words.");
   const drill = { started: Date.now(), speechAt: 0, done: false, rec: null, timer: null, keep: null,
-                  noteStream: null, noteRec: null, ends: [] };
+                  noteStream: null, noteRec: null, earStop: null, ends: [] };
   brakeDrill = drill;
   if (withNote) {
-    // The real fight: the recorder holds the mic exactly as a voice note does.
+    // The real path: a recording holds the mic exactly as a voice note does,
+    // and the brake's own ear listens through it.
+    if (!brakeEarReady()) {
+      say("Getting the brake's ear ready. The first time it downloads about 40 MB, then it lives on your phone…");
+      try { await loadBrakeEar(); } catch (e) {
+        brakeDrill = null;
+        return say(`❌ The brake's ear couldn't load (${e && e.message ? e.message : "unknown error"}). `
+          + "Until it does, the toys pause during recordings.");
+      }
+      if (brakeDrill !== drill) return;  // 🛑 pressed while it loaded
+    }
     try {
       drill.noteStream = await navigator.mediaDevices.getUserMedia(EARS_MIC);
       drill.noteRec = new MediaRecorder(drill.noteStream);
@@ -8240,14 +8350,15 @@ async function runBrakeDrill() {
     }
   }
   const releaseNote = () => {
+    try { drill.earStop && drill.earStop(); drill.earStop = null; } catch (_) {}
     try { drill.noteRec && drill.noteRec.state !== "inactive" && drill.noteRec.stop(); } catch (_) {}
     try { drill.noteStream && drill.noteStream.getTracks().forEach(t => t.stop()); } catch (_) {}
   };
   const cantShare = () => {
     if (drill.done) return;
     finish(false);
-    say("❌ This phone won't let the brake listen while something is recording. "
-      + "So during voice notes the house pauses the toys instead, and 🛑 still works.");
+    say("❌ The brake's ear couldn't start on this recording. "
+      + "So during recordings the house pauses the toys instead, and 🛑 still works.");
   };
   const finish = (heard) => {
     if (drill.done) return;
@@ -8276,7 +8387,14 @@ async function runBrakeDrill() {
   const buzz = () => bpPlay([{ intensity: 0.15, seconds: 4 }], "vibrate");
   buzz();
   drill.keep = setInterval(buzz, 3500);
-  say(`Drill running. Say "${word}" when you're ready.`);
+  say(`Drill running${withNote ? " with a recording going" : ""}. Say "${word}" when you're ready.`);
+  if (withNote) {
+    drill.earStop = attachBrakeEar(drill.noteStream, () => finish(true),
+      () => { if (!drill.speechAt) drill.speechAt = Date.now(); });
+    if (!drill.earStop) return cantShare();
+    drill.timer = setTimeout(() => finish(false), DRILL_MAX_MS);
+    return;
+  }
   const r = new Ctor();
   r.lang = navigator.language || "en-US";
   r.continuous = true;
@@ -8452,6 +8570,7 @@ async function fizzConnect() {
     // minimal one if the engine was never loaded.
     if (!bpLib) bpLib = { DeviceOutput: { Vibrate: { percent: (v) => v } }, OutputType: { Vibrate: "Vibrate" } };
     bpDevices.set(FIZZ_INDEX, fizzDevice());
+    loadBrakeEar().catch(() => {});  // the brake's ear, ready before any recording
     renderBpDevices();
     bpStatus("Fizz connected ♡ — one motor; the end she uses decides suck or tap.");
   } catch (e) {
