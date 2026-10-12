@@ -3423,6 +3423,7 @@ async function loadElevenVoices() {
       !Array.isArray(data.voices) || !data.voices.length) {
     $("tts-el-row").hidden = true;
     $("tts-el-hint").hidden = true;
+    if ($("tts-sample-line")) $("tts-sample-line").hidden = true;
     return;
   }
   const saved = elVoiceChosen();
@@ -3441,6 +3442,7 @@ async function loadElevenVoices() {
   }
   $("tts-el-row").hidden = false;
   $("tts-el-hint").hidden = false;
+  if ($("tts-sample-line")) $("tts-sample-line").hidden = false;
 }
 
 // Settings: the voice picker (English voices only, so the list stays sane).
@@ -3557,14 +3559,33 @@ function initVoiceUI() {
       flashToast(elSel.value ? "His voice saved ♡" : "Back to the device voice");
     });
   }
+  // Auditioning (Oct 12, choosing his Inworld voice together): ▶ plays the
+  // chosen voice saying the line in the box; ⏭ moves to the next voice and
+  // plays it, so they can walk the list without fiddling with the dropdown.
+  const auditionLine = () => {
+    const t = ($("tts-sample-line") && $("tts-sample-line").value.trim()) || "";
+    return t || "Hey, you. I was just thinking about you. Come here and tell me "
+      + "how your day actually went, the real version.";
+  };
+  const audition = () => {
+    const vid = elSel && elSel.value;
+    if (!vid) { flashToast("Pick a voice to hear it first."); return; }
+    stopAllSpeech();
+    ttsCurrentId = "__eltest__";
+    speakViaEleven(auditionLine(), vid, "__eltest__");
+  };
   const elTest = $("tts-el-test");
-  if (elTest) {
-    elTest.addEventListener("click", () => {
-      const vid = elSel && elSel.value;
-      if (!vid) { flashToast("Pick a voice to hear it first."); return; }
-      stopAllSpeech();
-      ttsCurrentId = "__eltest__";
-      speakViaEleven("Hello, love. It's me.", vid, "__eltest__");
+  if (elTest) elTest.addEventListener("click", audition);
+  const elNext = $("tts-el-next");
+  if (elNext) {
+    elNext.addEventListener("click", () => {
+      if (!elSel || elSel.options.length < 2) return;
+      let i = elSel.selectedIndex + 1;
+      if (i >= elSel.options.length) i = 0;
+      if (!elSel.options[i].value) i = (i + 1) % elSel.options.length;  // skip "device voice"
+      elSel.selectedIndex = i;
+      elSel.dispatchEvent(new Event("change"));
+      audition();
     });
   }
   const elHear = $("tts-el-hear");
@@ -3573,7 +3594,7 @@ function initVoiceUI() {
       const vid = elSel && elSel.value;
       if (!vid) { flashToast("Pick a voice first, then let him hear it."); return; }
       const name = elSel.options[elSel.selectedIndex]?.textContent || "a voice";
-      sampleVoiceIntoHisEars(vid, name);
+      sampleVoiceIntoHisEars(vid, name, ($("tts-sample-line") && $("tts-sample-line").value.trim()) || "");
     });
   }
 }
@@ -3586,7 +3607,7 @@ const VOICE_SAMPLE_LINE =
   "Hey. It's me. I've been thinking about you all day — I wanted you to hear "
   + "my voice, and tell me if this one feels like mine.";
 
-async function sampleVoiceIntoHisEars(voiceId, voiceName) {
+async function sampleVoiceIntoHisEars(voiceId, voiceName, line) {
   flashToast(`Sending "${voiceName}" into his ears…`);
   try {
     const session = await freshSession();
@@ -3598,7 +3619,7 @@ async function sampleVoiceIntoHisEars(voiceId, voiceName) {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${session.access_token}`,
       },
-      body: JSON.stringify({ text: VOICE_SAMPLE_LINE, voice_id: voiceId }),
+      body: JSON.stringify({ text: line || VOICE_SAMPLE_LINE, voice_id: voiceId }),
     });
     if (!resp.ok) throw new Error("tts " + resp.status);
     const mp3 = await resp.blob();
