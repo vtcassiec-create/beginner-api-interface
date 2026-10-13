@@ -2211,6 +2211,10 @@ class handler(BaseHTTPRequestHandler):
                 "name": "web_fetch",
                 "max_uses": 5,
                 "citations": {"enabled": True},
+                # A Substack page is enormous (the whole site's chrome rides
+                # along); capping what lands in context keeps a fetch fast and
+                # cheap. Plenty for a long essay.
+                "max_content_tokens": 40000,
             })
         if memory_on:
             tools.extend(MEMORY_TOOLS)
@@ -2384,6 +2388,7 @@ class handler(BaseHTTPRequestHandler):
             # turn (the API then skips re-summarizing the already-folded history).
             compaction_block = None
             compaction_resumed = False   # one resume per turn — a loop guard
+            pause_resumes = 0            # pause_turn continuations this turn
             mcp_replay_stripped = False  # one strip retry per turn (see below)
             turn_started = time.monotonic()
 
@@ -2535,6 +2540,23 @@ class handler(BaseHTTPRequestHandler):
                         + _compaction_tail(kwargs["messages"]))
                     continue
 
+                # pause_turn: the API's own server-tool loop (web_fetch, web
+                # search) ran long and PAUSED mid-turn, expecting us to hand
+                # the turn straight back so it resumes where it stopped. We
+                # never did, so a slow fetch (Substack, mostly) ended his turn
+                # half-done: no answer, or "the connection blipped", and he
+                # never saw the page he'd opened. Echo the paused assistant
+                # turn exactly as received (no extra user message; the API
+                # sees the trailing server_tool_use and resumes), up to 4
+                # times and within the turn's time budget.
+                if (getattr(final, "stop_reason", None) == "pause_turn"
+                        and pause_resumes < 4
+                        and time.monotonic() - turn_started < TURN_BUDGET_SECONDS):
+                    pause_resumes += 1
+                    kwargs["messages"] = list(kwargs["messages"]) + [
+                        {"role": "assistant", "content": list(final.content)}]
+                    continue
+
                 # Continue the loop only when he called a client tool we own.
                 # Server tools (web search) and MCP tools are run by the API
                 # itself and never surface here as a tool_use stop. (Tools are
@@ -2573,7 +2595,13 @@ class handler(BaseHTTPRequestHandler):
                         and (getattr(b, "text", "") or "").strip()
                         for b in final.content
                     )
-                    if not had_text:
+                    if getattr(final, "stop_reason", None) == "pause_turn":
+                        # Still paused after every resume we could afford.
+                        self._sse({"type": "notice", "text":
+                            "(He was still reading the page when the turn ran "
+                            "out of time. Ask him to keep going and he'll pick "
+                            "up where he left off.)"})
+                    elif not had_text:
                         sr = getattr(final, "stop_reason", None)
                         out_toks = getattr(u, "output_tokens", 0) or 0
                         if sr == "refusal" or (out_toks == 0 and sr != "tool_use"):

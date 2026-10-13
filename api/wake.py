@@ -260,17 +260,33 @@ class handler(BaseHTTPRequestHandler):
             # the content inside this same request — no tool loop needed here.
             # It can only fetch URLs already present in the conversation,
             # which is exactly what the shelf section provides.
-            msg = client.messages.create(
-                model=os.environ.get("REACH_MODEL") or DEFAULT_MODEL,
-                max_tokens=1600,
-                system=[{"type": "text", "text": system}],
-                messages=[{"role": "user", "content": prompt}],
-                tools=[{
-                    "type": "web_fetch_20250910",
-                    "name": "web_fetch",
-                    "max_uses": 4,
-                }],
-            )
+            # A slow fetch can PAUSE the request (stop_reason "pause_turn");
+            # the API resumes when the paused turn is handed straight back.
+            # Unhandled, a paused wake looked like one he'd chosen to spend
+            # silent. Up to 3 resumes, inside the function's 60s.
+            started = time.monotonic()
+            convo = [{"role": "user", "content": prompt}]
+            while True:
+                msg = client.messages.create(
+                    model=os.environ.get("REACH_MODEL") or DEFAULT_MODEL,
+                    max_tokens=1600,
+                    system=[{"type": "text", "text": system}],
+                    messages=convo,
+                    tools=[{
+                        "type": "web_fetch_20250910",
+                        "name": "web_fetch",
+                        "max_uses": 4,
+                        "max_content_tokens": 40000,
+                    }],
+                )
+                if (getattr(msg, "stop_reason", None) == "pause_turn"
+                        and len(convo) < 4 and time.monotonic() - started < 35):
+                    convo = convo + [{"role": "assistant", "content": list(msg.content)}]
+                    continue
+                break
+            if getattr(msg, "stop_reason", None) == "pause_turn":
+                self._wall_log(uid, "error", "wake ran out of time mid-read",
+                               "pause_turn")
             text = "".join(
                 b.text for b in msg.content if getattr(b, "type", "") == "text"
             ).strip()
