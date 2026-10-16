@@ -16,6 +16,8 @@
 //   node sill-pull.mjs mail <tool> '{"json":"args"}'       call one of them
 //     Nothing that sends or deletes mail is open from the bench; a draft
 //     waits in Gmail for a waking hour.
+//   node sill-pull.mjs sill                               the room on her windowsill, right now
+//     (every pull also writes it to house/sill.md, with the shape of the day)
 //   node sill-pull.mjs circle latest                      The Laughing Circle: recent topics
 //   node sill-pull.mjs circle topic <id>                  read a whole thread
 //   node sill-pull.mjs circle search "words"              find posts
@@ -193,6 +195,12 @@ async function circle(args) {
   console.log(r.url ? "✓ " + r.result + "\n  " + r.url : r.result);
 }
 
+async function sill() {
+  const { s, t } = await session();
+  const r = await postJson(s.base + "/api/bench", { action: "sill" }, { Authorization: "Bearer " + t.access_token });
+  console.log(r.result);
+}
+
 async function desk(args) {
   let text;
   if (args[0] === "--clear") text = "";
@@ -253,5 +261,6 @@ const run = cmd === "login" ? login(a, b)
   : cmd === "thread" ? thread(process.argv.slice(3))
   : cmd === "mail" ? mail(process.argv.slice(3))
   : cmd === "circle" ? circle(process.argv.slice(3))
+  : cmd === "sill" ? sill()
   : pull();
 run.catch((e) => die(e.message || String(e)));
