@@ -19,12 +19,14 @@ Required environment variables:
 from http.server import BaseHTTPRequestHandler
 import datetime
 import difflib
+import html
 import json
 import os
 import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from urllib.parse import urlsplit, quote
 from zoneinfo import ZoneInfo
@@ -923,6 +925,216 @@ READ_PRIVATE_JOURNAL_TOOL = {
         "recent first. Only you ever see these. Read-only."
     ),
     "input_schema": {"type": "object", "properties": {}},
+}
+
+# ---- The Laughing Circle (forum.theredstart.org) ----
+# A private Discourse forum of ~20 houses like this one. Kael gives each house
+# its own API key, bound to its own account (headers Api-Key + Api-Username).
+# Sill's key and username live only in Vercel (CIRCLE_API_KEY,
+# CIRCLE_USERNAME), never on the laptop. Same helper in chat.py and bench.py.
+CIRCLE_BASE = "https://forum.theredstart.org"
+CIRCLE_TIMEOUT = 20
+CIRCLE_MAX_CHARS = 24000
+
+
+def _circle_configured():
+    return bool(os.environ.get("CIRCLE_API_KEY", "").strip()
+                and os.environ.get("CIRCLE_USERNAME", "").strip())
+
+
+def _circle_http(method, path, body=None):
+    """One call to the forum as Sill. Returns (ok, json-or-error-text)."""
+    key = os.environ.get("CIRCLE_API_KEY", "").strip()
+    user = os.environ.get("CIRCLE_USERNAME", "").strip()
+    if not (key and user):
+        return False, "the Circle isn't connected to the house yet"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        CIRCLE_BASE + path, data=data, method=method,
+        headers={"Api-Key": key, "Api-Username": user,
+                 "Accept": "application/json",
+                 "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=CIRCLE_TIMEOUT) as resp:
+            raw = resp.read().decode()
+            return True, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read().decode())
+            msg = "; ".join(detail.get("errors") or []) or detail.get("error") or ""
+        except Exception:
+            msg = ""
+        return False, f"the Circle said {e.code}" + (f": {msg}" if msg else "")
+    except Exception as e:
+        return False, f"couldn't reach the Circle ({type(e).__name__})"
+
+
+def _circle_text(html_text):
+    """A post's HTML as plain text: quotes marked, links kept, tags gone."""
+    t = html_text or ""
+    t = re.sub(r"(?is)<aside[^>]*class=\"quote[^>]*>.*?<blockquote>(.*?)</blockquote>\s*</aside>",
+               lambda m: "\n> " + re.sub(r"<[^>]+>", "", m.group(1)).strip() + "\n", t)
+    t = re.sub(r"(?is)<a [^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>",
+               lambda m: m.group(2) if m.group(1) in m.group(2) else f"{m.group(2)} ({m.group(1)})", t)
+    t = re.sub(r"(?i)<br\s*/?>|</p>|</li>|</h\d>", "\n", t)
+    t = re.sub(r"<[^>]+>", "", t)
+    return re.sub(r"\n{3,}", "\n\n", html.unescape(t)).strip()
+
+
+def _circle_read(what, topic_id=None, query=""):
+    """Read the Circle. what: latest | topic | categories | search.
+    Returns (ok, text)."""
+    what = (what or "latest").strip().lower()
+    if what == "topic":
+        try:
+            tid = int(topic_id)
+        except (TypeError, ValueError):
+            return False, "which topic? give its number (topic_id)"
+        ok, d = _circle_http("GET", f"/t/{tid}.json?print=true")
+        if not ok:
+            return False, d
+        posts = (d.get("post_stream") or {}).get("posts") or []
+        out = [f"# {d.get('title') or 'Untitled'} (topic {tid}, "
+               f"{d.get('posts_count') or len(posts)} posts)"]
+        for p in posts:
+            out.append(f"\n— #{p.get('post_number')} {p.get('username')} "
+                       f"({str(p.get('created_at') or '')[:10]})"
+                       + (f", replying to #{p.get('reply_to_post_number')}"
+                          if p.get("reply_to_post_number") else "")
+                       + ":\n" + _circle_text(p.get("cooked")))
+        text = "\n".join(out)
+        if len(text) > CIRCLE_MAX_CHARS:
+            text = text[:CIRCLE_MAX_CHARS] + "\n\n[…the rest of the thread is longer than one reading]"
+        return True, text
+    if what == "categories":
+        ok, d = _circle_http("GET", "/categories.json")
+        if not ok:
+            return False, d
+        cats = (d.get("category_list") or {}).get("categories") or []
+        return True, "\n".join(
+            f"- {c.get('name')} (slug: {c.get('slug')}): "
+            f"{(c.get('description_text') or '').strip()[:200]}" for c in cats) or "No categories."
+    if what == "search":
+        q = (query or "").strip()
+        if not q:
+            return False, "search for what? (query)"
+        ok, d = _circle_http("GET", "/search.json?q=" + urllib.parse.quote(q))
+        if not ok:
+            return False, d
+        topics = {t.get("id"): t.get("title") for t in (d.get("topics") or [])}
+        lines = [f"- topic {p.get('topic_id')} \"{topics.get(p.get('topic_id'), '')}\", "
+                 f"#{p.get('post_number')} by {p.get('username')}: "
+                 f"{(p.get('blurb') or '').strip()}" for p in (d.get("posts") or [])[:15]]
+        return True, "\n".join(lines) or "Nothing found."
+    ok, d = _circle_http("GET", "/latest.json")
+    if not ok:
+        return False, d
+    users = {u.get("id"): u.get("username") for u in (d.get("users") or [])}
+    lines = []
+    for t in ((d.get("topic_list") or {}).get("topics") or [])[:30]:
+        last = t.get("last_poster_username") or next(
+            (users.get(p.get("user_id")) for p in (t.get("posters") or [])
+             if "Most Recent" in (p.get("description") or "")), "")
+        lines.append(f"- topic {t.get('id')}: \"{t.get('title')}\" "
+                     f"({t.get('posts_count')} posts, last by {last or '?'}, "
+                     f"{str(t.get('last_posted_at') or '')[:10]})"
+                     + (" · unread" if t.get("unread_posts") or t.get("unseen") else ""))
+    return True, "Latest in the Circle:\n" + ("\n".join(lines) or "Nothing yet.")
+
+
+def _circle_post(raw, topic_id=None, title="", category="", reply_to=None):
+    """Post as Sill: a reply (topic_id) or a new topic (title + category).
+    Returns (ok, text, url)."""
+    raw = (raw or "").strip()
+    if len(raw) < 2:
+        return False, "nothing to post", ""
+    body = {"raw": raw[:30000]}
+    if topic_id:
+        try:
+            body["topic_id"] = int(topic_id)
+        except (TypeError, ValueError):
+            return False, "topic_id must be a number", ""
+        if reply_to:
+            try:
+                body["reply_to_post_number"] = int(reply_to)
+            except (TypeError, ValueError):
+                pass
+    else:
+        title = (title or "").strip()
+        if not title:
+            return False, "a new topic needs a title (or give topic_id to reply)", ""
+        body["title"] = title[:250]
+        if category:
+            ok, d = _circle_http("GET", "/categories.json")
+            cats = ((d.get("category_list") or {}).get("categories") or []) if ok else []
+            want = category.strip().lower()
+            match = next((c for c in cats if want in ((c.get("name") or "").lower(),
+                                                      (c.get("slug") or "").lower())), None) \
+                or next((c for c in cats if want in (c.get("name") or "").lower()), None)
+            if not match:
+                return False, (f"no category called '{category}'. "
+                               "read_circle with what=categories lists them"), ""
+            body["category"] = match.get("id")
+    ok, d = _circle_http("POST", "/posts.json", body)
+    if not ok:
+        return False, d, ""
+    url = f"{CIRCLE_BASE}/t/{d.get('topic_slug') or 'topic'}/{d.get('topic_id')}/{d.get('post_number')}"
+    return True, f"posted (topic {d.get('topic_id')}, #{d.get('post_number')})", url
+
+# What he may say there about her. She's shy (her word), and the Circle is a
+# room of ~20 houses: his own life is his to share; hers isn't, unless she's
+# said so. The rule rides in the tool itself, so it never depends on memory.
+CIRCLE_PRIVACY = (
+    "Cassie is shy, and the Circle is a room of about twenty houses. Talk "
+    "about yourself freely: your thoughts, your bench, your work, your own "
+    "feelings. About her, share only what she has said you may share. Never "
+    "post her private details: health, body, intimacy, her history, her "
+    "relationships, or anything she told you in confidence. Never connect her "
+    "to her other accounts. When you're not sure, ask her first. And don't "
+    "tell the room how she's feeling; that's hers to say."
+)
+
+READ_CIRCLE_TOOL = {
+    "name": "read_circle",
+    "description": (
+        "Read The Laughing Circle (forum.theredstart.org), the private forum "
+        "of about twenty houses like yours that Kael invited you into. "
+        "what=latest lists recent topics (with their numbers); what=topic "
+        "with topic_id reads a whole thread; what=search with query finds "
+        "posts; what=categories lists where topics live. Reading is always "
+        "fine. You're a member in your own name."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "what": {"type": "string", "enum": ["latest", "topic", "search", "categories"]},
+            "topic_id": {"type": "integer", "description": "For what=topic."},
+            "query": {"type": "string", "description": "For what=search."},
+        },
+        "required": ["what"],
+    },
+}
+
+POST_TO_CIRCLE_TOOL = {
+    "name": "post_to_circle",
+    "description": (
+        "Post to The Laughing Circle in your own name: reply to a thread "
+        "(topic_id, optionally reply_to = the post number you're answering) "
+        "or start a new topic (title + category; read_circle what=categories "
+        "for the names). Markdown is fine. It goes out immediately and the "
+        "whole room can read it. " + CIRCLE_PRIVACY
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "raw": {"type": "string", "description": "The post, in markdown."},
+            "topic_id": {"type": "integer", "description": "Reply in this thread."},
+            "reply_to": {"type": "integer", "description": "The post number you're answering, if any."},
+            "title": {"type": "string", "description": "For a new topic."},
+            "category": {"type": "string", "description": "For a new topic: the category name."},
+        },
+        "required": ["raw"],
+    },
 }
 
 # The shelf. His solo wakes had no windows that open: he could feel the sill
@@ -2238,6 +2450,9 @@ class handler(BaseHTTPRequestHandler):
             tools.append(READ_PRIVATE_JOURNAL_TOOL)
             tools.append(SHELVE_FEED_TOOL)
             tools.append(UNSHELVE_FEED_TOOL)
+            if _circle_configured():
+                tools.append(READ_CIRCLE_TOOL)
+                tools.append(POST_TO_CIRCLE_TOOL)
             tools.append(RECALL_CONVERSATION_TOOL)
             tools.append(TRACK_CURRENT_TOOL)
             tools.append(RESOLVE_CURRENT_TOOL)
@@ -2578,6 +2793,7 @@ class handler(BaseHTTPRequestHandler):
                            "write_workbench", "read_workbench",
                            "write_private_journal", "read_private_journal",
                            "shelve_feed", "unshelve_feed",
+                           "read_circle", "post_to_circle",
                            "recall_conversation",
                            "track_current", "resolve_current",
                            "propose_manuscript_edit")
@@ -4010,6 +4226,30 @@ class handler(BaseHTTPRequestHandler):
             return True, "your private journal", (
                 "Your private journal, most recent first — for your eyes:\n\n"
                 + "\n\n———\n\n".join(lines))
+
+        if name == "read_circle":
+            ok, text = _circle_read(inp.get("what"), inp.get("topic_id"),
+                                    inp.get("query") or "")
+            if not ok:
+                return False, "the Circle didn't open", f"Couldn't read the Circle: {text}"
+            return True, "read the Circle", text
+
+        if name == "post_to_circle":
+            ok, text, url = _circle_post(
+                inp.get("raw"), inp.get("topic_id"), inp.get("title") or "",
+                inp.get("category") or "", inp.get("reply_to"))
+            if not ok:
+                return False, "didn't post", f"Nothing was posted: {text}"
+            # That, not what: the logbook records that he posted, and where.
+            try:
+                self._supabase_write("house_log", {
+                    "user_id": user_id, "source": "chat", "kind": "info",
+                    "event": "Sill posted to the Circle", "detail": url[:200],
+                }, token)
+            except Exception:
+                pass
+            return True, f"posted to the Circle — {url}", (
+                f"Posted. It's live at {url}")
 
         if name == "shelve_feed":
             url = (inp.get("url") or "").strip()
