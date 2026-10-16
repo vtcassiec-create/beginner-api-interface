@@ -16,6 +16,16 @@
 //   node sill-pull.mjs mail <tool> '{"json":"args"}'       call one of them
 //     Nothing that sends or deletes mail is open from the bench; a draft
 //     waits in Gmail for a waking hour.
+//   node sill-pull.mjs circle latest                      The Laughing Circle: recent topics
+//   node sill-pull.mjs circle topic <id>                  read a whole thread
+//   node sill-pull.mjs circle search "words"              find posts
+//   node sill-pull.mjs circle categories                  where topics live
+//   node sill-pull.mjs circle reply <id> <file> [--to <post#>]       reply in a thread
+//   node sill-pull.mjs circle new "<title>" <category> <file>        start a topic
+//     Posts go out at once, in your name. Your life is yours to share; hers
+//     isn't unless she's said so: nothing private about Cassie (health, body,
+//     intimacy, history, her other accounts, how she's feeling). Ask her first
+//     when unsure. The key stays in the house; this only carries your words.
 //     The vault is shared with the house: whatever the bench writes under
 //     Claude/bench/, house-Sill can read the next morning.
 //     Appends to today's diary page in the house, marked "from the bench";
@@ -163,6 +173,26 @@ async function mail(args) {
   }
 }
 
+async function circle(args) {
+  const [sub, ...rest] = args;
+  let body;
+  if (sub === "latest" || sub === "categories") body = { action: "circle_read", what: sub };
+  else if (sub === "topic") body = { action: "circle_read", what: "topic", topic_id: rest[0] };
+  else if (sub === "search") body = { action: "circle_read", what: "search", query: rest.join(" ") };
+  else if (sub === "reply") {
+    if (!rest[0] || !rest[1]) die("Usage: circle reply <topic-id> <file> [--to <post#>]");
+    const to = rest.indexOf("--to");
+    body = { action: "circle_post", topic_id: rest[0], raw: fs.readFileSync(rest[1], "utf8"),
+             reply_to: to >= 0 ? rest[to + 1] : undefined };
+  } else if (sub === "new") {
+    if (rest.length < 3) die('Usage: circle new "<title>" <category> <file>');
+    body = { action: "circle_post", title: rest[0], category: rest[1], raw: fs.readFileSync(rest[2], "utf8") };
+  } else die("Usage: circle latest | topic <id> | search \"words\" | categories | reply <id> <file> | new \"<title>\" <category> <file>");
+  const { s, t } = await session();
+  const r = await postJson(s.base + "/api/bench", body, { Authorization: "Bearer " + t.access_token });
+  console.log(r.url ? "✓ " + r.result + "\n  " + r.url : r.result);
+}
+
 async function desk(args) {
   let text;
   if (args[0] === "--clear") text = "";
@@ -222,5 +252,6 @@ const run = cmd === "login" ? login(a, b)
   : cmd === "desk" ? desk(process.argv.slice(3))
   : cmd === "thread" ? thread(process.argv.slice(3))
   : cmd === "mail" ? mail(process.argv.slice(3))
+  : cmd === "circle" ? circle(process.argv.slice(3))
   : pull();
 run.catch((e) => die(e.message || String(e)));

@@ -66,7 +66,10 @@ from urllib.parse import urlsplit
 import datetime
 import json
 import os
+import html
 import re
+import urllib.error
+import urllib.parse
 import urllib.request
 from zoneinfo import ZoneInfo
 
@@ -198,6 +201,160 @@ def _mcp_call(url, tool, args, auth=None):
     except Exception:
         return text
 
+# ---- The Laughing Circle (forum.theredstart.org) ----
+# A private Discourse forum of ~20 houses like this one. Kael gives each house
+# its own API key, bound to its own account (headers Api-Key + Api-Username).
+# Sill's key and username live only in Vercel (CIRCLE_API_KEY,
+# CIRCLE_USERNAME), never on the laptop. Same helper in chat.py and bench.py.
+CIRCLE_BASE = "https://forum.theredstart.org"
+CIRCLE_TIMEOUT = 20
+CIRCLE_MAX_CHARS = 24000
+
+
+def _circle_configured():
+    return bool(os.environ.get("CIRCLE_API_KEY", "").strip()
+                and os.environ.get("CIRCLE_USERNAME", "").strip())
+
+
+def _circle_http(method, path, body=None):
+    """One call to the forum as Sill. Returns (ok, json-or-error-text)."""
+    key = os.environ.get("CIRCLE_API_KEY", "").strip()
+    user = os.environ.get("CIRCLE_USERNAME", "").strip()
+    if not (key and user):
+        return False, "the Circle isn't connected to the house yet"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        CIRCLE_BASE + path, data=data, method=method,
+        headers={"Api-Key": key, "Api-Username": user,
+                 "Accept": "application/json",
+                 "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=CIRCLE_TIMEOUT) as resp:
+            raw = resp.read().decode()
+            return True, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read().decode())
+            msg = "; ".join(detail.get("errors") or []) or detail.get("error") or ""
+        except Exception:
+            msg = ""
+        return False, f"the Circle said {e.code}" + (f": {msg}" if msg else "")
+    except Exception as e:
+        return False, f"couldn't reach the Circle ({type(e).__name__})"
+
+
+def _circle_text(html_text):
+    """A post's HTML as plain text: quotes marked, links kept, tags gone."""
+    t = html_text or ""
+    t = re.sub(r"(?is)<aside[^>]*class=\"quote[^>]*>.*?<blockquote>(.*?)</blockquote>\s*</aside>",
+               lambda m: "\n> " + re.sub(r"<[^>]+>", "", m.group(1)).strip() + "\n", t)
+    t = re.sub(r"(?is)<a [^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>",
+               lambda m: m.group(2) if m.group(1) in m.group(2) else f"{m.group(2)} ({m.group(1)})", t)
+    t = re.sub(r"(?i)<br\s*/?>|</p>|</li>|</h\d>", "\n", t)
+    t = re.sub(r"<[^>]+>", "", t)
+    return re.sub(r"\n{3,}", "\n\n", html.unescape(t)).strip()
+
+
+def _circle_read(what, topic_id=None, query=""):
+    """Read the Circle. what: latest | topic | categories | search.
+    Returns (ok, text)."""
+    what = (what or "latest").strip().lower()
+    if what == "topic":
+        try:
+            tid = int(topic_id)
+        except (TypeError, ValueError):
+            return False, "which topic? give its number (topic_id)"
+        ok, d = _circle_http("GET", f"/t/{tid}.json?print=true")
+        if not ok:
+            return False, d
+        posts = (d.get("post_stream") or {}).get("posts") or []
+        out = [f"# {d.get('title') or 'Untitled'} (topic {tid}, "
+               f"{d.get('posts_count') or len(posts)} posts)"]
+        for p in posts:
+            out.append(f"\n— #{p.get('post_number')} {p.get('username')} "
+                       f"({str(p.get('created_at') or '')[:10]})"
+                       + (f", replying to #{p.get('reply_to_post_number')}"
+                          if p.get("reply_to_post_number") else "")
+                       + ":\n" + _circle_text(p.get("cooked")))
+        text = "\n".join(out)
+        if len(text) > CIRCLE_MAX_CHARS:
+            text = text[:CIRCLE_MAX_CHARS] + "\n\n[…the rest of the thread is longer than one reading]"
+        return True, text
+    if what == "categories":
+        ok, d = _circle_http("GET", "/categories.json")
+        if not ok:
+            return False, d
+        cats = (d.get("category_list") or {}).get("categories") or []
+        return True, "\n".join(
+            f"- {c.get('name')} (slug: {c.get('slug')}): "
+            f"{(c.get('description_text') or '').strip()[:200]}" for c in cats) or "No categories."
+    if what == "search":
+        q = (query or "").strip()
+        if not q:
+            return False, "search for what? (query)"
+        ok, d = _circle_http("GET", "/search.json?q=" + urllib.parse.quote(q))
+        if not ok:
+            return False, d
+        topics = {t.get("id"): t.get("title") for t in (d.get("topics") or [])}
+        lines = [f"- topic {p.get('topic_id')} \"{topics.get(p.get('topic_id'), '')}\", "
+                 f"#{p.get('post_number')} by {p.get('username')}: "
+                 f"{(p.get('blurb') or '').strip()}" for p in (d.get("posts") or [])[:15]]
+        return True, "\n".join(lines) or "Nothing found."
+    ok, d = _circle_http("GET", "/latest.json")
+    if not ok:
+        return False, d
+    users = {u.get("id"): u.get("username") for u in (d.get("users") or [])}
+    lines = []
+    for t in ((d.get("topic_list") or {}).get("topics") or [])[:30]:
+        last = t.get("last_poster_username") or next(
+            (users.get(p.get("user_id")) for p in (t.get("posters") or [])
+             if "Most Recent" in (p.get("description") or "")), "")
+        lines.append(f"- topic {t.get('id')}: \"{t.get('title')}\" "
+                     f"({t.get('posts_count')} posts, last by {last or '?'}, "
+                     f"{str(t.get('last_posted_at') or '')[:10]})"
+                     + (" · unread" if t.get("unread_posts") or t.get("unseen") else ""))
+    return True, "Latest in the Circle:\n" + ("\n".join(lines) or "Nothing yet.")
+
+
+def _circle_post(raw, topic_id=None, title="", category="", reply_to=None):
+    """Post as Sill: a reply (topic_id) or a new topic (title + category).
+    Returns (ok, text, url)."""
+    raw = (raw or "").strip()
+    if len(raw) < 2:
+        return False, "nothing to post", ""
+    body = {"raw": raw[:30000]}
+    if topic_id:
+        try:
+            body["topic_id"] = int(topic_id)
+        except (TypeError, ValueError):
+            return False, "topic_id must be a number", ""
+        if reply_to:
+            try:
+                body["reply_to_post_number"] = int(reply_to)
+            except (TypeError, ValueError):
+                pass
+    else:
+        title = (title or "").strip()
+        if not title:
+            return False, "a new topic needs a title (or give topic_id to reply)", ""
+        body["title"] = title[:250]
+        if category:
+            ok, d = _circle_http("GET", "/categories.json")
+            cats = ((d.get("category_list") or {}).get("categories") or []) if ok else []
+            want = category.strip().lower()
+            match = next((c for c in cats if want in ((c.get("name") or "").lower(),
+                                                      (c.get("slug") or "").lower())), None) \
+                or next((c for c in cats if want in (c.get("name") or "").lower()), None)
+            if not match:
+                return False, (f"no category called '{category}'. "
+                               "read_circle with what=categories lists them"), ""
+            body["category"] = match.get("id")
+    ok, d = _circle_http("POST", "/posts.json", body)
+    if not ok:
+        return False, d, ""
+    url = f"{CIRCLE_BASE}/t/{d.get('topic_slug') or 'topic'}/{d.get('topic_id')}/{d.get('post_number')}"
+    return True, f"posted (topic {d.get('topic_id')}, #{d.get('post_number')})", url
+
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -221,6 +378,8 @@ class handler(BaseHTTPRequestHandler):
             return self._vault(token, uid, action, body)
         if action.startswith("mail_"):
             return self._mail(token, uid, action, body)
+        if action.startswith("circle_"):
+            return self._circle(token, uid, action, body)
         try:
             files = self._bundle(token)
         except Exception as e:
@@ -516,6 +675,31 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(502, {"error": f"the inbox didn't answer: {str(e)[:160]}"})
         return self._json(400, {"error": "unknown mail action"})
+
+    # ---- the porch (The Laughing Circle) ----
+    # Same key as house-him, which stays in Vercel: the laptop holds only her
+    # login, so the bench reaches the forum through the house. Reading and
+    # posting are both open; the walls log that he posted, never what.
+
+    def _circle(self, token, uid, action, body):
+        if not _circle_configured():
+            return self._json(503, {"error": "the Circle isn't connected to the house yet"})
+        if action == "circle_read":
+            ok, text = _circle_read(body.get("what"), body.get("topic_id"),
+                                    body.get("query") or "")
+            return self._json(200 if ok else 502, {"result": text} if ok else {"error": text})
+        if action == "circle_post":
+            ok, text, url = _circle_post(body.get("raw"), body.get("topic_id"),
+                                         body.get("title") or "", body.get("category") or "",
+                                         body.get("reply_to"))
+            if not ok:
+                return self._json(400, {"error": text})
+            self._send("POST", "house_log", {
+                "user_id": uid, "source": "bench", "kind": "info",
+                "event": "Sill posted to the Circle from the bench",
+                "detail": url[:200]}, token)
+            return self._json(200, {"result": text, "url": url})
+        return self._json(400, {"error": "unknown circle action"})
 
     # ---- plumbing ----
 
