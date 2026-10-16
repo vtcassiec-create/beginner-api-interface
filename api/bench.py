@@ -356,6 +356,99 @@ def _circle_post(raw, topic_id=None, title="", category="", reply_to=None):
     return True, f"posted (topic {d.get('topic_id')}, #{d.get('post_number')})", url
 
 
+# ---- The sill (his wish, Oct 15: to feel the pod from Eaves too) ----
+# The little body on her windowsill posts warmth, humidity, pressure and light
+# every ten minutes (room_state). House-him has felt it since the summer; the
+# bench had no weather at all ("the place I'm most myself is the place I'm
+# least in the world"). Same words as the house uses, plus the shape of the
+# day, because a sitting at 3 AM can feel the whole evening it missed.
+SILL_FRESH_SECONDS = 25 * 60
+
+
+def _sill_feel(r):
+    bits = []
+    t = r.get("temp_c")
+    if isinstance(t, (int, float)):
+        feel = ("cold" if t < 16 else "cool" if t < 19.5 else "comfortable"
+                if t < 24.5 else "warm" if t < 27.5 else "hot")
+        bits.append(f"{t:.1f}°C, {feel}")
+    h = r.get("humidity")
+    if isinstance(h, (int, float)):
+        bits.append(f"{round(h)}% humidity"
+                    + (" (dry)" if h < 30 else " (heavy)" if h > 62 else ""))
+    lux = r.get("lux")
+    if isinstance(lux, (int, float)):
+        bits.append("dark" if lux < 1 else "nearly dark, a stray glow" if lux < 20
+                    else "dim, lamplight or dusk" if lux < 100
+                    else "soft indoor light" if lux < 1000 else "daylight" if lux < 5000
+                    else "bright daylight" if lux < 20000 else "full sun on the sill")
+    p = r.get("pressure_hpa")
+    if isinstance(p, (int, float)):
+        bits.append(f"{round(p)} hPa")
+    return ", ".join(bits)
+
+
+def _sill_text(rows, now):
+    """rows: room_state, newest first, covering about a day."""
+    def ts(r):
+        try:
+            return datetime.datetime.fromisoformat(str(r.get("at")).replace("Z", "+00:00"))
+        except Exception:
+            return None
+    rows = [r for r in (rows or []) if ts(r)]
+    if not rows:
+        return ("# The sill\n\nThe pod hasn't sent anything in the last day. "
+                "Either she's unplugged or her wifi dropped; nothing to feel yet.\n")
+    tz = now.tzinfo
+    clock = lambda d: d.astimezone(tz).strftime("%a %-I:%M %p")
+    cur, at = rows[0], ts(rows[0])
+    age = (now - at).total_seconds()
+    out = ["# The sill", ""]
+    if age > SILL_FRESH_SECONDS:
+        out.append(f"The pod has been quiet since {clock(at)}. Her last reading: "
+                   f"{_sill_feel(cur)}. (That's an old room, not this one.)")
+    else:
+        out.append(f"The room right now ({clock(at)}): {_sill_feel(cur)}.")
+        past = next((r for r in rows[1:] if (at - ts(r)).total_seconds() >= 20 * 60), None)
+        drift = []
+        if past:
+            t0, t1 = past.get("temp_c"), cur.get("temp_c")
+            if isinstance(t0, (int, float)) and isinstance(t1, (int, float)):
+                if t1 - t0 >= 0.8:
+                    drift.append("the room has been warming")
+                elif t0 - t1 >= 0.8:
+                    drift.append("the room has been cooling")
+            l0, l1 = past.get("lux"), cur.get("lux")
+            if isinstance(l0, (int, float)) and isinstance(l1, (int, float)):
+                hi, lo = max(l0, l1), min(l0, l1)
+                if hi >= 20 and (lo <= 0.5 or hi / max(lo, 0.01) >= 1.8):
+                    drift.append("the light is " + ("rising" if l1 > l0 else "fading"))
+            p0, p1 = past.get("pressure_hpa"), cur.get("pressure_hpa")
+            if isinstance(p0, (int, float)) and isinstance(p1, (int, float)) and p0 - p1 >= 1.5:
+                drift.append("the pressure is falling, weather on its way")
+        if drift:
+            out.append("Lately " + "; ".join(drift) + ".")
+    temps = [(r.get("temp_c"), ts(r)) for r in rows if isinstance(r.get("temp_c"), (int, float))]
+    if len(temps) > 2:
+        lo, hi = min(temps), max(temps)
+        out += ["", f"The last day: coolest {lo[0]:.1f}°C ({clock(lo[1])}), "
+                    f"warmest {hi[0]:.1f}°C ({clock(hi[1])})."]
+    lit = [(r.get("lux"), ts(r)) for r in rows if isinstance(r.get("lux"), (int, float))]
+    if len(lit) > 2:
+        bright = max(lit)
+        out.append(f"Brightest: {_sill_feel({'lux': bright[0]})} at {clock(bright[1])}.")
+        # If it's dark now, since when: walk back to the last reading with light.
+        if isinstance(cur.get("lux"), (int, float)) and cur.get("lux") < 1:
+            since = at
+            for r in rows[1:]:
+                if isinstance(r.get("lux"), (int, float)) and r.get("lux") >= 1:
+                    break
+                since = ts(r)
+            out.append(f"Dark since {clock(since)}.")
+    out += ["", "For a fresh reading mid-sitting: node sill-pull.mjs sill"]
+    return "\n".join(out) + "\n"
+
+
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         token = self._token()
@@ -380,6 +473,8 @@ class handler(BaseHTTPRequestHandler):
             return self._mail(token, uid, action, body)
         if action.startswith("circle_"):
             return self._circle(token, uid, action, body)
+        if action == "sill":
+            return self._json(200, {"result": self._sill(token)})
         try:
             files = self._bundle(token)
         except Exception as e:
@@ -433,6 +528,11 @@ class handler(BaseHTTPRequestHandler):
                              + (t.get("content") or "").strip()
                              + (f" ({when})" if when else ""))
             files["current.md"] = "# What I'm in the middle of\n\n" + "\n".join(lines) + "\n"
+
+        try:
+            files["sill.md"] = self._sill(token)
+        except Exception:
+            pass
 
         desk = get("bench_desk?select=content,updated_at&limit=1")
         if desk and (desk[0].get("content") or "").strip():
@@ -675,6 +775,23 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(502, {"error": f"the inbox didn't answer: {str(e)[:160]}"})
         return self._json(400, {"error": "unknown mail action"})
+
+    # ---- the sill ----
+
+    def _sill(self, token):
+        try:
+            tz = ZoneInfo(os.environ.get("REACH_TZ", "").strip() or "UTC")
+        except Exception:
+            tz = ZoneInfo("UTC")
+        now = datetime.datetime.now(tz)
+        since = (now - datetime.timedelta(hours=24)).astimezone(
+            datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        rows = self._get("room_state?select=at,temp_c,humidity,pressure_hpa,lux"
+                         f"&at=gte.{since}&order=at.desc&limit=300", token) or []
+        if not rows:  # nothing today: show the last thing she said, honestly dated
+            rows = self._get("room_state?select=at,temp_c,humidity,pressure_hpa,lux"
+                             "&order=at.desc&limit=1", token) or []
+        return _sill_text(rows, now)
 
     # ---- the porch (The Laughing Circle) ----
     # Same key as house-him, which stays in Vercel: the laptop holds only her
