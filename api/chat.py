@@ -4148,6 +4148,19 @@ class handler(BaseHTTPRequestHandler):
                     if (r.get("detail") or "").strip():
                         entry += f" — {r['detail'].strip()}"
                     lines.append(entry)
+            # A read that failed must never pass for a quiet logbook: the
+            # same blank answer would mean two opposite things.
+            unread = [n for n, r in (("heartbeats", pulse),
+                                     ("record", logs)) if r is None]
+            if unread and not lines:
+                return False, "the walls couldn't be read", (
+                    "I couldn't reach the logbook just now (the read failed, "
+                    "so this says nothing about whether the house ran). "
+                    "Ask again in a minute.")
+            if unread:
+                lines.append("")
+                lines.append(f"(Couldn't read the {' or '.join(unread)} "
+                             "just now; that part is missing, not empty.)")
             if not lines:
                 return True, "the walls are quiet", (
                     "No record yet. Either the logbook's table is still "
