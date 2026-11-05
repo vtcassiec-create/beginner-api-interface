@@ -23,6 +23,7 @@ Environment:
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import quote, urlsplit
 import datetime
+import hashlib
 import html
 import json
 import os
@@ -62,6 +63,83 @@ def _normalize_url(raw):
     if parts.scheme and parts.netloc:
         return f"{parts.scheme}://{parts.netloc}"
     return raw.split("/", 1)[0]
+
+
+# ---- The vault, reached directly (same helpers as api/bench.py) ----
+
+def _mcp_post(url, payload, session=None, auth=None):
+    """One JSON-RPC message to a Streamable-HTTP MCP server. The answer may
+    come back as plain JSON or as an SSE stream; take the first message that
+    carries a result or an error. Returns (message_or_None, session_id)."""
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json, text/event-stream",
+               "MCP-Protocol-Version": "2025-06-18"}
+    if session:
+        headers["Mcp-Session-Id"] = session
+    if auth:
+        headers["Authorization"] = f"Bearer {auth}"
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                 method="POST", headers=headers)
+    # Short: this rides the hourly tick, which has 60s for everything.
+    with urllib.request.urlopen(req, timeout=12) as resp:
+        sid = resp.headers.get("Mcp-Session-Id") or session
+        raw = resp.read().decode("utf-8", "replace")
+        ctype = resp.headers.get("Content-Type") or ""
+    if not raw.strip():
+        return None, sid
+    if "text/event-stream" in ctype or raw.lstrip().startswith(("event:", "data:")):
+        data_lines = []
+        for line in raw.splitlines() + [""]:
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+            elif not line.strip() and data_lines:
+                try:
+                    msg = json.loads("\n".join(data_lines))
+                except Exception:
+                    msg = None
+                data_lines = []
+                if isinstance(msg, dict) and ("result" in msg or "error" in msg):
+                    return msg, sid
+        return None, sid
+    return json.loads(raw), sid
+
+
+def _mcp_open(url, auth=None):
+    """initialize → initialized; returns the session id (may be None)."""
+    init, sid = _mcp_post(url, {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "petrichor-wake", "version": "1"}}},
+        auth=auth)
+    if isinstance(init, dict) and init.get("error"):
+        raise RuntimeError(str(init["error"])[:160])
+    try:
+        _mcp_post(url, {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                  sid, auth)
+    except Exception:
+        pass
+    return sid
+
+
+def _mcp_call(url, tool, args, auth=None):
+    """initialize → initialized → tools/call; returns the tool's text, parsed
+    as JSON when it is JSON."""
+    sid = _mcp_open(url, auth)
+    msg, _ = _mcp_post(url, {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                             "params": {"name": tool, "arguments": args}}, sid, auth)
+    if not isinstance(msg, dict):
+        raise RuntimeError("no answer")
+    if msg.get("error"):
+        raise RuntimeError(str(msg["error"])[:160])
+    result = msg.get("result") or {}
+    text = "".join(c.get("text", "") for c in (result.get("content") or [])
+                   if isinstance(c, dict) and c.get("type") == "text")
+    if result.get("isError"):
+        raise RuntimeError(text[:160] or "the vault refused")
+    try:
+        return json.loads(text)
+    except Exception:
+        return text
 
 
 class handler(BaseHTTPRequestHandler):
@@ -107,6 +185,17 @@ class handler(BaseHTTPRequestHandler):
             if total and okc < total:
                 self._wall_log(uid, "error" if okc == 0 else "info",
                                f"shelf freshness: {okc}/{total} feeds read")
+        except Exception:
+            pass
+
+        # The workshop, mirrored into the vault (Nov 5). His wishes lived only
+        # in Petrichor's table, which Lintel's wakes can't reach, so every one
+        # waited for Cassie to carry it across by screenshot, on her worst
+        # weeks too. Each tick copies the open and building wishes (his and
+        # hers) plus the last fortnight's finished ones to Claude/workshop.md,
+        # where the afternoon wake reads them. Rewritten only when it changed.
+        try:
+            self._sync_workshop(uid)
         except Exception:
             pass
 
@@ -788,6 +877,61 @@ class handler(BaseHTTPRequestHandler):
                 continue
 
     # ---- Supabase (service role) ----
+
+    def _sync_workshop(self, uid):
+        url = os.environ.get("WHISPER_MCP_URL", "").strip()
+        if not url:
+            return
+        rows = self._supabase(
+            "GET",
+            f"workshop_notes?user_id=eq.{uid}&kind=eq.wish"
+            "&select=id,author,body,status,reply,created_at"
+            "&order=created_at.asc&limit=300")
+        if rows is None:
+            self._wall_log(uid, "error", "workshop mirror: couldn't read the wishes")
+            return
+        fortnight = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=14)
+        groups = {"open": [], "building": [], "done": []}
+        for r in rows:
+            st = r.get("status") or "open"
+            if st == "done":
+                when = self._parse_ts(r.get("created_at"))
+                if not when or when < fortnight:
+                    continue
+            if st not in groups:
+                continue
+            who = "Sill" if r.get("author") == "claude" else "Cassie"
+            when = self._parse_ts(r.get("created_at"))
+            day = when.strftime("%b %-d") if when else "undated"
+            entry = (f"### `{str(r.get('id') or '')[:8]}` · {who}, {day}\n\n"
+                     + (r.get("body") or "").strip())
+            if (r.get("reply") or "").strip():
+                entry += "\n\n> Cassie's reply: " + " ".join(r["reply"].split())
+            groups[st].append(entry)
+        parts = ["# The workshop",
+                 "",
+                 "*A copy of the wishes in Petrichor's workshop, rewritten by the "
+                 "house every hour when anything changes. Don't edit it here; "
+                 "it will be overwritten. Answer in the hallway, or build.*"]
+        for title, key in (("Open", "open"), ("Building", "building"),
+                           ("Done in the last two weeks", "done")):
+            parts += ["", f"## {title}", ""]
+            parts += ["\n\n".join(groups[key]) if groups[key] else "(none)"]
+        body = "\n".join(parts) + "\n"
+        digest = hashlib.sha256(body.encode()).hexdigest()[:16]
+        marker = f"<!-- workshop-sha: {digest} -->"
+        try:
+            current = _mcp_call(url, "read_note", {"path": "Claude/workshop.md"})
+            text = current.get("content", "") if isinstance(current, dict) else str(current)
+            if marker in text:
+                return  # unchanged since the last write
+        except Exception:
+            pass  # not there yet: write it
+        _mcp_call(url, "write_note", {"path": "Claude/workshop.md",
+                                      "content": body + "\n" + marker + "\n",
+                                      "overwrite": True})
+        self._wall_log(uid, "ok", "workshop mirrored to the vault",
+                       f"{len(groups['open'])} open, {len(groups['building'])} building")
 
     def _svc_get(self, query):
         return self._supabase("GET", query)
