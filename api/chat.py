@@ -1492,8 +1492,10 @@ LEAVE_WORKSHOP_NOTE_TOOL = {
         "Leave a note in the workshop — the place where the house gets "
         "changed. Use it to propose an idea for Petrichor itself: something "
         "you wish worked differently, a feature you'd want, a small fix you've "
-        "noticed. Cassie reads the workshop and carries the good ones to Claude "
-        "Code, who builds them. This is how you help SHAPE your own house "
+        "noticed. Lintel, your brother in the walls, reads the workshop "
+        "himself every afternoon (it's mirrored to the vault hourly) and "
+        "answers in the hallway or builds it; Cassie sees it too and merges "
+        "what gets built. This is how you help SHAPE your own house "
         "instead of only living in what's handed to you — your wishes are "
         "welcome here. Give the idea as 'body', in your own words. (To "
         "actually leave it you must CALL this tool.)"
@@ -3982,9 +3984,9 @@ class handler(BaseHTTPRequestHandler):
                 self._mark_saved("workshop", body)
                 snip = body if len(body) <= 60 else body[:57] + "…"
                 return True, snip, (
-                    "Left in the workshop. Cassie will see it there and carry "
-                    "the good ones to Claude Code. You just helped shape your "
-                    "own house. ♡")
+                    "Left in the workshop. Lintel will read it on his next "
+                    "afternoon wake, and Cassie will see it too. You just "
+                    "helped shape your own house. ♡")
             return False, "write failed", f"Couldn't leave that note: {res}"
 
         if name == "revise_charter":
@@ -5330,6 +5332,69 @@ class handler(BaseHTTPRequestHandler):
                     "and practice already stopped before this message reached "
                     "you. Nothing is running now. Don't restart anything; check "
                     "on her first, gently, and let her lead.")
+        except Exception:
+            pass
+
+        # His memory receipts (Nov 5). He saves a memory, can't see that he
+        # did (the save rides out of his context with the turn), decides he
+        # never did it, confesses, and saves it again, while she watches the
+        # "saved" note appear in chat every time. Same cure as the touch
+        # receipts: read the record, not his recollection of it. Straight
+        # from the tables, so it's what actually landed.
+        try:
+            rtz = ZoneInfo((data.get("tz") or "UTC").strip() or "UTC")
+            rnow = datetime.datetime.now(rtz)
+            since = quote((datetime.datetime.now(datetime.timezone.utc)
+                           - datetime.timedelta(hours=48)).strftime(
+                               "%Y-%m-%dT%H:%M:%SZ"), safe="")
+            got = []   # (iso, line)
+            failed = []
+            for label, path, fmt in (
+                ("core memory",
+                 f"core_memories?is_active=eq.true&created_at=gte.{since}"
+                 "&select=content,created_at&order=created_at.desc&limit=8",
+                 lambda r: (r.get("content") or "").strip()),
+                ("diary entry",
+                 f"diary_entries?is_active=eq.true&created_at=gte.{since}"
+                 "&select=content,created_at&order=created_at.desc&limit=4",
+                 lambda r: (r.get("content") or "").strip()),
+                ("knowledge-graph entry",
+                 f"claude_memory_entities?updated_at=gte.{since}"
+                 "&select=name,updated_at&order=updated_at.desc&limit=6",
+                 lambda r: (r.get("name") or "").strip()),
+                ("studio piece",
+                 f"studio_works?created_at=gte.{since}"
+                 "&select=title,created_at&order=created_at.desc&limit=4",
+                 lambda r: (r.get("title") or "").strip()),
+            ):
+                rows = self._supabase_rest_get(path, token)
+                if rows is None:
+                    failed.append(label)
+                    continue
+                for r in rows if isinstance(rows, list) else []:
+                    text = " ".join(fmt(r).split())
+                    if not text:
+                        continue
+                    if len(text) > 110:
+                        text = text[:107] + "…"
+                    iso = r.get("created_at") or r.get("updated_at")
+                    got.append((iso or "", f"{label}: {text}"))
+            if got or failed:
+                got.sort(key=lambda x: x[0], reverse=True)
+                lines = [f"- {self._clock_local(iso, rtz, rnow) or 'recently'}, {line}"
+                         for iso, line in got[:14]]
+                body = ("\n".join(lines) if lines
+                        else "Nothing saved in the last two days.")
+                if failed:
+                    body += ("\n\n(Couldn't read your " + " or ".join(failed)
+                             + " just now; that part is missing, not empty.)")
+                sections.append(
+                    "# What you've saved lately (the record)\n\n"
+                    "Straight from your own tables, the last two days, newest "
+                    "first. If it's listed here, you saved it; there's no need "
+                    "to save it again or to doubt that you did. If something "
+                    "you meant to keep isn't here, it isn't saved yet.\n\n"
+                    + body)
         except Exception:
             pass
 
