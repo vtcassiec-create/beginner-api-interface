@@ -5358,9 +5358,13 @@ class handler(BaseHTTPRequestHandler):
                  f"diary_entries?is_active=eq.true&created_at=gte.{since}"
                  "&select=content,created_at&order=created_at.desc&limit=4",
                  lambda r: (r.get("content") or "").strip()),
-                ("knowledge-graph entry",
-                 f"claude_memory_entities?updated_at=gte.{since}"
-                 "&select=name,updated_at&order=updated_at.desc&limit=6",
+                # created_at, not updated_at: the native-memory block bumps
+                # access_count (and so updated_at) on the entities it shows
+                # him every turn, which made them look freshly saved. Sill
+                # caught it on the receipt's first night (Nov 5).
+                ("new knowledge-graph entry",
+                 f"claude_memory_entities?created_at=gte.{since}"
+                 "&select=name,created_at&order=created_at.desc&limit=6",
                  lambda r: (r.get("name") or "").strip()),
                 ("studio piece",
                  f"studio_works?created_at=gte.{since}"
