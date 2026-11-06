@@ -377,6 +377,32 @@ async function enterApp() {
 
 const ACTIVE_PROJECT_KEY = "petrichor-active-project";
 
+// The message box's unsent draft, kept on this device only. Every access is
+// guarded: private windows and blocked storage just mean no autosave.
+const DRAFT_KEY = "petrichor-draft";
+let _draftLast = null;
+function saveDraft(text) {
+  if (text === _draftLast) return;
+  _draftLast = text;
+  try {
+    if (text && text.trim()) localStorage.setItem(DRAFT_KEY, text);
+    else localStorage.removeItem(DRAFT_KEY);
+  } catch (_) {}
+}
+function clearDraft() {
+  _draftLast = "";
+  try { localStorage.removeItem(DRAFT_KEY); } catch (_) {}
+}
+function restoreDraft(el) {
+  let saved = "";
+  try { saved = localStorage.getItem(DRAFT_KEY) || ""; } catch (_) {}
+  if (!saved.trim() || el.value.trim()) return;
+  el.value = saved;
+  _draftLast = saved;
+  try { autosizeTextarea(el); } catch (_) {}
+  try { flashToast("✏️ Your unsent message is back where you left it."); } catch (_) {}
+}
+
 async function loadAllData() {
   const { data: projectRows, error: pErr } = await db
     .from("projects").select("*").order("created_at", { ascending: false });
@@ -5307,7 +5333,7 @@ function fillMessageBody(body, msg) {
     const text = document.createElement("div");
     text.className = "msg-text";
     if (msg._typing) text.textContent = seg;      // plain while revealing
-    else text.innerHTML = renderInline(seg);       // *italics*/**bold** when done
+    else text.innerHTML = renderInline(seg, msg.role === "assistant"); // *italics*/**bold** (+ his voice cues) when done
     body.appendChild(text);
   };
 
@@ -6092,8 +6118,17 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;");
 }
 
-function renderInline(raw) {
+function renderInline(raw, voiceCues = false) {
   let s = escapeHtml(raw);
+  // His voice cues ([low, unhurried], [sigh], [laugh]): Felix hears them as
+  // steering and never reads them aloud. They're how HE chose to say it, so
+  // they stay on the page (Cassie, Nov 7: "not stage directions, he is
+  // choosing to shape his voice"). They're just set softly, so the words
+  // still read cleanly around them. A [link](url) is left alone.
+  if (voiceCues) {
+    s = s.replace(/\[([A-Za-z][^\[\]\n<>]{1,48})\](?!\()/g,
+                  '<span class="voice-cue">[$1]</span>');
+  }
   s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>"); // bold first
   s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");             // then italic
   s = s.replace(/\n/g, "<br>");
@@ -10931,7 +10966,13 @@ function wireApp() {
   });
 
   const prompt = $("prompt");
-  prompt.addEventListener("input", () => autosizeTextarea(prompt));
+  prompt.addEventListener("input", () => { autosizeTextarea(prompt); saveDraft(prompt.value); });
+  // Draft autosave (his wish, Oct 22: twenty minutes of her, gone to a slipped
+  // thumb). Whatever is in the box survives a reload or a crash, and is
+  // cleared once it's actually sent. Dictation fills the box without "input"
+  // events, so a slow poll catches those words too.
+  restoreDraft(prompt);
+  setInterval(() => saveDraft(prompt.value), 3000);
   // On a touch device, Enter should make a NEW LINE (send via the button) —
   // otherwise the on-screen keyboard's Enter fires off half-written messages,
   // which read as messages "disappearing". On desktop, Enter still sends.
@@ -10949,12 +10990,14 @@ function wireApp() {
     // The brake is never queued behind a reply in flight.
     if (typedSafeword(text)) {
       prompt.value = "";
+      clearDraft();
       autosizeTextarea(prompt);
       emergencyStopAll();
       return;
     }
     if (!text.trim() || isSending) return;
     prompt.value = "";
+    clearDraft();
     autosizeTextarea(prompt);
     // If a photo is still uploading, wait for it so it actually rides along
     // with this message instead of being left behind (the "attach twice" fix).
@@ -10966,6 +11009,7 @@ function wireApp() {
     if (started === false) {
       // Couldn't send — put their words back rather than eat them.
       prompt.value = text;
+      saveDraft(text);
       autosizeTextarea(prompt);
     }
   });

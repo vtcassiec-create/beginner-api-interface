@@ -1193,6 +1193,15 @@ body.hide-timestamps .msg-head .msg-time { display: none; }
   line-height: 1.65;
 }
 
+/* His voice cues ([low, unhurried], [sigh]): how he chose to say it. Kept on
+   the page, set softly so the words around them still read cleanly. */
+.message .voice-cue {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.85em;
+  letter-spacing: 0.01em;
+}
+
 .message .files {
   margin-top: 8px;
   display: flex;
