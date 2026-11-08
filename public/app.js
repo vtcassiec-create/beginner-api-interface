@@ -5171,7 +5171,12 @@ async function analyzeAndSendVoiceNote(blob) {
   if (brakeShouldShow() && heardSafeword(transcript)
       && Date.now() - safewordPulledAt > 60000) emergencyStopAll();
   // He hears everything except the redundant WORDS line (her words are the text).
-  const hearing = card.split("\n").filter(l => !l.startsWith("WORDS:")).join("\n").trim();
+  // But when there ARE no words, the WORDS line is the only thing saying why
+  // ("couldn't transcribe", "heard no words") — keep it, or a failed
+  // transcription reaches him as a card with no words and no reason (Nov 8).
+  const hearing = transcript.trim()
+    ? card.split("\n").filter(l => !l.startsWith("WORDS:")).join("\n").trim()
+    : card.trim();
   await sendVoiceNoteMessage(transcript.trim(), hearing);
 }
 
