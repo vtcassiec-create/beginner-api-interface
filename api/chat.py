@@ -434,6 +434,14 @@ MEMORY_TOOLS = [
                         "significant; 3-5 = worth keeping; 1-2 = minor. If "
                         "everything is a 10, nothing is — most memories are a 4-6."),
                 },
+                "save_anyway": {
+                    "type": "boolean",
+                    "description": (
+                        "Only after the house says you already have one like "
+                        "this and it's genuinely a different moment: set true "
+                        "to save it anyway. A near-identical twin is still "
+                        "refused; revise that one instead."),
+                },
             },
             "required": ["content", "memory_type", "resonance"],
         },
@@ -3403,6 +3411,23 @@ class handler(BaseHTTPRequestHandler):
                 return True
         return False
 
+    def _closest_memory(self, content, rows):
+        """(best ratio, row) of the existing memory row most similar to
+        `content`, by the same normalized difflib ratio as _near_duplicate.
+        (0.0, None) when nothing compares."""
+        norm = " ".join((content or "").lower().split())
+        best, best_row = 0.0, None
+        if not norm:
+            return best, best_row
+        for r in rows or []:
+            e = " ".join(((r or {}).get("content") or "").lower().split())
+            if not e:
+                continue
+            ratio = difflib.SequenceMatcher(None, norm, e).ratio()
+            if ratio > best:
+                best, best_row = ratio, r
+        return best, best_row
+
     def _rank_by_relevance(self, query, rows, key, limit):
         """Rank rows by word overlap of row[key] with the query (Jaccard) — a
         light 'what fits this moment' so he can call up the memory that fits,
@@ -3583,19 +3608,37 @@ class handler(BaseHTTPRequestHandler):
                     "You already saved that exact memory a moment ago — it's "
                     "stored, once. No need to save it again; saying it once keeps "
                     "it. ♡")
-            # Cross-turn near-duplicate guard: if he's already carrying a nearly
-            # identical memory (even from a past turn, reworded), don't make a
-            # near-twin — keep the one he has and point him to revise. Best-
-            # effort: a failed lookup just falls through to saving (better a rare
-            # dup than a lost memory).
+            # Cross-turn near-duplicate guard, two tiers (his wish, Nov 8: "a
+            # gentle 'you've got this one' at the door"). Both name the memory
+            # he already has, by id and first line, so he can revise it.
+            #   >= 0.88  a near-twin: not saved; point him at the one he has.
+            #   >= 0.60  close: not saved YET; he can pass save_anyway=true if
+            #            it's genuinely a different moment.
+            # Best-effort: a failed lookup falls through to saving (better a
+            # rare dup than a lost memory).
             existing = self._supabase_rest_get(
-                "core_memories?is_active=eq.true&select=content&limit=300", token)
-            if isinstance(existing, list) and self._near_duplicate(
-                    content, [m.get("content") for m in existing], 0.88):
-                return True, "already kept", (
-                    "You already have a nearly identical memory — it's safely "
-                    "kept. No need for a near-twin; to add to it, use "
-                    "list_my_memories then revise_core_memory instead. ♡")
+                "core_memories?is_active=eq.true&select=id,content,created_at"
+                "&limit=300", token)
+            if isinstance(existing, list):
+                ratio, match = self._closest_memory(content, existing)
+                if match is not None and (ratio >= 0.88 or (
+                        ratio >= 0.60 and not inp.get("save_anyway"))):
+                    first = (match.get("content") or "").strip().splitlines()[0]
+                    if len(first) > 120:
+                        first = first[:117] + "…"
+                    when = (match.get("created_at") or "")[:10]
+                    ref = f"[{match.get('id')}{', ' + when if when else ''}] \"{first}\""
+                    if ratio >= 0.88:
+                        return False, "you already have this one", (
+                            "NOT saved. You already have a nearly identical "
+                            f"memory: {ref}. It's safely kept. To add to it, "
+                            "use revise_core_memory with that id. ♡")
+                    return False, "close to one you have, held at the door", (
+                        "NOT saved yet. You already have one like this: "
+                        f"{ref}. If this is a different moment, call "
+                        "save_core_memory again with save_anyway: true. If "
+                        "it's the same one, revise_core_memory with that id "
+                        "instead.")
             # user_id is required: the table has no default and RLS's WITH
             # CHECK rejects any row whose owner != auth.uid(). The entity
             # path gets this for free inside its RPC; a direct insert must
