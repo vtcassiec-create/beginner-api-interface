@@ -194,10 +194,15 @@ class handler(BaseHTTPRequestHandler):
         # weeks too. Each tick copies the open and building wishes (his and
         # hers) plus the last fortnight's finished ones to Claude/workshop.md,
         # where the afternoon wake reads them. Rewritten only when it changed.
+        #
+        # A failed write must not look like "unchanged": the mirror only writes
+        # when the wishes change, so a quiet vault file is normal, and a broken
+        # one would be indistinguishable from it without a line in the log.
         try:
             self._sync_workshop(uid)
-        except Exception:
-            pass
+        except Exception as e:
+            self._wall_log(uid, "error", "workshop mirror: couldn't write to the vault",
+                           type(e).__name__)
 
         # Due, unfired, not stale — earliest first. One per run keeps it calm.
         #
